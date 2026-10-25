@@ -1,0 +1,38 @@
+[
+  {
+    "file": null,
+    "source_url": "https://www.parker.com/content/dam/Parker-com/Literature/Chomerics/Parker-Chomerics-THERM-A-GAP-GEL-45.pdf",
+    "retrieved_date": "2026-10-23",
+    "timezone": "Asia/Taipei",
+    "sha256": null,
+    "bytes": null,
+    "archive_status": "web_read_success_local_download_access_denied"
+  },
+  {
+    "file": null,
+    "source_url": "https://www.parker.com/content/dam/Parker-com/Literature/Chomerics/Datasheet-Chomerics-THERM-A-GAP-GEL-75.pdf",
+    "retrieved_date": "2026-10-23",
+    "timezone": "Asia/Taipei",
+    "sha256": null,
+    "bytes": null,
+    "archive_status": "web_read_success_local_download_access_denied"
+  },
+  {
+    "file": "Longyoung_LYT_GEL400_TDS_20221014.pdf",
+    "source_url": "https://www.longyoung.com/static/upload/2024/04/09/202404095504.pdf",
+    "retrieved_date": "2026-10-23",
+    "timezone": "Asia/Taipei",
+    "sha256": "4DB15417935EAC7AB92EFA2F6717EF49F3F56CC7B37CF9471D6CBCC18E3FA32E",
+    "bytes": 854278,
+    "archive_status": "downloaded"
+  },
+  {
+    "file": "Waermtimo_WT5921_100T1_20261023.html",
+    "source_url": "https://www.waermtimo.sg/product/details?id=36",
+    "retrieved_date": "2026-10-23",
+    "timezone": "Asia/Taipei",
+    "sha256": "1F34CF9CD2FA9C36493CA38DF4C1BBDC126ABF32E6A2B80B6A96C43BF511376D",
+    "bytes": 48622,
+    "archive_status": "downloaded"
+  }
+]

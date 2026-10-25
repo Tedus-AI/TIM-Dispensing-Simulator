@@ -1,0 +1,33 @@
+{
+  "date": "2026-10-24",
+  "scope": "Upstream pure projection arithmetic only; no rendering, simulation, CAD import or hardware validation",
+  "source": "https://github.com/wheresryan22/anatomy/tree/1482e8469b0a9e0d8cc18ea2740a01423d29ae80",
+  "input_axis_lengths_mm": [
+    10,
+    10,
+    10
+  ],
+  "azimuth_deg": 45,
+  "default_elevation_deg": 30,
+  "default_projected_lengths": [
+    9.999999999999998,
+    10.000000000000002,
+    10.954451150103324
+  ],
+  "strict_isometric_elevation_deg": 35.264389682754654,
+  "strict_projected_lengths": [
+    10.327955589886445,
+    10.327955589886445,
+    10.327955589886447
+  ],
+  "default_z_to_x_ratio": 1.0954451150103326,
+  "note": "Lengths are upstream projection units at scale=1, including its sqrt(1.6) factor; not a display calibration.",
+  "checks": {
+    "equal_axis_lengths": true,
+    "uniform_camera_zoom": true,
+    "camera_translation_preserves_lengths": true,
+    "source_geometry_unchanged": true
+  },
+  "passed": true,
+  "engineering_defaults_sha256": "3a236fea340518c61d49d591608a5486edebc37da34df2ba1a2f89bc215d55d3"
+}

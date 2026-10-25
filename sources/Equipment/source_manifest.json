@@ -1,0 +1,74 @@
+[
+  {
+    "file": "Nordson_FluidPackaging_Brochure.pdf",
+    "source_url": "https://nc-p-001.sitecorecontenthub.cloud/api/public/content/b6c13e987c27472ab0730abea63282dd?v=6cb35e9b",
+    "retrieved_date": "2026-10-23",
+    "sha256": "11A0A938C444608D31E1AB8EDF449695670BC7B42D183007489ED4AAAB00ED83",
+    "bytes": 7363042,
+    "status": "downloaded"
+  },
+  {
+    "file": "Graco_UniXact_C_Brochure_349735EN_B.pdf",
+    "source_url": "https://www.graco.com/content/dam/graco/com_documents/349/349735/349735EN-B.pdf",
+    "retrieved_date": "2026-10-23",
+    "sha256": "17843BD258D94CB60E1C277CD4C5A8A81DB720AF15515AB70393EA6D5EFB675E",
+    "bytes": 9164144,
+    "status": "downloaded"
+  },
+  {
+    "file": "Graco_DM22_Manual_3A7931EN_D.pdf",
+    "source_url": "https://www.graco.com/content/dam/graco/tech_documents/manuals/3A7/3A7931/3A7931EN-D.pdf",
+    "retrieved_date": "2026-10-23",
+    "sha256": "01A463AFF0CB993C83807E73F01A481CBE5092AAFB8BA092E4975053135822D1",
+    "bytes": 7690898,
+    "status": "downloaded"
+  },
+  {
+    "file": "Nordson_E_Series_TDS_110524.pdf",
+    "source_url": "https://nc-p-001.sitecorecontenthub.cloud/api/public/content/332fa45cb9d042d2a94cc023ee536ae5?v=afc4a139",
+    "retrieved_date": "2026-10-23",
+    "sha256": "969EE0C31470E9D523ED849887F2A9056864A07A79897A30B6BC7F3BFEFBD004",
+    "bytes": 645512,
+    "status": "downloaded"
+  },
+  {
+    "file": "Nordson_PerformusX_TDS_v110624.pdf",
+    "source_url": "https://nc-p-001.sitecorecontenthub.cloud/api/public/content/692af22639cc450e9ba2aa7b637fcfd7?v=269b7319",
+    "retrieved_date": "2026-10-23",
+    "sha256": "7AB5F90D0A7284E37CCEE866AE4A50D18282601A5E6BB6F60E0634C5ADB77F67",
+    "bytes": 519572,
+    "status": "downloaded"
+  },
+  {
+    "file": "Graco_PCP_System_3B0393EN_C.pdf",
+    "source_url": "https://www.graco.com/content/dam/graco/tech_documents/manuals/3B0/3B0393/3B0393EN.pdf",
+    "retrieved_date": "2026-10-24",
+    "sha256": "06EE07B9D96F460E144561BA8EAA62EA7784B8B67129D5EA061886BD7B5CC15A",
+    "bytes": 6741936,
+    "status": "downloaded"
+  },
+  {
+    "file": "Graco_Elite_Regulator_3B0400EN_A.pdf",
+    "source_url": "https://www.graco.com/content/dam/graco/tech_documents/manuals/3B0/3B0400/3B0400EN.pdf",
+    "retrieved_date": "2026-10-24",
+    "sha256": "19C0ECBFF0D4BCDB52BA2B7AA44C4E9666CCDF29F4F1654DA679C1FBBE5A55AD",
+    "bytes": 970597,
+    "status": "downloaded"
+  },
+  {
+    "file": "Graco_PCP_Repair_3A5364EN_L.pdf",
+    "source_url": "https://www.graco.com/content/dam/graco/tech_documents/manuals/3A5/3A5364/3A5364EN.pdf",
+    "retrieved_date": "2026-10-24",
+    "sha256": "0A079084BBF725C7E8B126CEE7E082FFD53AAB103EECFBDEDF0F29E8D776AE38",
+    "bytes": 2372401,
+    "status": "downloaded"
+  },
+  {
+    "file": null,
+    "source_url": "https://www.nordson.com/en/products/efd-products/plastic-nozzles",
+    "retrieved_date": "2026-10-24",
+    "sha256": null,
+    "bytes": null,
+    "status": "web_read_only_local_download_blocked"
+  }
+]

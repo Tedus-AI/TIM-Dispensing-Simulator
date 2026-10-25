@@ -1,0 +1,44 @@
+{
+  "version": "0.1",
+  "date": "2026-10-24",
+  "stage": "preimplementation_specification",
+  "implementation_authorized": false,
+  "physics_defaults": "engineering_defaults_v0.3.json",
+  "specification": "../14_Anatomy研讀與真實比例視覺規格.md",
+  "skill": {"name": "anatomy", "commit": "1482e8469b0a9e0d8cc18ea2740a01423d29ae80"},
+  "world": {"unit": "mm", "up_axis": "Z", "handedness": "right", "units_per_mm": 1},
+  "camera": {
+    "projection": "orthographic",
+    "azimuth_deg": 45,
+    "elevation_deg": 35.264389682754654,
+    "target_to_camera_direction": [1, 1, 1],
+    "presets": ["whole_machine_isometric", "nozzle_and_workpiece_isometric"],
+    "close_view_fit": "workpiece_and_lower_dispense_head_excluding_gantry_and_upper_cartridge",
+    "close_view_margin_each_edge_fraction": 0.1,
+    "optional_local_follow_horizontal_span_mm": 40,
+    "framing_values_evidence": "assistant_proposed_display_preferences_not_physics",
+    "zoom_changes_geometry": false
+  },
+  "virtual_workpiece": {
+    "size_mm": [150, 100, 5],
+    "evidence": "engineering_assumption",
+    "estimated_by": "assistant",
+    "note": "150x100 follows v0.3; thickness 5 is a new visual-only placeholder proposal, not customer geometry",
+    "validated_against_hardware": false
+  },
+  "import_plan": {
+    "glb_gltf": {"source_unit": "m", "unit_factor_to_mm": 1000, "default_up_conversion_rotation_x_deg": 90, "dimensions_must_be_reviewed": true},
+    "stl": {"source_unit": "required_from_user_or_export_metadata", "up_axis": "required", "dimensions_must_be_reviewed": true},
+    "step": {"native_import_committed": false, "plan": "separate_tessellation_with_units_and_tolerance_recorded"},
+    "fit_to_platform_by_resizing": false,
+    "status": "not_implemented_or_tested"
+  },
+  "requirements": {
+    "shared_simulation_state_for_visuals_and_readouts": true,
+    "formal_run_idle_tour": false,
+    "visual_smoothing_may_change_physics": false,
+    "hidden_parts_remain_in_collision_geometry": true,
+    "direction_labelled_mm_scale_bar": true,
+    "complex_mesh_visibility_implies_supported_surface_dispensing": false
+  }
+}

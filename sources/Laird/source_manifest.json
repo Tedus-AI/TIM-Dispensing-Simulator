@@ -1,0 +1,72 @@
+[
+  {
+    "file": "Tgrease2500_TDS_20250627.pdf",
+    "source_url": "https://www.laird.com/sites/default/files/2025-07/MKT-DOC-1592%20Tgrease%202500%20Data%20Sheet%2006272025.pdf",
+    "document_version": "06272025",
+    "retrieved_date": "2026-10-23",
+    "timezone": "Asia/Taipei",
+    "sha256": "08766F3F80832FCAD8D2BB649E2DEF612E36A26E21562D1643E1A47C4795F642",
+    "bytes": 221557,
+    "page_info": "Pages:           1"
+  },
+  {
+    "file": "Tputty910_TDS_20250422_RevC.pdf",
+    "source_url": "https://www.laird.com/sites/default/files/2025-05/THR-DS-Tputty%20910%20RevC.pdf",
+    "document_version": "20250422 Rev C DCO 005898",
+    "retrieved_date": "2026-10-23",
+    "timezone": "Asia/Taipei",
+    "sha256": "56A6AC77253B791FA1CC94116BE9729CE7503FE7ADC8865B921515E4A5525553",
+    "bytes": 162180,
+    "page_info": "Pages:           1"
+  },
+  {
+    "file": "Tputty910_Dispensing_Guideline_RevA.pdf",
+    "source_url": "https://www.laird.com/sites/default/files/2024-06/A18720-00%20RevA%20Tputty%20910%20%20Dispensing%20Guideline.pdf",
+    "document_version": "A18720-00 Rev A; cover Feb/17/2023; inner pages 5/06/2024 DCO 005120",
+    "retrieved_date": "2026-10-23",
+    "timezone": "Asia/Taipei",
+    "sha256": "C54C512E889F75D7FEAEBD2253985ADD81CA65E603C5F538DD59260048512C53",
+    "bytes": 468531,
+    "page_info": "Pages:           6"
+  },
+  {
+    "file": "Tputty607_TDS_20250421.pdf",
+    "source_url": "https://www.laird.com/sites/default/files/2025-05/THR-DS-Tputty%20607%2004212025.pdf",
+    "document_version": "04212025",
+    "retrieved_date": "2026-10-23",
+    "timezone": "Asia/Taipei",
+    "sha256": "B0A684D5CE28E2B2A8886C0EFF376779505813557C82B9A6D236EA4D94FC1B3E",
+    "bytes": 211365,
+    "page_info": "Pages: 2"
+  },
+  {
+    "file": "Tputty508_508MF_TDS_20241104.pdf",
+    "source_url": "https://www.laird.com/sites/default/files/2024-11/A17223-00%20THR-DS-Tputty%20508.pdf",
+    "document_version": "A17223-00 11042024",
+    "retrieved_date": "2026-10-23",
+    "timezone": "Asia/Taipei",
+    "sha256": "BD6C1DF9CF5C2AE6D95364ED08009059FD43F4D1C331C984AE8E803A349430C8",
+    "bytes": 194762,
+    "page_info": "Pages: 2"
+  },
+  {
+    "file": "Tputty607MF_TDS_20251201.pdf",
+    "source_url": "https://www.laird.com/sites/default/files/2026-01/THR-DS-Tputty%20607MF.pdf",
+    "document_version": "12012025",
+    "retrieved_date": "2026-10-23",
+    "timezone": "Asia/Taipei",
+    "sha256": "5CB4F45821AFAA038630838120E90414E6908817A4EE3C95403CC080E3B895AE",
+    "bytes": 221202,
+    "page_info": "Pages: 1"
+  },
+  {
+    "file": "Tputty607_Application_Notes_20250722_RevE.pdf",
+    "source_url": "https://www.laird.com/sites/default/files/2026-03/A17247-00%20Tputty%20607%20Application%20Notes.pdf",
+    "document_version": "A17247-00 Rev E 7/22/2025 DCO 006013",
+    "retrieved_date": "2026-10-23",
+    "timezone": "Asia/Taipei",
+    "sha256": "277D077667474C361CF9686C315CB3FD8B3E2A23D416B28BB21EFA3CECD3F6C6",
+    "bytes": 848835,
+    "page_info": "Pages: 8"
+  }
+]

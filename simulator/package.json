@@ -1,0 +1,6 @@
+{
+  "name": "tim-dispensing-lab", "version": "0.1.0", "private": true, "type": "module",
+  "scripts": {"dev": "vite --host 127.0.0.1 --port 5173 --strictPort", "build": "vite build", "preview": "vite preview --host 127.0.0.1 --port 5173 --strictPort", "test": "node --test tests/engine.test.mjs"},
+  "dependencies": {"three": "0.180.0"},
+  "devDependencies": {"vite": "6.3.5", "@playwright/test": "1.56.1"}
+}

@@ -1,0 +1,1287 @@
+{
+  "schema_version": "0.3",
+  "created_date": "2026-10-24",
+  "stage": "preimplementation_specification",
+  "implementation_authorized": false,
+  "manufacturer_response_required_to_start_assumption_prototype": false,
+  "global_label": "工程假設情境｜未經實機校準",
+  "sources": {
+    "L910_TDS": {
+      "url": "https://www.laird.com/sites/default/files/2025-05/THR-DS-Tputty%20910%20RevC.pdf",
+      "local": "sources/Laird/Tputty910_TDS_20250422_RevC.pdf",
+      "version": "2025-04-22 Rev C"
+    },
+    "G2500_TDS": {
+      "url": "https://www.laird.com/sites/default/files/2025-07/MKT-DOC-1592%20Tgrease%202500%20Data%20Sheet%2006272025.pdf",
+      "local": "sources/Laird/Tgrease2500_TDS_20250627.pdf",
+      "version": "2025-06-27"
+    },
+    "L910_GUIDE": {
+      "url": "https://www.laird.com/sites/default/files/2024-06/A18720-00%20RevA%20Tputty%20910%20%20Dispensing%20Guideline.pdf",
+      "local": "sources/Laird/Tputty910_Dispensing_Guideline_RevA.pdf",
+      "page": 5
+    },
+    "DM22": {
+      "local": "sources/Equipment/Graco_DM22_Manual_3A7931EN_D.pdf",
+      "version": "3A7931D",
+      "page": 26
+    },
+    "PCP": {
+      "local": "sources/Equipment/Graco_PCP_Repair_3A5364EN_L.pdf",
+      "version": "3A5364L",
+      "page": 40
+    },
+    "X100": {
+      "local": "sources/Equipment/Nordson_PerformusX_TDS_v110624.pdf"
+    },
+    "USER": {
+      "description": "2026-10-24 使用者授權：未獲廠商回覆也可先建立有註記的工程預設；本次停在模擬器開發之前。"
+    },
+    "METHOD": {
+      "url": "https://doc.comsol.com/6.3/doc/com.comsol.help.cfd/cfd_ug_fluidflow_single.06.082.html",
+      "description": "用於說明完整非牛頓物性需要額外參數；未拿其軟體預設充當 TIM 物性。"
+    }
+  },
+  "parameters": [
+    {
+      "id": "material.putty.density",
+      "value": 3.2,
+      "unit": "g/mL",
+      "evidence": "published_typical",
+      "basis": "TDS 典型值；不是此批膠實測。",
+      "source_refs": [
+        "L910_TDS"
+      ],
+      "sensitivity_range": null,
+      "range_kind": null,
+      "role": "active",
+      "scope": "all",
+      "estimated_by": null,
+      "validated_against_hardware": false
+    },
+    {
+      "id": "material.grease.density",
+      "value": 3.4,
+      "unit": "g/mL",
+      "evidence": "published_typical",
+      "basis": "TDS 典型值。",
+      "source_refs": [
+        "G2500_TDS"
+      ],
+      "sensitivity_range": null,
+      "range_kind": null,
+      "role": "active",
+      "scope": "all",
+      "estimated_by": null,
+      "validated_against_hardware": false
+    },
+    {
+      "id": "material.grease.viscosity_reference",
+      "value": 2500,
+      "unit": "Pa.s",
+      "evidence": "derived",
+      "basis": "2500000 cP /1000；23°C、TF spindle、2rpm、Helipath。",
+      "source_refs": [
+        "G2500_TDS"
+      ],
+      "sensitivity_range": null,
+      "range_kind": null,
+      "role": "active",
+      "scope": "all",
+      "estimated_by": null,
+      "validated_against_hardware": false
+    },
+    {
+      "id": "reference.putty.mass_rate",
+      "value": 75,
+      "unit": "g/min",
+      "evidence": "published_typical",
+      "basis": "75cc taper tip、90psi；完整幾何及溫度未知。",
+      "source_refs": [
+        "L910_TDS"
+      ],
+      "sensitivity_range": null,
+      "range_kind": null,
+      "role": "reference_only",
+      "scope": "all",
+      "estimated_by": null,
+      "validated_against_hardware": false
+    },
+    {
+      "id": "reference.putty.pressure",
+      "value": 90,
+      "unit": "psi",
+      "evidence": "published_typical",
+      "basis": "原測試值；壓力位置與表壓/絕壓待確認。",
+      "source_refs": [
+        "L910_TDS"
+      ],
+      "sensitivity_range": null,
+      "range_kind": null,
+      "role": "reference_only",
+      "scope": "all",
+      "estimated_by": null,
+      "validated_against_hardware": false
+    },
+    {
+      "id": "reference.putty.volume_rate",
+      "value": 0.390625,
+      "unit": "mL/s",
+      "evidence": "derived",
+      "basis": "75/3.2/60；不是新實測。",
+      "source_refs": [
+        "L910_TDS"
+      ],
+      "sensitivity_range": null,
+      "range_kind": null,
+      "role": "reference_only",
+      "scope": "all",
+      "estimated_by": null,
+      "validated_against_hardware": false
+    },
+    {
+      "id": "scenario.temperature",
+      "value": 23,
+      "unit": "degC",
+      "evidence": "engineering_assumption",
+      "basis": "固定等溫開發基準；不宣稱是 910 原流率試驗溫度。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        23,
+        23
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "active",
+      "scope": "all",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "scenario.pressure",
+      "value": 90,
+      "unit": "psi_gauge",
+      "evidence": "engineering_assumption",
+      "basis": "虛擬氣壓式基準，明確選表壓；不作實機操作建議。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        30,
+        90
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "active",
+      "scope": "R75",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "scenario.reference_pressure",
+      "value": 90,
+      "unit": "psi_gauge",
+      "evidence": "engineering_assumption",
+      "basis": "將 TDS 未完整交代的壓力映射到虛擬模型；映射本身是假設。",
+      "source_refs": [
+        "L910_TDS",
+        "USER"
+      ],
+      "sensitivity_range": null,
+      "range_kind": null,
+      "role": "active",
+      "scope": "R75",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "virtual_nozzle.id",
+      "value": 3.175,
+      "unit": "mm",
+      "evidence": "engineering_assumption",
+      "basis": "借用指南 0.125in 尺度，虛擬等徑圓管；非原測試針嘴。",
+      "source_refs": [
+        "L910_GUIDE",
+        "USER"
+      ],
+      "sensitivity_range": [
+        2,
+        4
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "active",
+      "scope": "all",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "virtual_nozzle.length",
+      "value": 10,
+      "unit": "mm",
+      "evidence": "engineering_assumption",
+      "basis": "定義虛擬有效直管長 10mm，不由 7018555 總長反推。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        5,
+        20
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "active",
+      "scope": "all",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "virtual_nozzle.reference_id",
+      "value": 3.175,
+      "unit": "mm",
+      "evidence": "engineering_assumption",
+      "basis": "固定正規化幾何；換現用針嘴時不能一併改此基準。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": null,
+      "range_kind": null,
+      "role": "active",
+      "scope": "all",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "virtual_nozzle.reference_length",
+      "value": 10,
+      "unit": "mm",
+      "evidence": "engineering_assumption",
+      "basis": "固定正規化幾何。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": null,
+      "range_kind": null,
+      "role": "active",
+      "scope": "all",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "putty_proxy.reference_rate",
+      "value": 0.390625,
+      "unit": "mL/s",
+      "evidence": "engineering_assumption",
+      "basis": "將 TDS 參考量映射到虛擬基準；非該幾何實測。",
+      "source_refs": [
+        "L910_TDS",
+        "USER"
+      ],
+      "sensitivity_range": [
+        0.1953125,
+        0.78125
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "active",
+      "scope": "R75_putty",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "putty_proxy.pressure_exponent",
+      "value": 1,
+      "unit": "1",
+      "evidence": "engineering_assumption",
+      "basis": "中性的線性壓力起點，不是 HB 的流動指數。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        0.7,
+        2
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "active",
+      "scope": "R75_putty",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "putty_proxy.geometry_exponent_d",
+      "value": 4,
+      "unit": "1",
+      "evidence": "engineering_assumption",
+      "basis": "僅作等效牛頓圓管尺度比較；非真實 putty 的幾何律。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": null,
+      "range_kind": null,
+      "role": "active",
+      "scope": "R75_putty",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "putty_proxy.geometry_exponent_L",
+      "value": -1,
+      "unit": "1",
+      "evidence": "engineering_assumption",
+      "basis": "等效直管長度尺度比較。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": null,
+      "range_kind": null,
+      "role": "active",
+      "scope": "R75_putty",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "grease_proxy.constant_viscosity",
+      "value": 2500,
+      "unit": "Pa.s",
+      "evidence": "engineering_assumption",
+      "basis": "暫把單一測試黏度當等效常數；此用法未驗證。",
+      "source_refs": [
+        "G2500_TDS",
+        "USER"
+      ],
+      "sensitivity_range": [
+        625,
+        10000
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "active",
+      "scope": "R75_grease",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "grease_proxy.reference_rate",
+      "value": 0.061906507721617925,
+      "unit": "mL/s",
+      "evidence": "derived",
+      "basis": "虛擬等徑圓管的 Poiseuille 起算值；依上述未驗證常黏度。",
+      "source_refs": [
+        "USER",
+        "G2500_TDS"
+      ],
+      "sensitivity_range": null,
+      "range_kind": null,
+      "role": "derived_check_only",
+      "scope": "R75_grease",
+      "estimated_by": null,
+      "validated_against_hardware": false
+    },
+    {
+      "id": "r75.cartridge.nominal_volume",
+      "value": 75,
+      "unit": "mL",
+      "evidence": "published_typical",
+      "basis": "910 包材標稱容量。",
+      "source_refs": [
+        "L910_TDS"
+      ],
+      "sensitivity_range": null,
+      "range_kind": null,
+      "role": "inventory",
+      "scope": "R75",
+      "estimated_by": null,
+      "validated_against_hardware": false
+    },
+    {
+      "id": "r75.cartridge.initial_fill",
+      "value": 56,
+      "unit": "mL",
+      "evidence": "published_typical",
+      "basis": "910 TDS 裝填；grease 配置沿用時屬另行虛擬裝填。",
+      "source_refs": [
+        "L910_TDS"
+      ],
+      "sensitivity_range": null,
+      "range_kind": null,
+      "role": "inventory",
+      "scope": "R75_putty",
+      "estimated_by": null,
+      "validated_against_hardware": false
+    },
+    {
+      "id": "r75.grease.initial_fill",
+      "value": 56,
+      "unit": "mL",
+      "evidence": "engineering_assumption",
+      "basis": "為比較採相同虛擬裝填，不宣稱 grease 有此商品包裝。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": null,
+      "range_kind": null,
+      "role": "inventory",
+      "scope": "R75_grease",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "r75.cartridge.bore",
+      "value": 38,
+      "unit": "mm",
+      "evidence": "engineering_assumption",
+      "basis": "配合 75mL 和已知外形選的虛擬內徑，非 Laird 圖面。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        36,
+        40
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "geometry_only",
+      "scope": "R75",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "r75.cartridge.unusable_residual",
+      "value": 0.5,
+      "unit": "mL",
+      "evidence": "engineering_assumption",
+      "basis": "先留少量不可用殘量，便於耗量結算。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        0,
+        2
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "inventory",
+      "scope": "R75",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "r75.air.adapter_dead_volume",
+      "value": 5,
+      "unit": "mL",
+      "evidence": "engineering_assumption",
+      "basis": "虛擬氣帽/接頭死體積；首版不另外求解氣動壓縮。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        1,
+        15
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "geometry_only",
+      "scope": "R75",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "r75.air.hose_id",
+      "value": 4,
+      "unit": "mm",
+      "evidence": "engineering_assumption",
+      "basis": "虛擬氣管幾何，不是供應商配件。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        3,
+        6
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "geometry_only",
+      "scope": "R75",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "r75.air.hose_length",
+      "value": 1000,
+      "unit": "mm",
+      "evidence": "engineering_assumption",
+      "basis": "設備旁配置的設計起點，不是量產標準。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        500,
+        2000
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "geometry_only",
+      "scope": "R75",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "r75.dynamic.delay",
+      "value": 0.03,
+      "unit": "s",
+      "evidence": "engineering_assumption",
+      "basis": "可觀察起膠延遲的原型種子；無實機證據。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        0,
+        0.1
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "active",
+      "scope": "R75",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "r75.dynamic.tau_on",
+      "value": 0.15,
+      "unit": "s",
+      "evidence": "engineering_assumption",
+      "basis": "整條鏈的合併建立時間常數；不再疊加假氣室或閥動態。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        0.03,
+        0.5
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "active",
+      "scope": "R75",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "r75.dynamic.tau_off",
+      "value": 0.1,
+      "unit": "s",
+      "evidence": "engineering_assumption",
+      "basis": "整條鏈的合併停止時間常數；不等於實測停膠秒數。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        0.02,
+        0.4
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "active",
+      "scope": "R75",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "p300.cartridge.initial_fill",
+      "value": 300,
+      "unit": "mL",
+      "evidence": "published_typical",
+      "basis": "910 TDS 實際裝填。",
+      "source_refs": [
+        "L910_TDS"
+      ],
+      "sensitivity_range": null,
+      "range_kind": null,
+      "role": "inventory",
+      "scope": "P300_putty",
+      "estimated_by": null,
+      "validated_against_hardware": false
+    },
+    {
+      "id": "p300.grease.initial_fill",
+      "value": 300,
+      "unit": "mL",
+      "evidence": "engineering_assumption",
+      "basis": "虛擬 300mL 裝填；grease 與 DM-22 實機適用性未確認。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": null,
+      "range_kind": null,
+      "role": "inventory",
+      "scope": "P300_grease",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "p300.cartridge.od",
+      "value": 48.5,
+      "unit": "mm",
+      "evidence": "engineering_assumption",
+      "basis": "位於設備外徑配對區間內，非實物尺寸。",
+      "source_refs": [
+        "DM22",
+        "USER"
+      ],
+      "sensitivity_range": [
+        47,
+        50
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "geometry_only",
+      "scope": "P300",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "p300.cartridge.bore",
+      "value": 46,
+      "unit": "mm",
+      "evidence": "engineering_assumption",
+      "basis": "搭配外徑及容量的自洽虛擬尺寸。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        44,
+        47
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "geometry_only",
+      "scope": "P300",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "p300.cartridge.overall_length",
+      "value": 220,
+      "unit": "mm",
+      "evidence": "engineering_assumption",
+      "basis": "小於設備候選 <230mm 邊界，非包材圖面。",
+      "source_refs": [
+        "DM22",
+        "USER"
+      ],
+      "sensitivity_range": [
+        210,
+        225
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "geometry_only",
+      "scope": "P300",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "p300.cartridge.unusable_residual",
+      "value": 3,
+      "unit": "mL",
+      "evidence": "engineering_assumption",
+      "basis": "虛擬不可用殘量。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        0,
+        10
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "inventory",
+      "scope": "P300",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "p300.hose.id",
+      "value": 12.7,
+      "unit": "mm",
+      "evidence": "engineering_assumption",
+      "basis": "自訂 1/2in 內徑情境，不從 607 案例移植為 910 規格。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        9.5,
+        12.7
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "inventory_geometry",
+      "scope": "P300",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "p300.hose.length",
+      "value": 1000,
+      "unit": "mm",
+      "evidence": "engineering_assumption",
+      "basis": "自訂 1m 管路情境。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        500,
+        2000
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "inventory_geometry",
+      "scope": "P300",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "p300.hose.initially_primed",
+      "value": true,
+      "unit": "boolean",
+      "evidence": "engineering_assumption",
+      "basis": "起跑時管內已有材料；初始總存量須包含此部分，不能視為免費填管。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": null,
+      "range_kind": null,
+      "role": "inventory",
+      "scope": "P300",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "p300.adapter.wetted_dead_volume",
+      "value": 2,
+      "unit": "mL",
+      "evidence": "engineering_assumption",
+      "basis": "接頭、計量頭與其他未分解腔體的合併持膠量，不含已另計的軟管與針嘴；不是工程圖量測。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        0,
+        10
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "inventory",
+      "scope": "P300",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "p300.pcp.displacement",
+      "value": 0.3,
+      "unit": "mL/rev",
+      "evidence": "published_typical",
+      "basis": "25B192 排量；不是 Laird 升級頭已確認型號。",
+      "source_refs": [
+        "PCP"
+      ],
+      "sensitivity_range": null,
+      "range_kind": null,
+      "role": "active",
+      "scope": "all",
+      "estimated_by": null,
+      "validated_against_hardware": false
+    },
+    {
+      "id": "p300.pcp.speed",
+      "value": 60,
+      "unit": "rpm",
+      "evidence": "engineering_assumption",
+      "basis": "低於候選額定上限的簡單起點；不是材料商建議配方。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        20,
+        120
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "active",
+      "scope": "P300",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "p300.pcp.volumetric_efficiency",
+      "value": 1,
+      "unit": "1",
+      "evidence": "engineering_assumption",
+      "basis": "理想滿腔、無滑漏；不冒稱量測效率。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        0.7,
+        1
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "active",
+      "scope": "P300",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "p300.dynamic.delay",
+      "value": 0.02,
+      "unit": "s",
+      "evidence": "engineering_assumption",
+      "basis": "計量鏈合併延遲種子，無實機依據。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        0,
+        0.1
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "active",
+      "scope": "P300",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "p300.dynamic.tau_on",
+      "value": 0.08,
+      "unit": "s",
+      "evidence": "engineering_assumption",
+      "basis": "計量鏈合併建立時間常數種子。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        0.02,
+        0.3
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "active",
+      "scope": "P300",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "p300.dynamic.tau_off",
+      "value": 0.08,
+      "unit": "s",
+      "evidence": "engineering_assumption",
+      "basis": "第一版與建立時間常數共同設定為0.08s，使用單一守恆輸送響應，避免各自設定造成總體積不一致。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        0.02,
+        0.3
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "active",
+      "scope": "P300",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "p300.supply.air_pressure",
+      "value": 20,
+      "unit": "psi_gauge",
+      "evidence": "engineering_assumption",
+      "basis": "只作架構圖顯示情境，不據此計算實際供料能力。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        10,
+        30
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "display_only",
+      "scope": "P300",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "p300.supply.pressure_ratio",
+      "value": 22,
+      "unit": "1",
+      "evidence": "published_typical",
+      "basis": "DM-22 名義壓力比，乘積不是流動中實測壓力。",
+      "source_refs": [
+        "DM22"
+      ],
+      "sensitivity_range": null,
+      "range_kind": null,
+      "role": "display_only",
+      "scope": "P300",
+      "estimated_by": null,
+      "validated_against_hardware": false
+    },
+    {
+      "id": "p300.pcp.inlet_pressure",
+      "value": 90,
+      "unit": "psi_gauge",
+      "evidence": "engineering_assumption",
+      "basis": "入口顯示情境；不當已確認工作窗口，也不直接改變理想每轉量。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        70,
+        100
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "display_only",
+      "scope": "P300",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "motion.speed",
+      "value": 100,
+      "unit": "mm/s",
+      "evidence": "engineering_assumption",
+      "basis": "在參考平台量程內選擇便於觀察的速度。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        25,
+        150
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "active",
+      "scope": "all",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "motion.acceleration",
+      "value": 500,
+      "unit": "mm/s^2",
+      "evidence": "engineering_assumption",
+      "basis": "虛擬梯形速度曲線，不是 E3/C300 實測加速度。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        100,
+        1000
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "active",
+      "scope": "all",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "motion.standoff",
+      "value": 2,
+      "unit": "mm",
+      "evidence": "engineering_assumption",
+      "basis": "虛擬針距；首版作間隙檢查，不自動算擠壓與自由射流。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        0.5,
+        3
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "clearance_only",
+      "scope": "all",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "motion.lift_speed",
+      "value": 20,
+      "unit": "mm/s",
+      "evidence": "engineering_assumption",
+      "basis": "虛擬抬針速度；不據此預測拉絲。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        5,
+        50
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "kinematics_only",
+      "scope": "all",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "motion.lift_distance",
+      "value": 5,
+      "unit": "mm",
+      "evidence": "engineering_assumption",
+      "basis": "點膠後抬升距離。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        2,
+        10
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "kinematics_only",
+      "scope": "all",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "job.line_length",
+      "value": 100,
+      "unit": "mm",
+      "evidence": "engineering_assumption",
+      "basis": "基準直線，位於兩個平台候選工作包絡內。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        20,
+        150
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "active",
+      "scope": "all",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "job.point_gate_duration",
+      "value": 0.1,
+      "unit": "s",
+      "evidence": "engineering_assumption",
+      "basis": "泛用 timed-gate 原型事件，不仿真 Graco 自動 Shot 的 PLC 時序。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        0.05,
+        1
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "active",
+      "scope": "all",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "shape.line_height_to_width",
+      "value": 0.5,
+      "unit": "1",
+      "evidence": "engineering_assumption",
+      "basis": "半橢圓截面的幾何比例，非材料接觸角或保形量測。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        0.25,
+        0.75
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "geometric_illustration_only",
+      "scope": "all",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "shape.dot_height_to_width",
+      "value": 0.25,
+      "unit": "1",
+      "evidence": "engineering_assumption",
+      "basis": "球冠幾何比例，非材料/表面量測。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        0.1,
+        0.5
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "geometric_illustration_only",
+      "scope": "all",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "workpiece.width",
+      "value": 150,
+      "unit": "mm",
+      "evidence": "engineering_assumption",
+      "basis": "虛擬平板。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": null,
+      "range_kind": null,
+      "role": "geometry_only",
+      "scope": "all",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "workpiece.depth",
+      "value": 100,
+      "unit": "mm",
+      "evidence": "engineering_assumption",
+      "basis": "虛擬平板。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": null,
+      "range_kind": null,
+      "role": "geometry_only",
+      "scope": "all",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "numerics.initial_timestep",
+      "value": 0.001,
+      "unit": "s",
+      "evidence": "engineering_assumption",
+      "basis": "未實作求解器的起始步長規格；仍需步長收斂檢查。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        0.0005,
+        0.002
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "implementation_requirement",
+      "scope": "all",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "numerics.mass_balance_relative_tolerance",
+      "value": 0.001,
+      "unit": "1",
+      "evidence": "engineering_assumption",
+      "basis": "軟體數值質量平衡目標 0.1%，不是物理準確度。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": null,
+      "range_kind": null,
+      "role": "implementation_requirement",
+      "scope": "all",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "limits.x100_max_pressure",
+      "value": 100,
+      "unit": "psi",
+      "evidence": "published_limit",
+      "basis": "候選控制器額定上限，不代表整套配件相容。",
+      "source_refs": [
+        "X100"
+      ],
+      "sensitivity_range": null,
+      "range_kind": null,
+      "role": "reference_limit",
+      "scope": "all",
+      "estimated_by": null,
+      "validated_against_hardware": false
+    },
+    {
+      "id": "limits.pcp_max_rpm",
+      "value": 300,
+      "unit": "rpm",
+      "evidence": "published_limit",
+      "basis": "3A5364L 規格，不等於高填料實際可用上限。",
+      "source_refs": [
+        "PCP"
+      ],
+      "sensitivity_range": null,
+      "range_kind": null,
+      "role": "reference_limit",
+      "scope": "all",
+      "estimated_by": null,
+      "validated_against_hardware": false
+    },
+    {
+      "id": "limits.pcp_max_working_pressure",
+      "value": 290,
+      "unit": "psi",
+      "evidence": "published_limit",
+      "basis": "不是已確認入口上限。",
+      "source_refs": [
+        "PCP"
+      ],
+      "sensitivity_range": null,
+      "range_kind": null,
+      "role": "reference_limit",
+      "scope": "all",
+      "estimated_by": null,
+      "validated_against_hardware": false
+    },
+    {
+      "id": "common.nozzle.initially_primed",
+      "value": true,
+      "unit": "boolean",
+      "evidence": "engineering_assumption",
+      "basis": "初始針嘴已充膠，針嘴容積列入初始總存量；不從當次膠筒重複扣除。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": null,
+      "range_kind": null,
+      "role": "inventory",
+      "scope": "all",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    }
+  ],
+  "features": {
+    "temperature_dependence": {
+      "enabled": false,
+      "reason": "固定23°C，未填假溫度敏感係數"
+    },
+    "yield_and_thixotropy": {
+      "enabled": false,
+      "reason": "完整物性保持未知，改以等效流量與合併響應"
+    },
+    "wall_slip_and_friction_solver": {
+      "enabled": false,
+      "reason": "不與合併動態重複計入"
+    },
+    "hose_pressure_drop_and_starvation": {
+      "enabled": false,
+      "reason": "P300 先用滿腔理想計量，壓力只顯示"
+    },
+    "snuffback": {
+      "enabled": false,
+      "reason": "第一版無回吸；開啟需另定義守恆、負流量與吸氣"
+    },
+    "stringing_and_slump": {
+      "enabled": false,
+      "reason": "幾何示意不宣稱材料恢復或斷絲"
+    },
+    "compression_thermal_voids": {
+      "enabled": false,
+      "reason": "後續階段"
+    }
+  },
+  "profiles": [
+    {
+      "id": "R75_PUTTY_ASSUMED",
+      "material": "Tputty 910 參考資料＋工程預設",
+      "architecture": "R75",
+      "flow_method_candidate": "normalized_reference_flow",
+      "hardware_compatibility": "unconfirmed"
+    },
+    {
+      "id": "R75_GREASE_ASSUMED",
+      "material": "Tgrease-2500 參考資料＋常黏度近似",
+      "architecture": "R75",
+      "flow_method_candidate": "virtual_newtonian_capillary",
+      "hardware_compatibility": "unconfirmed"
+    },
+    {
+      "id": "P300_PUTTY_IDEAL",
+      "material": "Tputty 910 密度＋理想 PCP",
+      "architecture": "P300",
+      "flow_method_candidate": "ideal_positive_displacement",
+      "hardware_compatibility": "unconfirmed"
+    },
+    {
+      "id": "P300_GREASE_IDEAL",
+      "material": "Tgrease-2500 密度＋理想 PCP",
+      "architecture": "P300",
+      "flow_method_candidate": "ideal_positive_displacement",
+      "hardware_compatibility": "unconfirmed_grease_viscosity_application"
+    }
+  ]
+}
