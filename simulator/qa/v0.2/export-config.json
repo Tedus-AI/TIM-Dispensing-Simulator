@@ -1,0 +1,1850 @@
+{
+  "application": "TIM Dispensing Lab",
+  "version": "0.2.0",
+  "date": "2026-10-26T07:21:16.391Z",
+  "label": "工程假設／未經實機校準",
+  "validatedAgainstHardware": false,
+  "parameterRegistryVersion": "0.3",
+  "modelAssumptions": {
+    "flow": "delayed_first_order",
+    "lineGeometry": "shared_half_ellipse_rings_total_volume_normalized",
+    "spatialDeposition": "nozzle_width_longitudinal_triangle",
+    "pointGeometry": "spherical_cap",
+    "tailPolicy": "distance_shutoff_then_finish_motion_settle_before_lift",
+    "endRatioWarning": {
+      "low": 0.5,
+      "high": 1.5,
+      "evidence": "engineering_assumption_not_acceptance_limits"
+    },
+    "surface": "horizontal_reference_plane",
+    "primed": "fixed_inventory_not_drained"
+  },
+  "config": {
+    "material": "putty",
+    "architecture": "R75",
+    "profile": "R75_PUTTY_ASSUMED",
+    "density": 3.2,
+    "viscosity": 2500,
+    "pressure": 90,
+    "referencePressure": 90,
+    "referenceRate": 0.390625,
+    "pressureExponent": 1,
+    "diameter": 3.175,
+    "nozzleLength": 10,
+    "referenceDiameter": 3.175,
+    "referenceLength": 10,
+    "rpm": 60,
+    "displacement": 0.3,
+    "efficiency": 1,
+    "delay": 0.03,
+    "tauOn": 0.15,
+    "tauOff": 0.1,
+    "fill": 56,
+    "residual": 0.5,
+    "hoseId": 12.7,
+    "hoseLength": 1000,
+    "deadVolume": 2,
+    "speed": 100,
+    "acceleration": 500,
+    "standoff": 2,
+    "liftSpeed": 20,
+    "liftDistance": 5,
+    "mode": "line",
+    "lineLength": 100,
+    "gateDuration": 0.1,
+    "shutoffDistance": 10,
+    "lineRatio": 0.5,
+    "dotRatio": 0.25,
+    "width": 150,
+    "depth": 100,
+    "thickness": 5,
+    "fixtureHeight": 8,
+    "surfaceZ": 13,
+    "offsetX": 0,
+    "offsetY": 0,
+    "timestep": 0.001,
+    "cellSize": 0.5,
+    "workpieceKind": "plate",
+    "workpieceFile": null
+  },
+  "referenceParameters": [
+    {
+      "id": "material.putty.density",
+      "value": 3.2,
+      "unit": "g/mL",
+      "evidence": "published_typical",
+      "basis": "TDS 典型值；不是此批膠實測。",
+      "source_refs": [
+        "L910_TDS"
+      ],
+      "sensitivity_range": null,
+      "range_kind": null,
+      "role": "active",
+      "scope": "all",
+      "estimated_by": null,
+      "validated_against_hardware": false
+    },
+    {
+      "id": "material.grease.density",
+      "value": 3.4,
+      "unit": "g/mL",
+      "evidence": "published_typical",
+      "basis": "TDS 典型值。",
+      "source_refs": [
+        "G2500_TDS"
+      ],
+      "sensitivity_range": null,
+      "range_kind": null,
+      "role": "active",
+      "scope": "all",
+      "estimated_by": null,
+      "validated_against_hardware": false
+    },
+    {
+      "id": "material.grease.viscosity_reference",
+      "value": 2500,
+      "unit": "Pa.s",
+      "evidence": "derived",
+      "basis": "2500000 cP /1000；23°C、TF spindle、2rpm、Helipath。",
+      "source_refs": [
+        "G2500_TDS"
+      ],
+      "sensitivity_range": null,
+      "range_kind": null,
+      "role": "active",
+      "scope": "all",
+      "estimated_by": null,
+      "validated_against_hardware": false
+    },
+    {
+      "id": "reference.putty.mass_rate",
+      "value": 75,
+      "unit": "g/min",
+      "evidence": "published_typical",
+      "basis": "75cc taper tip、90psi；完整幾何及溫度未知。",
+      "source_refs": [
+        "L910_TDS"
+      ],
+      "sensitivity_range": null,
+      "range_kind": null,
+      "role": "reference_only",
+      "scope": "all",
+      "estimated_by": null,
+      "validated_against_hardware": false
+    },
+    {
+      "id": "reference.putty.pressure",
+      "value": 90,
+      "unit": "psi",
+      "evidence": "published_typical",
+      "basis": "原測試值；壓力位置與表壓/絕壓待確認。",
+      "source_refs": [
+        "L910_TDS"
+      ],
+      "sensitivity_range": null,
+      "range_kind": null,
+      "role": "reference_only",
+      "scope": "all",
+      "estimated_by": null,
+      "validated_against_hardware": false
+    },
+    {
+      "id": "reference.putty.volume_rate",
+      "value": 0.390625,
+      "unit": "mL/s",
+      "evidence": "derived",
+      "basis": "75/3.2/60；不是新實測。",
+      "source_refs": [
+        "L910_TDS"
+      ],
+      "sensitivity_range": null,
+      "range_kind": null,
+      "role": "reference_only",
+      "scope": "all",
+      "estimated_by": null,
+      "validated_against_hardware": false
+    },
+    {
+      "id": "scenario.temperature",
+      "value": 23,
+      "unit": "degC",
+      "evidence": "engineering_assumption",
+      "basis": "固定等溫開發基準；不宣稱是 910 原流率試驗溫度。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        23,
+        23
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "active",
+      "scope": "all",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "scenario.pressure",
+      "value": 90,
+      "unit": "psi_gauge",
+      "evidence": "engineering_assumption",
+      "basis": "虛擬氣壓式基準，明確選表壓；不作實機操作建議。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        30,
+        90
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "active",
+      "scope": "R75",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "scenario.reference_pressure",
+      "value": 90,
+      "unit": "psi_gauge",
+      "evidence": "engineering_assumption",
+      "basis": "將 TDS 未完整交代的壓力映射到虛擬模型；映射本身是假設。",
+      "source_refs": [
+        "L910_TDS",
+        "USER"
+      ],
+      "sensitivity_range": null,
+      "range_kind": null,
+      "role": "active",
+      "scope": "R75",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "virtual_nozzle.id",
+      "value": 3.175,
+      "unit": "mm",
+      "evidence": "engineering_assumption",
+      "basis": "借用指南 0.125in 尺度，虛擬等徑圓管；非原測試針嘴。",
+      "source_refs": [
+        "L910_GUIDE",
+        "USER"
+      ],
+      "sensitivity_range": [
+        2,
+        4
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "active",
+      "scope": "all",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "virtual_nozzle.length",
+      "value": 10,
+      "unit": "mm",
+      "evidence": "engineering_assumption",
+      "basis": "定義虛擬有效直管長 10mm，不由 7018555 總長反推。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        5,
+        20
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "active",
+      "scope": "all",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "virtual_nozzle.reference_id",
+      "value": 3.175,
+      "unit": "mm",
+      "evidence": "engineering_assumption",
+      "basis": "固定正規化幾何；換現用針嘴時不能一併改此基準。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": null,
+      "range_kind": null,
+      "role": "active",
+      "scope": "all",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "virtual_nozzle.reference_length",
+      "value": 10,
+      "unit": "mm",
+      "evidence": "engineering_assumption",
+      "basis": "固定正規化幾何。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": null,
+      "range_kind": null,
+      "role": "active",
+      "scope": "all",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "putty_proxy.reference_rate",
+      "value": 0.390625,
+      "unit": "mL/s",
+      "evidence": "engineering_assumption",
+      "basis": "將 TDS 參考量映射到虛擬基準；非該幾何實測。",
+      "source_refs": [
+        "L910_TDS",
+        "USER"
+      ],
+      "sensitivity_range": [
+        0.1953125,
+        0.78125
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "active",
+      "scope": "R75_putty",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "putty_proxy.pressure_exponent",
+      "value": 1,
+      "unit": "1",
+      "evidence": "engineering_assumption",
+      "basis": "中性的線性壓力起點，不是 HB 的流動指數。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        0.7,
+        2
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "active",
+      "scope": "R75_putty",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "putty_proxy.geometry_exponent_d",
+      "value": 4,
+      "unit": "1",
+      "evidence": "engineering_assumption",
+      "basis": "僅作等效牛頓圓管尺度比較；非真實 putty 的幾何律。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": null,
+      "range_kind": null,
+      "role": "active",
+      "scope": "R75_putty",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "putty_proxy.geometry_exponent_L",
+      "value": -1,
+      "unit": "1",
+      "evidence": "engineering_assumption",
+      "basis": "等效直管長度尺度比較。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": null,
+      "range_kind": null,
+      "role": "active",
+      "scope": "R75_putty",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "grease_proxy.constant_viscosity",
+      "value": 2500,
+      "unit": "Pa.s",
+      "evidence": "engineering_assumption",
+      "basis": "暫把單一測試黏度當等效常數；此用法未驗證。",
+      "source_refs": [
+        "G2500_TDS",
+        "USER"
+      ],
+      "sensitivity_range": [
+        625,
+        10000
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "active",
+      "scope": "R75_grease",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "grease_proxy.reference_rate",
+      "value": 0.061906507721617925,
+      "unit": "mL/s",
+      "evidence": "derived",
+      "basis": "虛擬等徑圓管的 Poiseuille 起算值；依上述未驗證常黏度。",
+      "source_refs": [
+        "USER",
+        "G2500_TDS"
+      ],
+      "sensitivity_range": null,
+      "range_kind": null,
+      "role": "derived_check_only",
+      "scope": "R75_grease",
+      "estimated_by": null,
+      "validated_against_hardware": false
+    },
+    {
+      "id": "r75.cartridge.nominal_volume",
+      "value": 75,
+      "unit": "mL",
+      "evidence": "published_typical",
+      "basis": "910 包材標稱容量。",
+      "source_refs": [
+        "L910_TDS"
+      ],
+      "sensitivity_range": null,
+      "range_kind": null,
+      "role": "inventory",
+      "scope": "R75",
+      "estimated_by": null,
+      "validated_against_hardware": false
+    },
+    {
+      "id": "r75.cartridge.initial_fill",
+      "value": 56,
+      "unit": "mL",
+      "evidence": "published_typical",
+      "basis": "910 TDS 裝填；grease 配置沿用時屬另行虛擬裝填。",
+      "source_refs": [
+        "L910_TDS"
+      ],
+      "sensitivity_range": null,
+      "range_kind": null,
+      "role": "inventory",
+      "scope": "R75_putty",
+      "estimated_by": null,
+      "validated_against_hardware": false
+    },
+    {
+      "id": "r75.grease.initial_fill",
+      "value": 56,
+      "unit": "mL",
+      "evidence": "engineering_assumption",
+      "basis": "為比較採相同虛擬裝填，不宣稱 grease 有此商品包裝。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": null,
+      "range_kind": null,
+      "role": "inventory",
+      "scope": "R75_grease",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "r75.cartridge.bore",
+      "value": 38,
+      "unit": "mm",
+      "evidence": "engineering_assumption",
+      "basis": "配合 75mL 和已知外形選的虛擬內徑，非 Laird 圖面。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        36,
+        40
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "geometry_only",
+      "scope": "R75",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "r75.cartridge.unusable_residual",
+      "value": 0.5,
+      "unit": "mL",
+      "evidence": "engineering_assumption",
+      "basis": "先留少量不可用殘量，便於耗量結算。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        0,
+        2
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "inventory",
+      "scope": "R75",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "r75.air.adapter_dead_volume",
+      "value": 5,
+      "unit": "mL",
+      "evidence": "engineering_assumption",
+      "basis": "虛擬氣帽/接頭死體積；首版不另外求解氣動壓縮。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        1,
+        15
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "geometry_only",
+      "scope": "R75",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "r75.air.hose_id",
+      "value": 4,
+      "unit": "mm",
+      "evidence": "engineering_assumption",
+      "basis": "虛擬氣管幾何，不是供應商配件。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        3,
+        6
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "geometry_only",
+      "scope": "R75",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "r75.air.hose_length",
+      "value": 1000,
+      "unit": "mm",
+      "evidence": "engineering_assumption",
+      "basis": "設備旁配置的設計起點，不是量產標準。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        500,
+        2000
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "geometry_only",
+      "scope": "R75",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "r75.dynamic.delay",
+      "value": 0.03,
+      "unit": "s",
+      "evidence": "engineering_assumption",
+      "basis": "可觀察起膠延遲的原型種子；無實機證據。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        0,
+        0.1
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "active",
+      "scope": "R75",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "r75.dynamic.tau_on",
+      "value": 0.15,
+      "unit": "s",
+      "evidence": "engineering_assumption",
+      "basis": "整條鏈的合併建立時間常數；不再疊加假氣室或閥動態。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        0.03,
+        0.5
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "active",
+      "scope": "R75",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "r75.dynamic.tau_off",
+      "value": 0.1,
+      "unit": "s",
+      "evidence": "engineering_assumption",
+      "basis": "整條鏈的合併停止時間常數；不等於實測停膠秒數。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        0.02,
+        0.4
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "active",
+      "scope": "R75",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "p300.cartridge.initial_fill",
+      "value": 300,
+      "unit": "mL",
+      "evidence": "published_typical",
+      "basis": "910 TDS 實際裝填。",
+      "source_refs": [
+        "L910_TDS"
+      ],
+      "sensitivity_range": null,
+      "range_kind": null,
+      "role": "inventory",
+      "scope": "P300_putty",
+      "estimated_by": null,
+      "validated_against_hardware": false
+    },
+    {
+      "id": "p300.grease.initial_fill",
+      "value": 300,
+      "unit": "mL",
+      "evidence": "engineering_assumption",
+      "basis": "虛擬 300mL 裝填；grease 與 DM-22 實機適用性未確認。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": null,
+      "range_kind": null,
+      "role": "inventory",
+      "scope": "P300_grease",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "p300.cartridge.od",
+      "value": 48.5,
+      "unit": "mm",
+      "evidence": "engineering_assumption",
+      "basis": "位於設備外徑配對區間內，非實物尺寸。",
+      "source_refs": [
+        "DM22",
+        "USER"
+      ],
+      "sensitivity_range": [
+        47,
+        50
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "geometry_only",
+      "scope": "P300",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "p300.cartridge.bore",
+      "value": 46,
+      "unit": "mm",
+      "evidence": "engineering_assumption",
+      "basis": "搭配外徑及容量的自洽虛擬尺寸。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        44,
+        47
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "geometry_only",
+      "scope": "P300",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "p300.cartridge.overall_length",
+      "value": 220,
+      "unit": "mm",
+      "evidence": "engineering_assumption",
+      "basis": "小於設備候選 <230mm 邊界，非包材圖面。",
+      "source_refs": [
+        "DM22",
+        "USER"
+      ],
+      "sensitivity_range": [
+        210,
+        225
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "geometry_only",
+      "scope": "P300",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "p300.cartridge.unusable_residual",
+      "value": 3,
+      "unit": "mL",
+      "evidence": "engineering_assumption",
+      "basis": "虛擬不可用殘量。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        0,
+        10
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "inventory",
+      "scope": "P300",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "p300.hose.id",
+      "value": 12.7,
+      "unit": "mm",
+      "evidence": "engineering_assumption",
+      "basis": "自訂 1/2in 內徑情境，不從 607 案例移植為 910 規格。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        9.5,
+        12.7
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "inventory_geometry",
+      "scope": "P300",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "p300.hose.length",
+      "value": 1000,
+      "unit": "mm",
+      "evidence": "engineering_assumption",
+      "basis": "自訂 1m 管路情境。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        500,
+        2000
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "inventory_geometry",
+      "scope": "P300",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "p300.hose.initially_primed",
+      "value": true,
+      "unit": "boolean",
+      "evidence": "engineering_assumption",
+      "basis": "起跑時管內已有材料；初始總存量須包含此部分，不能視為免費填管。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": null,
+      "range_kind": null,
+      "role": "inventory",
+      "scope": "P300",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "p300.adapter.wetted_dead_volume",
+      "value": 2,
+      "unit": "mL",
+      "evidence": "engineering_assumption",
+      "basis": "接頭、計量頭與其他未分解腔體的合併持膠量，不含已另計的軟管與針嘴；不是工程圖量測。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        0,
+        10
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "inventory",
+      "scope": "P300",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "p300.pcp.displacement",
+      "value": 0.3,
+      "unit": "mL/rev",
+      "evidence": "published_typical",
+      "basis": "25B192 排量；不是 Laird 升級頭已確認型號。",
+      "source_refs": [
+        "PCP"
+      ],
+      "sensitivity_range": null,
+      "range_kind": null,
+      "role": "active",
+      "scope": "all",
+      "estimated_by": null,
+      "validated_against_hardware": false
+    },
+    {
+      "id": "p300.pcp.speed",
+      "value": 60,
+      "unit": "rpm",
+      "evidence": "engineering_assumption",
+      "basis": "低於候選額定上限的簡單起點；不是材料商建議配方。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        20,
+        120
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "active",
+      "scope": "P300",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "p300.pcp.volumetric_efficiency",
+      "value": 1,
+      "unit": "1",
+      "evidence": "engineering_assumption",
+      "basis": "理想滿腔、無滑漏；不冒稱量測效率。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        0.7,
+        1
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "active",
+      "scope": "P300",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "p300.dynamic.delay",
+      "value": 0.02,
+      "unit": "s",
+      "evidence": "engineering_assumption",
+      "basis": "計量鏈合併延遲種子，無實機依據。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        0,
+        0.1
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "active",
+      "scope": "P300",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "p300.dynamic.tau_on",
+      "value": 0.08,
+      "unit": "s",
+      "evidence": "engineering_assumption",
+      "basis": "計量鏈合併建立時間常數種子。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        0.02,
+        0.3
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "active",
+      "scope": "P300",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "p300.dynamic.tau_off",
+      "value": 0.08,
+      "unit": "s",
+      "evidence": "engineering_assumption",
+      "basis": "第一版與建立時間常數共同設定為0.08s，使用單一守恆輸送響應，避免各自設定造成總體積不一致。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        0.02,
+        0.3
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "active",
+      "scope": "P300",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "p300.supply.air_pressure",
+      "value": 20,
+      "unit": "psi_gauge",
+      "evidence": "engineering_assumption",
+      "basis": "只作架構圖顯示情境，不據此計算實際供料能力。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        10,
+        30
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "display_only",
+      "scope": "P300",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "p300.supply.pressure_ratio",
+      "value": 22,
+      "unit": "1",
+      "evidence": "published_typical",
+      "basis": "DM-22 名義壓力比，乘積不是流動中實測壓力。",
+      "source_refs": [
+        "DM22"
+      ],
+      "sensitivity_range": null,
+      "range_kind": null,
+      "role": "display_only",
+      "scope": "P300",
+      "estimated_by": null,
+      "validated_against_hardware": false
+    },
+    {
+      "id": "p300.pcp.inlet_pressure",
+      "value": 90,
+      "unit": "psi_gauge",
+      "evidence": "engineering_assumption",
+      "basis": "入口顯示情境；不當已確認工作窗口，也不直接改變理想每轉量。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        70,
+        100
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "display_only",
+      "scope": "P300",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "motion.speed",
+      "value": 100,
+      "unit": "mm/s",
+      "evidence": "engineering_assumption",
+      "basis": "在參考平台量程內選擇便於觀察的速度。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        25,
+        150
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "active",
+      "scope": "all",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "motion.acceleration",
+      "value": 500,
+      "unit": "mm/s^2",
+      "evidence": "engineering_assumption",
+      "basis": "虛擬梯形速度曲線，不是 E3/C300 實測加速度。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        100,
+        1000
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "active",
+      "scope": "all",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "motion.standoff",
+      "value": 2,
+      "unit": "mm",
+      "evidence": "engineering_assumption",
+      "basis": "虛擬針距；首版作間隙檢查，不自動算擠壓與自由射流。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        0.5,
+        3
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "clearance_only",
+      "scope": "all",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "motion.lift_speed",
+      "value": 20,
+      "unit": "mm/s",
+      "evidence": "engineering_assumption",
+      "basis": "虛擬抬針速度；不據此預測拉絲。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        5,
+        50
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "kinematics_only",
+      "scope": "all",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "motion.lift_distance",
+      "value": 5,
+      "unit": "mm",
+      "evidence": "engineering_assumption",
+      "basis": "點膠後抬升距離。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        2,
+        10
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "kinematics_only",
+      "scope": "all",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "job.line_length",
+      "value": 100,
+      "unit": "mm",
+      "evidence": "engineering_assumption",
+      "basis": "基準直線，位於兩個平台候選工作包絡內。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        20,
+        150
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "active",
+      "scope": "all",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "job.point_gate_duration",
+      "value": 0.1,
+      "unit": "s",
+      "evidence": "engineering_assumption",
+      "basis": "泛用 timed-gate 原型事件，不仿真 Graco 自動 Shot 的 PLC 時序。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        0.05,
+        1
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "active",
+      "scope": "all",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "shape.line_height_to_width",
+      "value": 0.5,
+      "unit": "1",
+      "evidence": "engineering_assumption",
+      "basis": "半橢圓截面的幾何比例，非材料接觸角或保形量測。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        0.25,
+        0.75
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "geometric_illustration_only",
+      "scope": "all",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "shape.dot_height_to_width",
+      "value": 0.25,
+      "unit": "1",
+      "evidence": "engineering_assumption",
+      "basis": "球冠幾何比例，非材料/表面量測。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        0.1,
+        0.5
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "geometric_illustration_only",
+      "scope": "all",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "workpiece.width",
+      "value": 150,
+      "unit": "mm",
+      "evidence": "engineering_assumption",
+      "basis": "虛擬平板。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": null,
+      "range_kind": null,
+      "role": "geometry_only",
+      "scope": "all",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "workpiece.depth",
+      "value": 100,
+      "unit": "mm",
+      "evidence": "engineering_assumption",
+      "basis": "虛擬平板。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": null,
+      "range_kind": null,
+      "role": "geometry_only",
+      "scope": "all",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "numerics.initial_timestep",
+      "value": 0.001,
+      "unit": "s",
+      "evidence": "engineering_assumption",
+      "basis": "未實作求解器的起始步長規格；仍需步長收斂檢查。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": [
+        0.0005,
+        0.002
+      ],
+      "range_kind": "engineering_scenarios_not_confidence_interval",
+      "role": "implementation_requirement",
+      "scope": "all",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "numerics.mass_balance_relative_tolerance",
+      "value": 0.001,
+      "unit": "1",
+      "evidence": "engineering_assumption",
+      "basis": "軟體數值質量平衡目標 0.1%，不是物理準確度。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": null,
+      "range_kind": null,
+      "role": "implementation_requirement",
+      "scope": "all",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    },
+    {
+      "id": "limits.x100_max_pressure",
+      "value": 100,
+      "unit": "psi",
+      "evidence": "published_limit",
+      "basis": "候選控制器額定上限，不代表整套配件相容。",
+      "source_refs": [
+        "X100"
+      ],
+      "sensitivity_range": null,
+      "range_kind": null,
+      "role": "reference_limit",
+      "scope": "all",
+      "estimated_by": null,
+      "validated_against_hardware": false
+    },
+    {
+      "id": "limits.pcp_max_rpm",
+      "value": 300,
+      "unit": "rpm",
+      "evidence": "published_limit",
+      "basis": "3A5364L 規格，不等於高填料實際可用上限。",
+      "source_refs": [
+        "PCP"
+      ],
+      "sensitivity_range": null,
+      "range_kind": null,
+      "role": "reference_limit",
+      "scope": "all",
+      "estimated_by": null,
+      "validated_against_hardware": false
+    },
+    {
+      "id": "limits.pcp_max_working_pressure",
+      "value": 290,
+      "unit": "psi",
+      "evidence": "published_limit",
+      "basis": "不是已確認入口上限。",
+      "source_refs": [
+        "PCP"
+      ],
+      "sensitivity_range": null,
+      "range_kind": null,
+      "role": "reference_limit",
+      "scope": "all",
+      "estimated_by": null,
+      "validated_against_hardware": false
+    },
+    {
+      "id": "common.nozzle.initially_primed",
+      "value": true,
+      "unit": "boolean",
+      "evidence": "engineering_assumption",
+      "basis": "初始針嘴已充膠，針嘴容積列入初始總存量；不從當次膠筒重複扣除。",
+      "source_refs": [
+        "USER"
+      ],
+      "sensitivity_range": null,
+      "range_kind": null,
+      "role": "inventory",
+      "scope": "all",
+      "estimated_by": "assistant",
+      "validated_against_hardware": false
+    }
+  ],
+  "additionalDefaults": [
+    {
+      "id": "ending.shutoff_distance",
+      "value": 10,
+      "unit": "mm",
+      "evidence": "engineering_assumption",
+      "basis": "AI 初始比較值：預設 100 mm 路徑、100 mm/s、500 mm/s² 對應提前 200 ms 關膠。不是原廠配方；速度或路徑改變後提前時間也會改變。",
+      "source_refs": [
+        "16_收尾積膠原因與影片比對.md"
+      ]
+    }
+  ],
+  "sources": {
+    "L910_TDS": {
+      "url": "https://www.laird.com/sites/default/files/2025-05/THR-DS-Tputty%20910%20RevC.pdf",
+      "local": "sources/Laird/Tputty910_TDS_20250422_RevC.pdf",
+      "version": "2025-04-22 Rev C"
+    },
+    "G2500_TDS": {
+      "url": "https://www.laird.com/sites/default/files/2025-07/MKT-DOC-1592%20Tgrease%202500%20Data%20Sheet%2006272025.pdf",
+      "local": "sources/Laird/Tgrease2500_TDS_20250627.pdf",
+      "version": "2025-06-27"
+    },
+    "L910_GUIDE": {
+      "url": "https://www.laird.com/sites/default/files/2024-06/A18720-00%20RevA%20Tputty%20910%20%20Dispensing%20Guideline.pdf",
+      "local": "sources/Laird/Tputty910_Dispensing_Guideline_RevA.pdf",
+      "page": 5
+    },
+    "DM22": {
+      "local": "sources/Equipment/Graco_DM22_Manual_3A7931EN_D.pdf",
+      "version": "3A7931D",
+      "page": 26
+    },
+    "PCP": {
+      "local": "sources/Equipment/Graco_PCP_Repair_3A5364EN_L.pdf",
+      "version": "3A5364L",
+      "page": 40
+    },
+    "X100": {
+      "local": "sources/Equipment/Nordson_PerformusX_TDS_v110624.pdf"
+    },
+    "USER": {
+      "description": "2026-10-24 使用者授權：未獲廠商回覆也可先建立有註記的工程預設；本次停在模擬器開發之前。"
+    },
+    "METHOD": {
+      "url": "https://doc.comsol.com/6.3/doc/com.comsol.help.cfd/cfd_ug_fluidflow_single.06.082.html",
+      "description": "用於說明完整非牛頓物性需要額外參數；未拿其軟體預設充當 TIM 物性。"
+    }
+  },
+  "warnings": [
+    "簡化膠形高於針距，可能干涉；尚未計算壓扁或拉絲。"
+  ],
+  "summary": {
+    "t": 4.28,
+    "q": 2.996652079876835e-15,
+    "target": 0,
+    "command": 0,
+    "output": 0.37111860612893216,
+    "mass": 1.187579539612583,
+    "metered": 0.37111860612893216,
+    "pending": 0,
+    "remaining": 55.62888139387107,
+    "fixed": 0.07917304360898401,
+    "initial": 56.07917304360898,
+    "x": 50,
+    "y": 0,
+    "z": 20,
+    "speed": 0,
+    "phase": "完成",
+    "balance": 0,
+    "deposits": [
+      5.167780995725657e-9,
+      0.000030096684240079477,
+      0.00016220393341467076,
+      0.00042220518639796454,
+      0.00078348928553406,
+      0.001102049992671119,
+      0.0013144925516274854,
+      0.0014080618503096764,
+      0.0014434017582095433,
+      0.0014568155069512299,
+      0.001459438458379451,
+      0.0014557912249929764,
+      0.001448751535184104,
+      0.0014397500035619982,
+      0.0014285594683507853,
+      0.0014170914203313176,
+      0.001404326297134519,
+      0.0013919981177177893,
+      0.0013792755083889385,
+      0.0013671356406085512,
+      0.0013542612134512192,
+      0.0013430507588099824,
+      0.0013370871474184193,
+      0.0013389234029700424,
+      0.0013493352388418134,
+      0.0013652872630493277,
+      0.0013837776048788945,
+      0.0014021814089957897,
+      0.0014199837662240877,
+      0.001437204331874064,
+      0.0014538621189259587,
+      0.0014699755190208633,
+      0.0014855623227656395,
+      0.0015006397393743057,
+      0.0015152244156675645,
+      0.001529332454451438,
+      0.0015429794322953285,
+      0.0015561804167290914,
+      0.0015689499828781426,
+      0.0015813022295549381,
+      0.0015932507948246064,
+      0.0016048088710619072,
+      0.001615989219516153,
+      0.0016268041844001613,
+      0.0016372657065187811,
+      0.0016473853364520682,
+      0.0016571742473076422,
+      0.001666643247056303,
+      0.0016758027904645394,
+      0.0016846629906370877,
+      0.0016932336301822908,
+      0.0017015241720125893,
+      0.001709543769792053,
+      0.0017173012780425036,
+      0.0017248052619193686,
+      0.001732064006668078,
+      0.001739085526771423,
+      0.001745877574798003,
+      0.00175244764996149,
+      0.0017588030064002059,
+      0.0017649506611861056,
+      0.0017708974020720536,
+      0.0017766497949859086,
+      0.0017822141912797191,
+      0.0017876878312794461,
+      0.001792998857749019,
+      0.001798120221231338,
+      0.0018030462496606535,
+      0.001807785672536937,
+      0.0018123571797990252,
+      0.0018167957093889874,
+      0.0018211332645592683,
+      0.0018252076262727983,
+      0.0018291628248897893,
+      0.0018330125663579221,
+      0.0018367291112631138,
+      0.0018402985796448204,
+      0.0018437166223911217,
+      0.001846996184971112,
+      0.0018501522655552931,
+      0.0018533016939318442,
+      0.0018563610321602592,
+      0.0018593203895690446,
+      0.0018621830334763505,
+      0.0018649521244257753,
+      0.001867630719675642,
+      0.0018702217765742832,
+      0.001872728155825014,
+      0.0018751526246444125,
+      0.0018774978598173878,
+      0.0018797664506524131,
+      0.0018819609018401924,
+      0.0018840836362189004,
+      0.0018861369974490585,
+      0.0018881232526010065,
+      0.0018900445946578165,
+      0.001891903144936414,
+      0.0018937009554295732,
+      0.0018954400110713864,
+      0.0018971222319286909,
+      0.0018987494753209006,
+      0.0019003235378705421,
+      0.0019018461574868096,
+      0.001903319015284257,
+      0.001904743737438833,
+      0.0019061218969832355,
+      0.001907455015543607,
+      0.0019087445650194702,
+      0.0019099919692087686,
+      0.0019111986053798069,
+      0.0019123658057918157,
+      0.0019134948591658283,
+      0.0019145870121074773,
+      0.0019156434704833214,
+      0.0019166654007521735,
+      0.0019176539312529323,
+      0.0019186101534503248,
+      0.0019195351231399461,
+      0.001920429861613909,
+      0.0019212953567884043,
+      0.0019221325642944124,
+      0.0019229424085327798,
+      0.0019237257836948096,
+      0.0019244835547494944,
+      0.0019252165583985073,
+      0.0019259256039999533,
+      0.0019266114744619619,
+      0.001927288843482182,
+      0.0019280499257590773,
+      0.00192877690857979,
+      0.0019294585972993903,
+      0.0019300860038045202,
+      0.0019306683924895213,
+      0.001931225270889538,
+      0.00193179111872235,
+      0.0019323568145959782,
+      0.0019327745700145292,
+      0.0019332218156046408,
+      0.0019336703803739463,
+      0.0019340888920866871,
+      0.0019344632588887544,
+      0.0019347901523005025,
+      0.00193508192267177,
+      0.001935374154793934,
+      0.0019357513026164366,
+      0.0019361161246971969,
+      0.0019364690237865848,
+      0.001936810389473268,
+      0.0019371405986143148,
+      0.0019374600157512504,
+      0.0019377689935125256,
+      0.0019380678730028268,
+      0.0019383569841796566,
+      0.0019386366462176385,
+      0.0019389071678608586,
+      0.001939168847763738,
+      0.00193942197482077,
+      0.0019396668284854428,
+      0.0019399036790787986,
+      0.0019401327880878296,
+      0.0019403544084542232,
+      0.0019405687848535543,
+      0.001940776153965479,
+      0.001940976744734978,
+      0.0019411707786251835,
+      0.0019413584698618194,
+      0.0019415400256697663,
+      0.001941715646501787,
+      0.0019418855262599015,
+      0.0019420498525094094,
+      0.0019422088066860046,
+      0.0019423625642960712,
+      0.001942511295110439,
+      0.001942655163351855,
+      0.0019427943278762445,
+      0.001942928942348144,
+      0.001943059155410307,
+      0.0019431851108478546,
+      0.0019433069477470045,
+      0.0019434248006486158,
+      0.001943538799696741,
+      0.0019444467377870392,
+      0.0019501729066122868,
+      0.0019655336976713927,
+      0.0019957333323839016,
+      0.0020406248264810915,
+      0.0020973675081909647,
+      0.0021562179508887985,
+      0.0022013429223394494,
+      0.002221402240356044,
+      0.0022082365500568145,
+      0.002173219178667454,
+      0.0021268684907125262,
+      0.0020823968174110002,
+      0.002040763120904751,
+      0.002004450510135342,
+      0.001975054078302884,
+      0.0019545024402419717,
+      0.0019479507052611452,
+      0.0019655720652427887,
+      0.002042529064969557,
+      0.0028165335910569906,
+      0.003474433524482,
+      0.0038547695967404492,
+      0.0028559485298471285,
+      0.0015333572551850512,
+      0.0004359889943161185
+    ],
+    "maxHeight": 2.1666571314392087,
+    "ending": {
+      "movementEnd": 1.2000000000000002,
+      "commandOff": 1.0000000000000002,
+      "effectiveShutoffDistance": 10,
+      "leadTime": 0.19999999999999996,
+      "afterStopVolume": 0.007126993547854288,
+      "afterStopPercent": 1.9204085783234115,
+      "endWindowMm": 5,
+      "endToMiddleRatio": 1.2494377544721926
+    }
+  },
+  "baseline": {
+    "config": {
+      "material": "putty",
+      "architecture": "R75",
+      "profile": "R75_PUTTY_ASSUMED",
+      "density": 3.2,
+      "viscosity": 2500,
+      "pressure": 90,
+      "referencePressure": 90,
+      "referenceRate": 0.390625,
+      "pressureExponent": 1,
+      "diameter": 3.175,
+      "nozzleLength": 10,
+      "referenceDiameter": 3.175,
+      "referenceLength": 10,
+      "rpm": 60,
+      "displacement": 0.3,
+      "efficiency": 1,
+      "delay": 0.03,
+      "tauOn": 0.15,
+      "tauOff": 0.1,
+      "fill": 56,
+      "residual": 0.5,
+      "hoseId": 12.7,
+      "hoseLength": 1000,
+      "deadVolume": 2,
+      "speed": 100,
+      "acceleration": 500,
+      "standoff": 2,
+      "liftSpeed": 20,
+      "liftDistance": 5,
+      "mode": "line",
+      "lineLength": 100,
+      "gateDuration": 0.1,
+      "shutoffDistance": 0,
+      "lineRatio": 0.5,
+      "dotRatio": 0.25,
+      "width": 150,
+      "depth": 100,
+      "thickness": 5,
+      "fixtureHeight": 8,
+      "surfaceZ": 13,
+      "offsetX": 0,
+      "offsetY": 0,
+      "timestep": 0.001,
+      "cellSize": 0.5,
+      "workpieceKind": "plate",
+      "workpieceFile": null
+    },
+    "summary": {
+      "t": 4.48,
+      "q": 2.9994640344113048e-15,
+      "target": 0,
+      "command": 0,
+      "output": 0.44922530200445093,
+      "mass": 1.437520966414243,
+      "metered": 0.44922530200445093,
+      "pending": 0,
+      "remaining": 55.55077469799555,
+      "fixed": 0.07917304360898401,
+      "initial": 56.07917304360898,
+      "x": 50,
+      "y": 0,
+      "z": 20,
+      "speed": 0,
+      "phase": "完成",
+      "balance": 0,
+      "deposits": [
+        5.167780995725657e-9,
+        0.000030096684240079477,
+        0.00016220393341467076,
+        0.00042220518639796454,
+        0.00078348928553406,
+        0.001102049992671119,
+        0.0013144925516274854,
+        0.0014080618503096764,
+        0.0014434017582095433,
+        0.0014568155069512299,
+        0.001459438458379451,
+        0.0014557912249929764,
+        0.001448751535184104,
+        0.0014397500035619982,
+        0.0014285594683507853,
+        0.0014170914203313176,
+        0.001404326297134519,
+        0.0013919981177177893,
+        0.0013792755083889385,
+        0.0013671356406085512,
+        0.0013542612134512192,
+        0.0013430507588099824,
+        0.0013370871474184193,
+        0.0013389234029700424,
+        0.0013493352388418134,
+        0.0013652872630493277,
+        0.0013837776048788945,
+        0.0014021814089957897,
+        0.0014199837662240877,
+        0.001437204331874064,
+        0.0014538621189259587,
+        0.0014699755190208633,
+        0.0014855623227656395,
+        0.0015006397393743057,
+        0.0015152244156675645,
+        0.001529332454451438,
+        0.0015429794322953285,
+        0.0015561804167290914,
+        0.0015689499828781426,
+        0.0015813022295549381,
+        0.0015932507948246064,
+        0.0016048088710619072,
+        0.001615989219516153,
+        0.0016268041844001613,
+        0.0016372657065187811,
+        0.0016473853364520682,
+        0.0016571742473076422,
+        0.001666643247056303,
+        0.0016758027904645394,
+        0.0016846629906370877,
+        0.0016932336301822908,
+        0.0017015241720125893,
+        0.001709543769792053,
+        0.0017173012780425036,
+        0.0017248052619193686,
+        0.001732064006668078,
+        0.001739085526771423,
+        0.001745877574798003,
+        0.00175244764996149,
+        0.0017588030064002059,
+        0.0017649506611861056,
+        0.0017708974020720536,
+        0.0017766497949859086,
+        0.0017822141912797191,
+        0.0017876878312794461,
+        0.001792998857749019,
+        0.001798120221231338,
+        0.0018030462496606535,
+        0.001807785672536937,
+        0.0018123571797990252,
+        0.0018167957093889874,
+        0.0018211332645592683,
+        0.0018252076262727983,
+        0.0018291628248897893,
+        0.0018330125663579221,
+        0.0018367291112631138,
+        0.0018402985796448204,
+        0.0018437166223911217,
+        0.001846996184971112,
+        0.0018501522655552931,
+        0.0018533016939318442,
+        0.0018563610321602592,
+        0.0018593203895690446,
+        0.0018621830334763505,
+        0.0018649521244257753,
+        0.001867630719675642,
+        0.0018702217765742832,
+        0.001872728155825014,
+        0.0018751526246444125,
+        0.0018774978598173878,
+        0.0018797664506524131,
+        0.0018819609018401924,
+        0.0018840836362189004,
+        0.0018861369974490585,
+        0.0018881232526010065,
+        0.0018900445946578165,
+        0.001891903144936414,
+        0.0018937009554295732,
+        0.0018954400110713864,
+        0.0018971222319286909,
+        0.0018987494753209006,
+        0.0019003235378705421,
+        0.0019018461574868096,
+        0.001903319015284257,
+        0.001904743737438833,
+        0.0019061218969832355,
+        0.001907455015543607,
+        0.0019087445650194702,
+        0.0019099919692087686,
+        0.0019111986053798069,
+        0.0019123658057918157,
+        0.0019134948591658283,
+        0.0019145870121074773,
+        0.0019156434704833214,
+        0.0019166654007521735,
+        0.0019176539312529323,
+        0.0019186101534503248,
+        0.0019195351231399461,
+        0.001920429861613909,
+        0.0019212953567884043,
+        0.0019221325642944124,
+        0.0019229424085327798,
+        0.0019237257836948096,
+        0.0019244835547494944,
+        0.0019252165583985073,
+        0.0019259256039999533,
+        0.0019266114744619619,
+        0.001927288843482182,
+        0.0019280499257590773,
+        0.00192877690857979,
+        0.0019294585972993903,
+        0.0019300860038045202,
+        0.0019306683924895213,
+        0.001931225270889538,
+        0.00193179111872235,
+        0.0019323568145959782,
+        0.0019327745700145292,
+        0.0019332218156046408,
+        0.0019336703803739463,
+        0.0019340888920866871,
+        0.0019344632588887544,
+        0.0019347901523005025,
+        0.00193508192267177,
+        0.001935374154793934,
+        0.0019357513026164366,
+        0.0019361161246971969,
+        0.0019364690237865848,
+        0.001936810389473268,
+        0.0019371405986143148,
+        0.0019374600157512504,
+        0.0019377689935125256,
+        0.0019380678730028268,
+        0.0019383569841796566,
+        0.0019386366462176385,
+        0.0019389071678608586,
+        0.001939168847763738,
+        0.00193942197482077,
+        0.0019396668284854428,
+        0.0019399036790787986,
+        0.0019401327880878296,
+        0.0019403544084542232,
+        0.0019405687848535543,
+        0.001940776153965479,
+        0.001940976744734978,
+        0.0019411707786251835,
+        0.0019413584698618194,
+        0.0019415400256697663,
+        0.001941715646501787,
+        0.0019418855262599015,
+        0.0019420498525094094,
+        0.0019422088066860046,
+        0.0019423625642960712,
+        0.001942511295110439,
+        0.001942655163351855,
+        0.0019427943278762445,
+        0.001942928942348144,
+        0.001943059155410307,
+        0.0019431851108478546,
+        0.0019433069477470045,
+        0.0019434248006486158,
+        0.001943538799696741,
+        0.0019444467377870392,
+        0.0019501729066122868,
+        0.0019655336976713927,
+        0.0019957333323839016,
+        0.0020406248264810915,
+        0.0020974840230740684,
+        0.002161956608475666,
+        0.0022313728895356423,
+        0.0023092358458627355,
+        0.0023953791750170542,
+        0.002493305292403588,
+        0.00260286037002308,
+        0.0027298012841408047,
+        0.0028759490237563285,
+        0.0030501316516179677,
+        0.003261930547065992,
+        0.0035270903239465554,
+        0.0038752663107042306,
+        0.0043685931200021615,
+        0.005209118848079488,
+        0.011074311977465362,
+        0.016870311725899836,
+        0.021506675249251945,
+        0.017081988686015365,
+        0.009636897179796574,
+        0.002915940878693868
+      ],
+      "maxHeight": 4.985656597561587,
+      "ending": {
+        "movementEnd": 1.2000000000000002,
+        "commandOff": 1.2000000000000002,
+        "effectiveShutoffDistance": 0,
+        "leadTime": 0,
+        "afterStopVolume": 0.05076379409552623,
+        "afterStopPercent": 11.300297171378663,
+        "endWindowMm": 5,
+        "endToMiddleRatio": 3.789700196420305
+      }
+    }
+  },
+  "view": {
+    "mode": "follow",
+    "time": 4.28,
+    "isoCorner": 2,
+    "freeOrbit": false,
+    "cameraPosition": [
+      -642.820323027551,
+      -692.8203230275509,
+      705.8203230275508
+    ],
+    "cameraTarget": [
+      50,
+      0,
+      13
+    ],
+    "zoom": 1
+  },
+  "note": "工件檔案不內嵌，僅保存名稱與雜湊；重新載入需原檔。"
+}

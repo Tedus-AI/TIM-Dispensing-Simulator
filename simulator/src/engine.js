@@ -1,5 +1,7 @@
-export const VERSION = '0.1.0';
+export const VERSION = '0.2.0';
 export const LABEL = '工程假設／未經實機校準';
+export const BEAD_SIDES = 32;
+export const ENDING_DEFAULT = {id:'ending.shutoff_distance',value:10,unit:'mm',evidence:'engineering_assumption',basis:'AI 初始比較值：預設 100 mm 路徑、100 mm/s、500 mm/s² 對應提前 200 ms 關膠。不是原廠配方；速度或路徑改變後提前時間也會改變。',source_refs:['16_收尾積膠原因與影片比對.md']};
 export function fromRegistry(registry, material='putty', architecture='R75') {
   const p=Object.fromEntries(registry.parameters.map(p=>[p.id,p.value]));
   const g=k=>p[k]; const pcp=architecture==='P300';
@@ -12,7 +14,7 @@ export function fromRegistry(registry, material='putty', architecture='R75') {
     fill:g(`${pcp?'p300':'r75'}.${material==='grease'?'grease':'cartridge'}.initial_fill`), residual:g(`${pcp?'p300':'r75'}.cartridge.unusable_residual`),
     hoseId:g('p300.hose.id'), hoseLength:g('p300.hose.length'), deadVolume:g('p300.adapter.wetted_dead_volume'),
     speed:g('motion.speed'), acceleration:g('motion.acceleration'), standoff:g('motion.standoff'), liftSpeed:g('motion.lift_speed'), liftDistance:g('motion.lift_distance'),
-    mode:'line', lineLength:g('job.line_length'), gateDuration:g('job.point_gate_duration'), lineRatio:g('shape.line_height_to_width'), dotRatio:g('shape.dot_height_to_width'),
+    mode:'line', lineLength:g('job.line_length'), gateDuration:g('job.point_gate_duration'), shutoffDistance:ENDING_DEFAULT.value, lineRatio:g('shape.line_height_to_width'), dotRatio:g('shape.dot_height_to_width'),
     width:g('workpiece.width'), depth:g('workpiece.depth'), thickness:5, fixtureHeight:8, surfaceZ:13, offsetX:0, offsetY:0,
     timestep:g('numerics.initial_timestep'), cellSize:0.5, workpieceKind:'plate', workpieceFile:null };
 }
@@ -31,6 +33,13 @@ export function motionProfile(length,speed,acceleration) {
     const rem=duration-t; return {x:length-0.5*acceleration*rem*rem,v:acceleration*rem};
   }};
 }
+// Inverse of the same triangular/trapezoidal motion, so shutoff distance remains a distance during deceleration.
+export function timeAtDistance(profile,length,acceleration,distance) {
+  const x=Math.max(0,Math.min(length,distance)),rampDistance=profile.peak*profile.ramp/2;
+  if(x<=rampDistance)return Math.sqrt(2*x/acceleration);
+  if(x>=length-rampDistance)return profile.duration-Math.sqrt(2*(length-x)/acceleration);
+  return profile.ramp+(x-rampDistance)/profile.peak;
+}
 // Analytic integral of a delayed rectangular command with nonnegative first-order response.
 export function pulse(t,Q,duration,delay,tauOn,tauOff) {
   const u=t-delay;
@@ -44,7 +53,7 @@ export function validate(c) {
   for(const [k,v] of Object.entries(c)) if(typeof v==='number' && !Number.isFinite(v))throw new Error(`${k} 必須是有限數值`);
   const ranges={pressure:[0,100],diameter:[0.2,8],nozzleLength:[1,100],rpm:[0,300],efficiency:[0,1],density:[0.1,10],viscosity:[1,100000],referenceRate:[0,10],pressureExponent:[0.1,4],
     delay:[0,2],tauOn:[0.001,2],tauOff:[0.001,2],fill:[0,500],residual:[0,500],hoseId:[1,25],hoseLength:[0,5000],speed:[1,800],acceleration:[1,10000],standoff:[0.1,20],
-    lineLength:[1,250],gateDuration:[0.001,10],lineRatio:[0.05,2],dotRatio:[0.05,0.5],width:[1,1000],depth:[1,1000],thickness:[0.1,200],fixtureHeight:[0,100],timestep:[0.0001,0.01],cellSize:[0.1,5]};
+    lineLength:[1,250],gateDuration:[0.001,10],shutoffDistance:[0,250],lineRatio:[0.05,2],dotRatio:[0.05,0.5],width:[1,1000],depth:[1,1000],thickness:[0.1,200],fixtureHeight:[0,100],timestep:[0.0001,0.01],cellSize:[0.1,5]};
   for(const [k,[a,b]]of Object.entries(ranges)) if(c[k]<a||c[k]>b)throw new Error(`${k} 超出原型允許範圍 ${a}–${b}`);
   if(c.residual>c.fill)throw new Error('不可用殘量不能大於裝填量');
   if(c.architecture==='P300'&&Math.abs(c.tauOn-c.tauOff)>1e-12)throw new Error('PCP 必須共用起停時間常數，以保持計量守恆');
@@ -58,13 +67,27 @@ export function dotDimensions(volumeMl,ratio) {
   const b=Math.cbrt(1000*volumeMl*3/(Math.PI*ratio*(3+4*ratio*ratio)));
   return {radius:b,height:2*ratio*b};
 }
+// Shared continuous half-ellipse rings. Reconstruct radii without overshoot, then normalize
+// the exact frustum integral to the deposited volume. This is geometric reconstruction, not wetting physics.
+export function beadProfile(deposits,cellLength,ratio) {
+  const n=deposits.length,widths=new Float64Array(n+1),heights=new Float64Array(n+1);
+  let target=0,integral=0;
+  for(const v of deposits)target+=v*1000;
+  for(let i=1;i<n;i++)widths[i]=Math.sqrt(4*1000*(deposits[i-1]+deposits[i])/(2*cellLength*Math.PI*ratio));
+  for(let i=0;i<n;i++)integral+=BEAD_SIDES*Math.sin(Math.PI/BEAD_SIDES)*ratio/4*cellLength*(widths[i]**2+widths[i]*widths[i+1]+widths[i+1]**2)/3;
+  const scale=integral>0?Math.sqrt(target/integral):0;
+  for(let i=0;i<=n;i++){widths[i]*=scale;heights[i]=widths[i]*ratio;}
+  return {widths,heights,volumeMm3:target,maxHeight:Math.max(...heights),maxWidth:Math.max(...widths)};
+}
 export function simulate(input) {
-  const c=structuredClone(input); validate(c);
+  const c={shutoffDistance:0,...structuredClone(input)}; validate(c);
   const Q=steadyFlow(c), pcp=c.architecture==='P300', available=c.fill-c.residual;
   const motion=motionProfile(c.lineLength,c.speed,c.acceleration);
-  const gate=c.mode==='line'?motion.duration:c.gateDuration;
+  const effectiveShutoffDistance=c.mode==='line'?Math.min(c.shutoffDistance,c.lineLength):0;
+  const gate=c.mode==='line'?timeAtDistance(motion,c.lineLength,c.acceleration,c.lineLength-effectiveShutoffDistance):c.gateDuration;
   const meterGate=pcp&&Q>0?Math.min(gate,available/Q):gate;
-  const tailEnd=gate+c.delay+20*Math.max(c.tauOn,c.tauOff);
+  const movementEnd=c.mode==='line'?motion.duration:gate;
+  const tailEnd=Math.max(movementEnd,gate+c.delay+20*Math.max(c.tauOn,c.tauOff));
   const duration=tailEnd+c.liftDistance/c.liftSpeed;
   if(duration>180)throw new Error('試驗超過 180 秒，請縮短路徑或提高速度');
   const fixed=Math.PI*c.diameter**2/4*c.nozzleLength/1000+(pcp?Math.PI*c.hoseId**2/4*c.hoseLength/1000+c.deadVolume:0);
@@ -72,7 +95,7 @@ export function simulate(input) {
   // Finite longitudinal footprint prevents zero-speed deposition collapsing into a thin end wall.
   // Its support equals the nozzle bore: an explicit geometric assumption, not measured wetting.
   const gridStart=-c.diameter/2, gridLength=c.lineLength+c.diameter;
-  const bins=c.mode==='point'?1:Math.ceil(gridLength/c.cellSize), cellLength=gridLength/bins;
+  const bins=c.mode==='point'?1:Math.max(2,Math.ceil(gridLength/c.cellSize)), cellLength=gridLength/bins;
   const deposits=new Float64Array(bins), frames=[];
   let previousOut=0, nextFrame=0, maxHeight=0;
   const evaluate=t=>{
@@ -84,8 +107,8 @@ export function simulate(input) {
     const pos=c.mode==='line'?motion.at(t):{x:0,v:0};
     const x=c.offsetX+(c.mode==='line'?pos.x-c.lineLength/2:0);
     const lift=Math.min(c.liftDistance,Math.max(0,t-tailEnd)*c.liftSpeed);
-    return {t,q:(!pcp&&raw.volume>=available)?0:raw.q,target:t<gate?Q:0,command:t<gate?1:0,output,mass:output*c.density,metered,pending,remaining:remain,fixed,initial,x,y:c.offsetY,z:c.surfaceZ+c.standoff+lift,speed:pos.v,
-      phase:t<gate?'點膠中':t<tailEnd?'關閉／尾膠結算':t<duration?'抬針':'完成', balance:initial-(remain+fixed+pending+output)};
+    return {t,q:(!pcp&&raw.volume>=available)?0:raw.q,target:t<meterGate?Q:0,command:t<meterGate?1:0,output,mass:output*c.density,metered,pending,remaining:remain,fixed,initial,x,y:c.offsetY,z:c.surfaceZ+c.standoff+lift,speed:pos.v,
+      phase:t<meterGate?'點膠中':t<movementEnd?'收尾移動（已關膠）':t<tailEnd?'停止／尾膠結算':t<duration?'抬針':'完成', balance:initial-(remain+fixed+pending+output)};
   };
   const steps=Math.ceil(duration/c.timestep);
   for(let i=0;i<=steps;i++){
@@ -107,10 +130,19 @@ export function simulate(input) {
       frames.push({...s,deposits:Float64Array.from(deposits)});nextFrame+=0.01;
     }
   }
-  for(const vol of deposits)maxHeight=Math.max(maxHeight,c.mode==='line'?lineDimensions(vol,cellLength,c.lineRatio).height:dotDimensions(vol,c.dotRatio).height);
+  const profile=c.mode==='line'?beadProfile(deposits,cellLength,c.lineRatio):null;
+  maxHeight=profile?profile.maxHeight:dotDimensions(previousOut,c.dotRatio).height;
   const last=frames.at(-1), warnings=[];
+  const afterStopVolume=Math.max(0,last.output-evaluate(movementEnd).output);
+  const windowMean=(a,b)=>{let volume=0;for(let i=0;i<bins;i++){const left=gridStart+i*cellLength;volume+=deposits[i]*Math.max(0,Math.min(b,left+cellLength)-Math.max(a,left))/cellLength;}return volume/(b-a);};
+  const endWindow=Math.min(5,c.lineLength/5),middleMean=windowMean(c.lineLength*.4,c.lineLength*.6);
+  const endRatio=c.mode==='line'&&middleMean>1e-12?windowMean(c.lineLength-endWindow,c.lineLength)/middleMean:null;
+  const ending={movementEnd,commandOff:meterGate,effectiveShutoffDistance,leadTime:movementEnd-gate,afterStopVolume,afterStopPercent:last.output>0?afterStopVolume/last.output*100:0,endWindowMm:endWindow,endToMiddleRatio:endRatio};
+  if(c.mode==='line'&&c.shutoffDistance>=c.lineLength)warnings.push('提前關膠距離達到或超過路徑長度，本次不開膠；請縮短提前距離。');
+  if(c.mode==='line'&&endRatio!==null&&endRatio<.5)warnings.push('末段平均截面低於中段一半，可能欠膠；此比較門檻為 AI 初估，不是產品驗收標準。');
+  if(c.mode==='line'&&endRatio!==null&&endRatio>1.5)warnings.push('末段平均截面高於中段 1.5 倍，可能積膠；此比較門檻為 AI 初估，不是產品驗收標準。');
   if(maxHeight>c.standoff)warnings.push('簡化膠形高於針距，可能干涉；尚未計算壓扁或拉絲。');
-  const maxWidth=c.mode==='line'?Math.max(...deposits.map(v=>lineDimensions(v,cellLength,c.lineRatio).width)):dotDimensions(last.output,c.dotRatio).radius*2;
+  const maxWidth=profile?profile.maxWidth:dotDimensions(last.output,c.dotRatio).radius*2;
   if((c.mode==='line'?(c.lineLength+c.diameter)/2:maxWidth/2)+Math.abs(c.offsetX)>c.width/2 || maxWidth/2+Math.abs(c.offsetY)>c.depth/2)warnings.push('路徑或膠形超出工件範圍；沉積位置仍按水平參考面外推。');
   const workspace=pcp?[254,277]:[300,300];
   if(c.width>workspace[0]||c.depth>workspace[1])warnings.push('工件超出所選設備的參考工作範圍；未自動縮小。');
@@ -118,7 +150,7 @@ export function simulate(input) {
   if(c.workpieceKind!=='plate')warnings.push('匯入工件只作實尺寸顯示；膠形使用上方水平參考面，未驗證孔洞、曲面或完整碰撞。');
   if(last.remaining<=c.residual+1e-9)warnings.push('可用膠量已耗盡；固定預填流道未吹空。');
   if(pcp)warnings.push('理想 PCP 假設滿腔；管路壓降、供料不足與材料適配尚未計算。');
-  return {version:VERSION,label:LABEL,config:c,Q,gate,duration,tailEnd,cellLength,gridStart,frames,warnings,maxHeight,summary:{...last,deposits:Array.from(last.deposits),maxHeight}};
+  return {version:VERSION,label:LABEL,config:c,Q,gate,duration,tailEnd,cellLength,gridStart,frames,warnings,maxHeight,ending,summary:{...last,deposits:Array.from(last.deposits),maxHeight,ending}};
 }
 export function frameAt(run,t) {
   let lo=0,hi=run.frames.length-1;

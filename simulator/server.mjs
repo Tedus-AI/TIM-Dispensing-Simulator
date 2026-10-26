@@ -7,7 +7,6 @@ const mime={'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=u
 await stat(path.join(root,'index.html'));
 http.createServer(async(req,res)=>{
   if(req.method!=='GET'&&req.method!=='HEAD'){res.writeHead(405);res.end();return;}
-  if(req.url==='/tim-health.json'){res.setHeader('Content-Type','application/json');res.end('{"application":"tim-dispensing-lab","version":"0.1.0"}');return;}
   try{
     const pathname=decodeURIComponent(new URL(req.url,'http://localhost').pathname),file=path.resolve(root,'.'+(pathname==='/'?'/index.html':pathname));
     if(!file.startsWith(root+path.sep)){res.writeHead(403);res.end();return;}

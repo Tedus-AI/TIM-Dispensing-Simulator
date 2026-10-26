@@ -2,10 +2,21 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { lineDimensions, dotDimensions } from './engine.js';
+import { dotDimensions, beadProfile, BEAD_SIDES } from './engine.js';
 
 const COLORS={base:0x5b6868,structure:0xa1ada9,rail:0xd5ddda,dark:0x394747,white:0xe8ece6,ink:0x263d38,work:0x9eaba3,glue:0xf1dfbd};
-function volumeOf(g){const a=g.attributes.position,ix=g.index;let v=0;for(let i=0;i<(ix?ix.count:a.count);i+=3){const ids=[0,1,2].map(k=>ix?ix.getX(i+k):i+k),p=ids.map(j=>new THREE.Vector3().fromBufferAttribute(a,j));v+=p[0].dot(p[1].clone().cross(p[2]))/6;}return Math.abs(v);}
+function volumeOf(g){const a=g.attributes.position,ix=g.index;let v=0;for(let i=0;i<(ix?ix.count:a.count);i+=3){const j=ix?ix.getX(i):i,k=ix?ix.getX(i+1):i+1,l=ix?ix.getX(i+2):i+2;v+=(a.getX(j)*(a.getY(k)*a.getZ(l)-a.getZ(k)*a.getY(l))+a.getY(j)*(a.getZ(k)*a.getX(l)-a.getX(k)*a.getZ(l))+a.getZ(j)*(a.getX(k)*a.getY(l)-a.getY(k)*a.getX(l)))/6;}return Math.abs(v);}
+// One watertight surface with shared longitudinal rings: no internal end caps or overlapping slices.
+function continuousLineGeometry(deposits,cellLength,ratio){
+  const profile=beadProfile(deposits,cellLength,ratio),n=deposits.length,sides=BEAD_SIDES,m=sides+1,pos=[],idx=[];
+  for(let i=0;i<=n;i++)for(let j=0;j<=sides;j++){const a=j*Math.PI/sides;pos.push(i*cellLength,profile.widths[i]*Math.cos(a)/2,profile.heights[i]*Math.sin(a));}
+  for(let i=0;i<n;i++)for(let j=0;j<sides;j++){const a=i*m+j,b=a+1,c=a+m,d=c+1;idx.push(a,b,d,a,d,c);}
+  // Duplicate only the underside edge vertices to keep its flat normals off the curved surface.
+  const bottom=pos.length/3;
+  for(let i=0;i<=n;i++)pos.push(i*cellLength,profile.widths[i]/2,0,i*cellLength,-profile.widths[i]/2,0);
+  for(let i=0;i<n;i++){const a=bottom+2*i;idx.push(a,a+2,a+3,a,a+3,a+1);}
+  const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.Float32BufferAttribute(pos,3));g.setIndex(idx);g.computeVertexNormals();g.userData.unitVolume=volumeOf(g);return g;
+}
 function lineGeometry(){
   const n=32,pos=[],idx=[];
   for(const x of [-.5,.5])for(let j=0;j<=n;j++){let a=j*Math.PI/n;pos.push(x,Math.cos(a)/2,Math.sin(a));}
@@ -98,17 +109,18 @@ export class DispenseScene {
     this.box(70,1,12,75,-180.6,-34,'dark');
     // Millimetre ticks on the exposed front edge of the table.
     for(let x=-140;x<=140;x+=5)this.box(.35,x%25===0?5:2,.1,x,-147,0,'dark');
-    this.lineGeo=lineGeometry();this.dotGeo=capGeometry(c.dotRatio);this.depositMeshes=[];
-    const count=run.frames[0].deposits.length;
-    for(let i=0;i<count;i++){const m=new THREE.Mesh(c.mode==='line'?this.lineGeo:this.dotGeo,this.materials.glue);m.visible=false;this.depositGroup.add(m);this.depositMeshes.push(m);}
+    this.lastDeposits=null;this.depositMeshes=[];
+    if(c.mode==='point')this.dotGeo=capGeometry(c.dotRatio);
+    const m=new THREE.Mesh(c.mode==='line'?continuousLineGeometry(run.frames[0].deposits,run.cellLength,c.lineRatio):this.dotGeo,this.materials.glue);m.visible=false;this.depositGroup.add(m);this.depositMeshes.push(m);
     this.run=run;this.update(run.frames[0]);this.fit(this.mode);
   }
   update(s){if(!this.config)return;const c=this.config;this.tool.position.set(s.x,s.y,s.z);this.carriage.position.x=s.x;this.bridge.position.y=s.y;
     if(this.piston)this.piston.position.z=c.nozzleLength+18+75*1000/(Math.PI*38**2/4)*(s.remaining/75)+1;
-    for(let i=0;i<this.depositMeshes.length;i++){const v=s.deposits[i],m=this.depositMeshes[i];m.visible=v>1e-12;if(!m.visible)continue;
-      if(c.mode==='line'){const d=lineDimensions(v,this.run.cellLength,c.lineRatio);m.scale.set(this.run.cellLength,d.width,v*1000/(this.lineGeo.userData.unitVolume*this.run.cellLength*d.width));m.position.set(c.offsetX-c.lineLength/2+this.run.gridStart+(i+.5)*this.run.cellLength,c.offsetY,c.surfaceZ+.001);}
-      else{const d=dotDimensions(v,c.dotRatio),b=d.radius;m.scale.set(b,b,v*1000/(this.dotGeo.userData.unitVolume*b*b));m.position.set(c.offsetX,c.offsetY,c.surfaceZ+.001);}
-    }
+    const m=this.depositMeshes[0],v=s.output;m.visible=v>1e-12;
+    if(c.mode==='line'){
+      if(this.lastDeposits!==s.deposits){m.geometry.dispose();m.geometry=continuousLineGeometry(s.deposits,this.run.cellLength,c.lineRatio);this.lastDeposits=s.deposits;}
+      m.position.set(c.offsetX-c.lineLength/2+this.run.gridStart,c.offsetY,c.surfaceZ+.001);
+    }else if(m.visible){const d=dotDimensions(v,c.dotRatio),b=d.radius;m.scale.set(b,b,v*1000/(this.dotGeo.userData.unitVolume*b*b));m.position.set(c.offsetX,c.offsetY,c.surfaceZ+.001);}
     if(this.mode==='follow'){const target=new THREE.Vector3(s.x,s.y,c.surfaceZ);this.camera.position.add(target.clone().sub(this.controls.target));this.controls.target.copy(target);}
     this.render();
   }
@@ -151,7 +163,7 @@ export class DispenseScene {
     return {width:size.x,depth:size.y,thickness:size.z,workpieceKind:'imported',workpieceFile:{name:file.name,sha256:digest,sourceUnit:ext==='stl'?unit:'m',up:ext==='stl'?up:'Y',unitFactorToMm:factor}};
   }
   clearImport(){if(this.imported){this.imported.removeFromParent();this.imported.traverse(o=>o.geometry?.dispose());this.imported=null;}}
-  geometryAudit(){return {parts:this.parts,lineUnitVolume:this.lineGeo.userData.unitVolume,dotUnitVolume:this.dotGeo.userData.unitVolume,renderedDepositVolumeMm3:this.depositMeshes.filter(m=>m.visible).reduce((s,m)=>s+m.geometry.userData.unitVolume*m.scale.x*m.scale.y*m.scale.z,0),cameraDirection:this.camera.position.clone().sub(this.controls.target).normalize().toArray()};}
+  geometryAudit(){return {parts:this.parts,renderedDepositVolumeMm3:this.depositMeshes.filter(m=>m.visible).reduce((s,m)=>s+m.geometry.userData.unitVolume*m.scale.x*m.scale.y*m.scale.z,0),cameraDirection:this.camera.position.clone().sub(this.controls.target).normalize().toArray()};}
   screenshot(){this.render();return this.renderer.domElement.toDataURL('image/png');}
 }
-export {volumeOf,lineGeometry,capGeometry};
+export {volumeOf,lineGeometry,capGeometry,continuousLineGeometry};

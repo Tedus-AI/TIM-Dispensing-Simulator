@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {fromRegistry,steadyFlow,simulate,pulse,motionProfile,lineDimensions,dotDimensions,frameAt} from '../src/engine.js';
-import {volumeOf,lineGeometry,capGeometry,DispenseScene} from '../src/scene.js';
+import {fromRegistry,steadyFlow,simulate,pulse,motionProfile,timeAtDistance,lineDimensions,dotDimensions,frameAt,beadProfile,BEAD_SIDES} from '../src/engine.js';
+import {volumeOf,lineGeometry,capGeometry,continuousLineGeometry,DispenseScene} from '../src/scene.js';
 import {OrthographicCamera,Vector3} from 'three';
 const registry=JSON.parse(readFileSync(new URL('../../data/engineering_defaults_v0.3.json',import.meta.url)));
 const cfg=(material='putty',arch='R75')=>fromRegistry(registry,material,arch);
@@ -67,4 +67,41 @@ test('all four isometric corners preserve equal XYZ projection and differ in qua
     near(lengths[0],lengths[1],1e-12);near(lengths[1],lengths[2],1e-12);
   }
   assert.equal(seen.size,4);
+});
+
+test('distance shutoff follows inverse acceleration profile, not cruise-speed multiplication',()=>{
+  for(const [L,v,a]of [[100,100,500],[1,800,500]]){const p=motionProfile(L,v,a);for(const f of [0,.01,.2,.5,.8,.99,1])near(p.at(timeAtDistance(p,L,a,L*f)).x,L*f,1e-10);}
+  const r=simulate(cfg());near(r.gate,1);near(r.ending.movementEnd,1.2);near(r.ending.leadTime,.2);near(r.summary.output,.3711186061289325,1e-10);near(r.ending.afterStopVolume,.007126993547854621,1e-10);
+  const f=frameAt(r,1.1);assert.equal(f.command,0);assert.ok(f.speed>0&&f.q>0);assert.match(f.phase,/收尾移動/);near(f.z,r.config.surfaceZ+r.config.standoff);
+});
+
+test('uncompensated reference retains old dose; early shutoff reduces tail without hiding total loss',()=>{
+  const a=simulate({...cfg(),shutoffDistance:0}),b=simulate(cfg());near(a.summary.output,.44922530200445093,1e-10);near(a.ending.afterStopVolume,.05076379409552623,1e-10);
+  assert.ok(b.summary.output<a.summary.output);assert.ok(b.ending.afterStopVolume<a.ending.afterStopVolume*.15);assert.ok(b.maxHeight<a.maxHeight);assert.ok(a.warnings.some(w=>w.includes('積膠')));
+  const tooEarly=simulate({...cfg(),shutoffDistance:60});assert.ok(tooEarly.warnings.some(w=>w.includes('欠膠')));
+});
+
+test('short paths, disabled pulses, point independence and early depletion stay well-defined',()=>{
+  for(const architecture of ['R75','P300']){
+    const c=cfg('putty',architecture),empty=simulate({...c,lineLength:1});near(empty.summary.output,0);assert.ok(empty.warnings.some(w=>w.includes('本次不開膠')));assert.ok(empty.tailEnd>=empty.ending.movementEnd);
+    const a=simulate({...c,mode:'point',shutoffDistance:0}),b=simulate({...c,mode:'point',shutoffDistance:250});near(a.summary.output,b.summary.output);near(a.duration,b.duration);
+    const depleted=simulate({...c,fill:c.residual+.001});for(const f of depleted.frames){near(f.balance,0,1e-10);near([...f.deposits].reduce((s,v)=>s+v,0),f.output,1e-10);}
+  }
+  assert.throws(()=>simulate({...cfg(),shutoffDistance:-1}),/範圍/);assert.throws(()=>simulate({...cfg(),shutoffDistance:NaN}),/有限/);
+});
+
+test('continuous bead is volume-correct and has no internal transverse caps, including replay and zero flow',()=>{
+  for(const options of [{},{shutoffDistance:0},{lineLength:1,shutoffDistance:0,cellSize:5},{pressure:0},{shutoffDistance:60}]){
+    const r=simulate({...cfg(),...options});
+    for(const f of [r.frames.at(-1),frameAt(r,.2),frameAt(r,1.1),r.frames[0]]){
+      const g=continuousLineGeometry(f.deposits,r.cellLength,r.config.lineRatio),p=g.attributes.position,ix=g.index;
+      // Float32 renderer coordinates: allow one part per million of the analytical volume.
+      near(volumeOf(g),f.output*1000,Math.max(1e-6,f.output*.001));
+      for(const value of p.array)assert.ok(Number.isFinite(value));
+      for(let i=0;i<ix.count;i+=3){const xs=[0,1,2].map(k=>p.getX(ix.getX(i+k)));assert.ok(Math.max(...xs)>Math.min(...xs),'unexpected transverse cap');}
+      const profile=beadProfile(f.deposits,r.cellLength,r.config.lineRatio);
+      for(let i=0;i<profile.widths.length;i++){near(p.getZ(i*(BEAD_SIDES+1)+BEAD_SIDES/2),profile.heights[i],1e-5);}
+      g.dispose();
+    }
+  }
 });
