@@ -20,7 +20,9 @@ test('three independent steady reference values and material density effect',()=
   const a=simulate(cfg('putty','P300')),b=simulate(cfg('grease','P300'));near(a.summary.output,b.summary.output);near(a.summary.mass/a.summary.output,3.2);near(b.summary.mass/b.summary.output,3.4);
 });
 test('pressure and nozzle assumptions obey declared limiting cases',()=>{
-  const c=cfg();near(steadyFlow({...c,pressure:0}),0);near(steadyFlow({...c,pressure:45}),steadyFlow(c)/2);near(steadyFlow({...c,nozzleLength:20}),steadyFlow(c)/2);near(steadyFlow({...c,diameter:c.diameter/2}),steadyFlow(c)/16);
+  // v1.0 default m=2.7 (Laird 910 guideline curve shape); m=1 retains the v0.x Poiseuille limit.
+  const c=cfg(),m=c.pressureExponent;near(m,2.7);near(steadyFlow(c),.390625,1e-12);near(steadyFlow({...c,pressure:0}),0);near(steadyFlow({...c,pressure:45}),steadyFlow(c)/2**m,1e-12);near(steadyFlow({...c,nozzleLength:20}),steadyFlow(c)/2**m,1e-12);near(steadyFlow({...c,diameter:c.diameter/2}),steadyFlow(c)/2**(3+m),1e-12);
+  const lin={...c,pressureExponent:1};near(steadyFlow({...lin,pressure:45}),steadyFlow(lin)/2);near(steadyFlow({...lin,nozzleLength:20}),steadyFlow(lin)/2);near(steadyFlow({...lin,diameter:c.diameter/2}),steadyFlow(lin)/16);
   const p=cfg('grease','P300');near(steadyFlow({...p,diameter:1,hoseLength:500}),steadyFlow(p));near(steadyFlow({...p,rpm:0}),0);
 });
 test('analytic response: no pre-delay flow, correct rising integral and asymmetric tail',()=>{

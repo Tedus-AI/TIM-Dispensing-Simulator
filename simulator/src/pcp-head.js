@@ -5,10 +5,10 @@ import * as THREE from 'three';
 // Datum: dispensing outlet = local Z 0, motor/gearbox flange = Z 303 mm.
 export function createPcpHead() {
   const group=new THREE.Group();group.name='PCP 0.30cc reference - 303mm body';
-  const steel=new THREE.MeshStandardMaterial({color:0xbac2c0,metalness:.75,roughness:.33});
+  const steel=new THREE.MeshStandardMaterial({color:0xd2d7db,metalness:.9,roughness:.28});
   const dark=new THREE.MeshStandardMaterial({color:0x333d40,metalness:.35,roughness:.55});
   const black=new THREE.MeshStandardMaterial({color:0x263234,metalness:.15,roughness:.65});
-  const blue=new THREE.MeshStandardMaterial({color:0x37678a,metalness:.3,roughness:.48});
+  const blue=new THREE.MeshStandardMaterial({color:0x2b6fd6,metalness:.3,roughness:.4});
   group.userData.ownedMaterials=[steel,dark,black,blue];
   function cyl(name,r,h,z,material=steel,sides=48){const g=new THREE.CylinderGeometry(r,r,h,sides);g.rotateX(Math.PI/2);const o=new THREE.Mesh(g,material);o.name=name;o.position.z=z+h/2;o.castShadow=o.receiveShadow=true;group.add(o);return o;}
   function box(name,w,d,h,x,y,z,material=steel){const o=new THREE.Mesh(new THREE.BoxGeometry(w,d,h),material);o.name=name;o.position.set(x,y,z+h/2);o.castShadow=o.receiveShadow=true;group.add(o);return o;}

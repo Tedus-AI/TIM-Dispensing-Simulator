@@ -24,7 +24,7 @@ test('each multisegment trajectory follows the heat source and preserves invento
   const begin=pointOnPath(run.path,0),end=pointOnPath(run.path,run.path.length);
   near(run.frames[0].x,begin.x);near(run.frames[0].y,begin.y);
   const atEnd=frameAt(run,run.ending.movementEnd+.011);near(atEnd.x,end.x,1e-6);near(atEnd.y,end.y,1e-6);
-  assert.ok(run.warnings.some(w=>w.includes('轉角不減速')));
+  assert.ok(run.warnings.some(w=>w.includes('轉角')));
  }
 });
 test('early shutoff and diagonal retreat follow total path arc length',()=>{

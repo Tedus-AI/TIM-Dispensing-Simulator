@@ -18,14 +18,14 @@ export function createC300Enclosure() {
   };
 
   const material = {
-    body: new THREE.MeshStandardMaterial({color:0xd2d6d3, roughness:.68, metalness:.22}),
+    body: new THREE.MeshStandardMaterial({color:0xe9ebe8, roughness:.55, metalness:.1}),
     frame: new THREE.MeshStandardMaterial({color:0xbac1c0, roughness:.54, metalness:.34}),
     door: new THREE.MeshStandardMaterial({color:0xe2e5df, roughness:.72, metalness:.14}),
     gasket: new THREE.MeshStandardMaterial({color:0x40494b, roughness:.8, metalness:.08}),
     steel: new THREE.MeshStandardMaterial({color:0x7f8d8e, roughness:.4, metalness:.7}),
-    screen: new THREE.MeshStandardMaterial({color:0x1b3742, roughness:.32, metalness:.15}),
+    screen: new THREE.MeshStandardMaterial({color:0x0f2a3a, roughness:.25, metalness:.1, emissive:0x0b3a52, emissiveIntensity:.8}),
     screenLine: new THREE.MeshStandardMaterial({color:0x7bb3bd, roughness:.6, metalness:0}),
-    blue: new THREE.MeshStandardMaterial({color:0x295d85, roughness:.55, metalness:.1}),
+    blue: new THREE.MeshStandardMaterial({color:0x1f5fd1, roughness:.45, metalness:.15}),
     red: new THREE.MeshStandardMaterial({color:0xc13524, roughness:.42, metalness:.08}),
     yellow: new THREE.MeshStandardMaterial({color:0xdfc544, roughness:.55, metalness:0})
   };

@@ -16,8 +16,8 @@ export function createPumpStation() {
   group.userData = { reference: 'Graco DM-22 25T471', evidence: 'exterior envelope from manual; individual parts engineering approximation', lowerHeightMm: 550, raisedHeightMm: 800, widthMm: 360, depthMm: 300, units: 'mm', fluidConnection: '1/4 NPT female, nominal', airConnection: '8 mm female, nominal' };
 
   const material = {
-    blue: new THREE.MeshStandardMaterial({ color: 0x225188, roughness: .45, metalness: .45 }),
-    blueDark: new THREE.MeshStandardMaterial({ color: 0x193852, roughness: .53, metalness: .38 }),
+    blue: new THREE.MeshStandardMaterial({ color: 0x1f5fbf, roughness: .42, metalness: .35 }),
+    blueDark: new THREE.MeshStandardMaterial({ color: 0x163f80, roughness: .5, metalness: .3 }),
     steel: new THREE.MeshStandardMaterial({ color: 0xc3cbcb, roughness: .37, metalness: .74 }),
     satin: new THREE.MeshStandardMaterial({ color: 0x8a9899, roughness: .46, metalness: .68 }),
     dark: new THREE.MeshStandardMaterial({ color: 0x263138, roughness: .7, metalness: .2 }),
