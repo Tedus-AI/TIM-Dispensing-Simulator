@@ -4,6 +4,8 @@
 
 ## 開啟
 
+網頁版：https://tedus-ai.github.io/TIM-Dispensing-Simulator/ （`.github/workflows/pages.yml` 在 main 更新後自動測試、建置並部署；建置使用相對路徑，同一份 `dist` 也能由本機啟動器開啟）。
+
 Windows：雙擊本資料夾的 **啟動模擬器.cmd**，瀏覽器開啟 `http://127.0.0.1:5173/`。只需 Node.js；建置檔已附於 `dist/`，執行時不連外部 CDN，工件不上傳雲端，只監聽本機。
 
 開發：
