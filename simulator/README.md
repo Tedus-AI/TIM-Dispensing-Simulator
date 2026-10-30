@@ -12,7 +12,7 @@ Windows：雙擊本資料夾的 **啟動模擬器.cmd**，瀏覽器開啟 `http:
 
 ```powershell
 npm ci
-npm test        # 75 項數值、幾何與壓合測試
+npm test        # 76 項數值、幾何與壓合測試
 npm run dev     # 開發伺服器，與啟動器共用 5173，請勿同時開
 npm run build   # 更新 dist/
 ```
