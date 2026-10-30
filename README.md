@@ -6,6 +6,9 @@
 
 ## 開啟模擬器
 
+**網頁版（免安裝）：https://tedus-ai.github.io/TIM-Dispensing-Simulator/**　main 分支的 `simulator/` 更新後，由 GitHub Actions 自動測試、建置並部署到 GitHub Pages。
+
+本機版：
 Windows 安裝 Node.js 後，雙擊 `simulator/啟動模擬器.cmd`，瀏覽器開啟 http://127.0.0.1:5173/ 。本版附有建置檔 `simulator/dist`，可直接啟動，不必先安裝開發套件。服務只監聽本機；工件在本機讀取。
 
 重新開發／建置：
@@ -52,4 +55,4 @@ npm run dev
 
 上傳包含開發成果與原始研究資料；不包含可重建的 node_modules（v1.0 起已自版本控制移除）、空白暫存目錄、日誌或環境憑證。套件版本由 package-lock.json 鎖定。
 
-廠商 PDF／網頁保留於私人儲存庫作研究溯源，其權利仍屬各原權利人。Anatomy 固定於 `1482e8469b0a9e0d8cc18ea2740a01423d29ae80`，備份包含原 MIT LICENSE；只研讀其設計原則，模擬器渲染採 Three.js。Three.js 隨建置檔分發的授權見 `sources/Licenses/three-LICENSE.txt`。本儲存庫未對專案自身另授開源授權。
+廠商 PDF／網頁保留於本儲存庫作研究溯源，其權利仍屬各原權利人。Anatomy 固定於 `1482e8469b0a9e0d8cc18ea2740a01423d29ae80`，備份包含原 MIT LICENSE；只研讀其設計原則，模擬器渲染採 Three.js。Three.js 隨建置檔分發的授權見 `sources/Licenses/three-LICENSE.txt`。本儲存庫未對專案自身另授開源授權。
