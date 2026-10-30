@@ -252,13 +252,14 @@ export function estimateCompression(run, options) {
       for (let i = 0; i < n; i++) if (volume[i] > cap * (1 + 1e-12) || (volume[i] >= cap * (1 - 1e-12) && !trapped[i])) cells.push(i);
       let excess = 0;
       for (const i of cells) excess += Math.max(0, volume[i] - cap);
-      if (excess <= 1e-12 * Math.max(totalMm3, 1)) break;
+      if (excess <= 1e-12 * Math.max(totalMm3, 1)) break; // movable share is checked below
       const m = cells.length;
       cells.forEach((i, k) => (index[i] = k));
       const nb = new Int32Array(4 * m);
       const diag = new Float64Array(m);
       const rhs = new Float64Array(m);
       const outlets = [];
+      const hasOutlet = new Uint8Array(m);
       for (let k = 0; k < m; k++) {
         const i = cells[k];
         rhs[k] = Math.max(0, volume[i] - cap);
@@ -269,24 +270,63 @@ export function estimateCompression(run, options) {
           if (j < 0 || trapped[j]) continue; // plate edge never reached; trapped air is a wall
           diag[k]++;
           if (index[j] >= 0) nb[4 * k + e] = index[j];
-          else outlets.push(k, j);
+          else {
+            outlets.push(k, j);
+            hasOutlet[k] = 1;
+          }
         }
-        if (diag[k] === 0) diag[k] = 1e-9;
       }
-      if (!outlets.length) {
-        unresolved += excess;
+      // A pressed region sealed off by trapped air has no free cell to flow into: its pressure problem
+      // is singular (pure Neumann) and the material physically cannot move. Leave it in place.
+      const open = new Uint8Array(m);
+      const seen = new Uint8Array(m);
+      const pending = [];
+      for (let k0 = 0; k0 < m; k0++) {
+        if (seen[k0]) continue;
+        const members = [];
+        let outlet = false;
+        seen[k0] = 1;
+        pending.push(k0);
+        while (pending.length) {
+          const k = pending.pop();
+          members.push(k);
+          if (hasOutlet[k]) outlet = true;
+          for (let e = 4 * k; e < 4 * k + 4; e++) {
+            const j = nb[e];
+            if (j >= 0 && !seen[j]) {
+              seen[j] = 1;
+              pending.push(j);
+            }
+          }
+        }
+        if (outlet) for (const k of members) open[k] = 1;
+      }
+      let movable = 0;
+      for (let k = 0; k < m; k++) {
+        if (open[k]) movable += rhs[k];
+        else {
+          rhs[k] = 0;
+          diag[k] = 1;
+          nb.fill(-1, 4 * k, 4 * k + 4);
+        }
+      }
+      if (movable <= 1e-12 * Math.max(totalMm3, 1)) {
         cells.forEach((i) => (index[i] = -1));
         break;
       }
       const guess = new Float64Array(m);
-      for (let k = 0; k < m; k++) guess[k] = warm[cells[k]];
+      for (let k = 0; k < m; k++) guess[k] = open[k] ? warm[cells[k]] : 0;
       const pressure = solvePressure(cells, nb, diag, rhs, guess);
       warm.fill(0);
       for (let k = 0; k < m; k++) warm[cells[k]] = pressure[k];
       let sent = 0;
       for (let e = 0; e < outlets.length; e += 2) sent += Math.max(0, pressure[outlets[e]]);
-      const scale = sent > 0 ? excess / sent : 0;
-      for (const i of cells) volume[i] = Math.min(volume[i], cap);
+      if (!(sent > 0) || !Number.isFinite(sent)) {
+        cells.forEach((i) => (index[i] = -1));
+        break; // nothing could be routed this round; keep every cell's volume unchanged
+      }
+      const scale = movable / sent;
+      cells.forEach((i, k) => open[k] && (volume[i] = Math.min(volume[i], cap)));
       for (let e = 0; e < outlets.length; e += 2) volume[outlets[e + 1]] += Math.max(0, pressure[outlets[e]]) * scale;
       cells.forEach((i) => (index[i] = -1));
     }
@@ -338,6 +378,9 @@ export function estimateCompression(run, options) {
     markTrapped(cap);
     if (keep.has(k)) snapshot(h, cap);
   }
+
+  // Material still standing above the plate at the final gap (sealed by trapped air).
+  for (let i = 0; i < n; i++) unresolved += Math.max(0, volume[i] - cap);
 
   // Final metrics at the assembly gap.
   const coverage = new Float32Array(n);

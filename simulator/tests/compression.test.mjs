@@ -80,3 +80,13 @@ test('a sub-cell dot from a near-zero pressure stays bounded in cost and conserv
   assert.ok(performance.now()-t<2000,'tiny dot must not scale with 1/radius²');
   near(v.summary.conservationErrorMl,0,1e-15);near(v.summary.depositedMl,run.summary.deposited,1e-18);
 });
+test('material sealed off by trapped air stays put instead of producing NaN (N pattern, 3 mm bore)',()=>{
+  const heat={shape:'rectangle',width:30,depth:30,offsetX:0,offsetY:0,gap:.5,cellSize:.5,power:25};
+  const run=simulate({...fromRegistry(registry),mode:'pattern',diameter:3,speed:44.48,pathSettings:{...heat,pattern:'n',spacing:5,edgeInset:2}});
+  const v=estimateCompression(run,heat),s=v.summary;
+  for(const k of ['coveredPercent','insideMl','outsideMl','conservationErrorMl','unresolvedMl'])assert.ok(Number.isFinite(s[k]),`${k} = ${s[k]}`);
+  assert.ok(Number.isFinite(s.thermal.rise)&&Number.isFinite(s.thermal.resistance));
+  near(s.conservationErrorMl,0,1e-9);near(s.insideMl+s.outsideMl,s.depositedMl,1e-9);
+  assert.ok(s.unresolvedMl>=0&&s.unresolvedMl<.05*s.depositedMl);
+  assert.ok(s.coveredPercent>50&&s.coveredPercent<=100);
+});
