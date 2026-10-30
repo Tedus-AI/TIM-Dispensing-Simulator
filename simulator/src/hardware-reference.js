@@ -1,0 +1,8 @@
+// Reference dimensions and visual assumptions are deliberately separate from flow-model parameters.
+export const R75_NOZZLE=Object.freeze({part:'Nordson 7018555 candidate',nominalLengthMm:63.5,nominalIdMm:3.175,assumedInsertionMm:7,thread:'1/4 NPT nominal',evidence:'published dimensions + assumed insertion; unconfirmed Laird test setup',source:'https://www.nordson.com/en/products/efd-products/plastic-nozzles'});
+export const HARDWARE_REFERENCES=Object.freeze({
+  R75:{cartridge:{capacityMl:75,outerDiameterMm:43.2,axialLengthMm:98.8,evidence:'published typical external envelope; bare cartridge only',source:'https://www.nordsonefd.com/nordson_efd_product_catalog/25/'},nozzle:R75_NOZZLE,other:'retainer, piston, holder and air hose routing are visual engineering assumptions'},
+  P300:{enclosure:{model:'C300 reference envelope',widthMm:939,depthMm:1041,heightMm:1905,workspaceMm:[254,277,70],source:'https://www.graco.com/content/dam/graco/com_documents/349/349735/349735EN-B.pdf',evidence:'published outer envelope; interior and panels are visual assumptions'},
+    supply:{model:'DM-22 25T471 reference',widthMm:360,depthMm:300,loweredHeightMm:550,raisedHeightMm:800,fluidPort:'1/4 NPT female',airPort:'8 mm female',source:'https://www.graco.com/content/dam/graco/tech_documents/manuals/3A7/3A7931/3A7931EN-D.pdf',evidence:'published metric dimensions; components and tubing routes are visual assumptions'},
+    pcp:{model:'25B192 candidate; not confirmed Laird upgraded PCP',bodyLengthMm:303,boltCircleMm:70,inlet:'#8/#6 JIC',outlet:'5/16-28',source:'https://www.graco.com/content/dam/graco/tech_documents/manuals/3A5/3A5364/3A5364EN.pdf',evidence:'published body length and fittings; motor and details approximated'}}
+});

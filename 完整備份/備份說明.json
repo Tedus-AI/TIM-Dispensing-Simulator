@@ -1,0 +1,24 @@
+{
+  "source": "G:\\AI Working Document\\codex\\Documents\\TIM點膠機台動態模擬器",
+  "source_file_count": 2182,
+  "empty_directories": [
+    ".git/objects/info/",
+    ".git/objects/pack/",
+    "tmp/pdfs/"
+  ],
+  "archive_bytes": 126660190,
+  "archive_sha256": "6f7cfc7439fde968bb0919a27c4a83f6f3aa0fe012d57b3148ea7e6cfe63a836",
+  "parts": [
+    {
+      "file": "原始專案完整封存.zip.part001",
+      "bytes": 94371840,
+      "sha256": "f887a3c48df176ba29b264890bdb143d413acac86e313891536f55d8ba1fae62"
+    },
+    {
+      "file": "原始專案完整封存.zip.part002",
+      "bytes": 32288350,
+      "sha256": "d728b6be175a24a6fc362b17b92d1edb892d51438f5f66c3f5c8be72f47ea3de"
+    }
+  ],
+  "recovery": "依序將 part001、part002 等檔案以二進位方式合併為 ZIP，再解壓縮；封存包含原始 .git、所有檔案與空資料夾。"
+}
