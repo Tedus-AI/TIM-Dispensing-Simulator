@@ -166,7 +166,9 @@ export function estimateCompression(run, options) {
     const H = dot.height;
     const R = (b * b + H * H) / (2 * H);
     const samples = [];
-    const sub = Math.max(1, Math.ceil(cellSize / Math.max(b / 6, 1e-6)));
+    // Bounded sub-sampling: a dot smaller than the sampling pitch lands in its containing cell
+    // through the addWeighted fallback instead of costing sub² evaluations per cell.
+    const sub = Math.min(8, Math.max(1, Math.ceil(cellSize / Math.max(b / 6, 1e-6))));
     for (let iy = Math.floor((s.y - b - originY) / cellSize); iy <= Math.floor((s.y + b - originY) / cellSize); iy++)
       for (let ix = Math.floor((s.x - b - originX) / cellSize); ix <= Math.floor((s.x + b - originX) / cellSize); ix++) {
         if (ix < 0 || iy < 0 || ix >= cols || iy >= rows) continue;

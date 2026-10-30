@@ -874,7 +874,11 @@ async function runPress() {
   const run = S.run;
   try {
     const result = await compute('compress', { run: slimRun(run), heat, frames: 24 });
-    if (run !== S.run) return; // configuration changed meanwhile
+    // Discard a result computed for a run or heat settings that changed while it was running.
+    if (run !== S.run || JSON.stringify(heat) !== JSON.stringify(S.heat)) {
+      toast('計算期間設定已變更，請重新模擬壓合');
+      return;
+    }
     exitPress(false);
     S.playing = false;
     S.time = run.duration;

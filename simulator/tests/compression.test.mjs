@@ -73,3 +73,10 @@ test('squeeze animation frames run from the bead crest down to the gap',()=>{
   assert.equal(v.grid.frames.length,12);near(v.grid.frames.at(-1).gap,.5,1e-12);assert.ok(v.grid.frames[0].gap>=v.grid.frames.at(-1).gap);
   for(let k=1;k<v.grid.frames.length;k++)assert.ok(v.grid.frames[k].coveredPercent>=v.grid.frames[k-1].coveredPercent-1e-6);
 });
+test('a sub-cell dot from a near-zero pressure stays bounded in cost and conserves volume',()=>{
+  const run=simulate({...fromRegistry(registry),mode:'point',pressure:0.001});
+  assert.ok(run.summary.deposited>0&&run.summary.deposited<1e-12);
+  const t=performance.now();const v=estimateCompression(run,{...opts,cellSize:.5});
+  assert.ok(performance.now()-t<2000,'tiny dot must not scale with 1/radius²');
+  near(v.summary.conservationErrorMl,0,1e-15);near(v.summary.depositedMl,run.summary.deposited,1e-18);
+});
