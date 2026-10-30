@@ -6,11 +6,11 @@ import * as THREE from 'three';
 // Origin is the lower face of the bare cartridge's female 1/4 NPT port.
 export const CARTRIDGE_DIMENSIONS = Object.freeze({outsideDiameterMm:43.2, totalLengthMm:98.8});
 
-const shellMaterial=new THREE.MeshStandardMaterial({color:0xd8eeee,transparent:true,opacity:.21,depthWrite:false,side:THREE.DoubleSide,roughness:.25,metalness:0});
+const shellMaterial=new THREE.MeshStandardMaterial({color:0xeef6f6,transparent:true,opacity:.28,depthWrite:false,side:THREE.DoubleSide,roughness:.25,metalness:0});
 const retainerMaterial=new THREE.MeshStandardMaterial({color:0xc6e0e1,transparent:true,opacity:.19,depthWrite:false,side:THREE.DoubleSide,roughness:.23,metalness:0});
-const blueMaterial=new THREE.MeshStandardMaterial({color:0x345f88,roughness:.54,metalness:.08});
-const metalMaterial=new THREE.MeshStandardMaterial({color:0xbfc8c6,roughness:.35,metalness:.65});
-const darkMaterial=new THREE.MeshStandardMaterial({color:0x2e3a3d,roughness:.61,metalness:.25});
+const blueMaterial=new THREE.MeshStandardMaterial({color:0x2563c9,roughness:.42,metalness:.12});
+const metalMaterial=new THREE.MeshStandardMaterial({color:0xd3d8dc,roughness:.28,metalness:.9});
+const darkMaterial=new THREE.MeshStandardMaterial({color:0x22272c,roughness:.5,metalness:.35});
 const pistonMaterial=new THREE.MeshStandardMaterial({color:0xd6d8d2,roughness:.69,metalness:0});
 const defaultFill=new THREE.MeshStandardMaterial({color:0xd99391,roughness:.72});
 
