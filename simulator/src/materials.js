@@ -12,6 +12,8 @@ export const MATERIALS = Object.freeze({
     temperatureRange: '-40～180 °C',
     packaging: '30cc 針筒／75cc EFD 56cc（179 g）／180cc 159cc／300cc 鋁筒 300cc（960 g）',
     density: 3.2,
+    squeezeViscosity: 7000, // Pa·s, apparent at 1 s⁻¹ from the power-law nozzle fit (see parameters.js)
+    yieldStress: 200, // Pa, AI estimate (no vendor data)
     color: 0xe0868a, // 官方色名「淡紅」近似
     colorName: '淡紅（近似）',
     source: 'THR-DS-Tputty 910 Rev C 2025-04-22',
@@ -27,6 +29,8 @@ export const MATERIALS = Object.freeze({
     temperatureRange: '-55～150 °C',
     packaging: '50cc 針筒（A14399-03）／600cc 膠筒（A14259-10）',
     density: 3.4,
+    squeezeViscosity: 2500, // Pa·s, TDS Brookfield TF 2 rpm (same constant as the flow model)
+    yieldStress: 50, // Pa, AI estimate scaled from published thermal greases (7–30 Pa)
     color: 0xd9dbd6, // 官方色名「灰白」近似
     colorName: '灰白（近似）',
     source: 'MKT-DOC-1592 Tgrease 2500 Data Sheet 2025-06-27',

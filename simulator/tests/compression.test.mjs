@@ -56,10 +56,14 @@ test('squeezed dot becomes a disc of area V/gap with no voids',()=>{
   assert.ok(Math.abs((maxx-minx+1)*g.cellSize-d)<=2*g.cellSize);assert.ok(Math.abs((maxy-miny+1)*g.cellSize-d)<=2*g.cellSize);
   near(v.summary.wetAreaMm2,run.summary.deposited*1000/.3,1e-6);assert.equal(v.summary.voidCount,0);
 });
-test('closed perimeter traps air in the middle; a single line does not',()=>{
-  const closed=estimateCompression(pattern('perimeter'),{...opts,gap:.5,cellSize:.5});
-  assert.ok(closed.summary.voidCount>=1);assert.ok(closed.summary.voidAreaMm2>50);
-  near(closed.summary.conservationErrorMl,0,1e-9);
+test('closed perimeter seals air in the middle; rigid air stays, compressible air pushes out; a single line traps none',()=>{
+  const run=pattern('perimeter');
+  const rigid=estimateCompression(run,{...opts,gap:.5,cellSize:.5,airMode:'rigid'});
+  assert.ok(rigid.summary.voidCount>=1);assert.ok(rigid.summary.voidAreaMm2>50);
+  near(rigid.summary.conservationErrorMl,0,1e-9);
+  const air=estimateCompression(run,{...opts,gap:.5,cellSize:.5});
+  assert.ok(air.summary.press.sealed>=1,'the ring seals the centre at first contact');
+  assert.ok(air.summary.coveredPercent>=rigid.summary.coveredPercent-1e-6);near(air.summary.conservationErrorMl,0,1e-9);
   const open=estimateCompression(pattern('line'),{...opts,gap:.5,cellSize:.5});assert.equal(open.summary.voidCount,0);
 });
 test('thinner gap spreads further, and thermal resistance follows wetted area',()=>{
@@ -69,9 +73,11 @@ test('thinner gap spreads further, and thermal resistance follows wetted area',(
   near(t.resistance,t.idealResistance/(thin.summary.coveredPercent/100),1e-9);near(t.rise,t.resistance*25,1e-9);
 });
 test('squeeze animation frames run from the bead crest down to the gap',()=>{
-  const v=estimateCompression(pattern('n'),{...opts,gap:.5,cellSize:.5,frames:12});
+  const v=estimateCompression(pattern('n'),{...opts,gap:.5,cellSize:.5,frames:12,airMode:'vent'});
   assert.equal(v.grid.frames.length,12);near(v.grid.frames.at(-1).gap,.5,1e-12);assert.ok(v.grid.frames[0].gap>=v.grid.frames.at(-1).gap);
   for(let k=1;k<v.grid.frames.length;k++)assert.ok(v.grid.frames[k].coveredPercent>=v.grid.frames[k-1].coveredPercent-1e-6);
+  const air=estimateCompression(pattern('n'),{...opts,gap:.5,cellSize:.5,frames:12});
+  assert.ok(air.grid.frames.length<=12);near(air.grid.frames.at(-1).gap,.5,1e-12);
 });
 test('a sub-cell dot from a near-zero pressure stays bounded in cost and conserves volume',()=>{
   const run=simulate({...fromRegistry(registry),mode:'point',pressure:0.001});

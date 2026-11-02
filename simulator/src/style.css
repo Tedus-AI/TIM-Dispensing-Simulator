@@ -291,6 +291,11 @@ input[type='range']::-moz-range-thumb { width: 14px; height: 14px; border-radius
 .press-sum { display: flex; flex-direction: column; gap: 2px; font-size: 11.5px; color: var(--muted); }
 .press-sum b { color: var(--strong); font-size: 13px; }
 .kpis.two { grid-template-columns: 1fr 1fr; }
+/* Press process rows: label and value on one line, the explanation wraps underneath. */
+.kpis.three { grid-template-columns: 1fr; margin-top: 6px; }
+.kpis.three .kpi { flex-direction: row; flex-wrap: wrap; align-items: baseline; column-gap: 8px; }
+.kpis.three .kpi span { min-width: 64px; }
+.kpis.three .kpi em { flex-basis: 100%; white-space: normal; }
 .ring { width: 92px; height: 92px; }
 .ring circle { fill: none; stroke-width: 8; }
 .ring .track { stroke: var(--line); }
