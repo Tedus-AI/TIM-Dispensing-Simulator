@@ -3,19 +3,39 @@ import { pointOnPath } from './path-planning.js';
 import { MATERIALS } from './materials.js';
 
 /*
- * Squeeze estimate (v1.0): a discrete Hele-Shaw squeeze between two flat parallel plates.
+ * Squeeze estimate (v1.1): a time-stepped Hele-Shaw squeeze between two flat parallel plates.
  *
- * The deposited bead is rasterised with its own cross-section. The plate then descends from the bead
- * crest to the assembly gap in small steps. At each step every cell taller than the plate is pressed:
- * its excess volume is pushed out by a lubrication pressure field (∇²p = excess, p = 0 on the free
- * front), which spreads material radially, rounds dots into discs and lets neighbouring beads merge.
- * Any dry pocket that becomes completely surrounded by material is frozen as trapped air and is never
- * refilled. For a Newtonian film the front shape does not depend on viscosity or plate speed, so none is
- * needed; yield stress, wall slip, wetting, air compression and force are NOT modelled. Results are an
- * engineering approximation for comparing patterns, not a validated rheology solution.
+ * The deposited bead is rasterised with its own cross-section. A constant press force drives the plate
+ * from the bead crest down to the spacer gap; at each step the lubrication pressure field
+ * (∇·(h³/12μ ∇p) = −ḣ in the wetted film, p = 0 on fronts open to the atmosphere) moves the displaced
+ * material, and the step's duration follows from requiring the film to carry the press force.
+ *
+ * Air that becomes completely surrounded by material is handled by `airMode`:
+ *  - 'compressible' (default): each enclosed pocket keeps its gas (isothermal, pV = const). Its pressure
+ *    is a boundary condition on the film, solved implicitly with the film pressure. The air/material
+ *    interface moves both ways, so pockets shrink under pressure, drift with the flow, re-expand and can
+ *    reach an open front (venting) when the material wall between them thins out. After the plate seats
+ *    on the spacers the pockets relax until their overpressure is held by the material's yield stress.
+ *  - 'rigid' (v1.0): an enclosed pocket is frozen as an impermeable obstacle.
+ *  - 'vent': enclosed air is assumed to escape (upper bound on coverage).
+ * Effective Newtonian viscosity; yield stress only limits the post-press relaxation. Not a validated
+ * rheology or fingering solution.
  */
 
+export const ATM = 101325; // Pa
+export const KGF = 9.80665; // N
+export const AIR_MODES = Object.freeze(['compressible', 'rigid', 'vent']);
+export const PRESS_DEFAULTS = Object.freeze({ airMode: 'compressible', pressKgf: 10, pressSpeed: 1, settleTime: 300 });
+
 const MAX_CELLS = 90000;
+const FILLED = 0;
+const OPEN = 1;
+const POCKET = 2;
+const FROZEN = 3;
+const DRY = 1e-3; // a cell below (1 − DRY) of the plate height is dry (well above solver round-off)
+const HELD = 0.003 * ATM; // overpressure below which a relaxing pocket counts as settled
+const CG_TOL = 5e-5; // per-cell volume residual / cell volume; 20× below DRY so round-off never opens cells
+const FRONT = 0.8; // target front overshoot per plate step (cells)
 
 // The deposited nozzle footprint extends slightly past either end of the path.
 function pathPoint(path, s) {
@@ -48,43 +68,58 @@ export function depositSources(run) {
   return sources;
 }
 
-// Jacobi-preconditioned conjugate gradient on the pressed cells (5-point Laplacian, p = 0 on free cells).
-function solvePressure(cells, nb, diag, rhs, x) {
-  const m = cells.length;
-  const r = new Float64Array(m);
-  const z = new Float64Array(m);
-  const p = new Float64Array(m);
-  const q = new Float64Array(m);
+/** Effective squeeze rheology for a run: options override the material card. */
+export function squeezeRheology(config, options = {}) {
+  const material = MATERIALS[config.material] || MATERIALS.putty;
+  const viscosity =
+    Number.isFinite(options.viscosity) && options.viscosity > 0
+      ? options.viscosity
+      : config.material === 'grease' && Number.isFinite(config.viscosity) && config.viscosity > 0
+        ? config.viscosity
+        : material.squeezeViscosity;
+  const yieldStress = Number.isFinite(options.yieldStress) && options.yieldStress >= 0 ? options.yieldStress : material.yieldStress;
+  return { viscosity, yieldStress };
+}
+
+// Jacobi-preconditioned conjugate gradient. Rows 0..m−1 are film cells (4 faces each, `nb`/`w`);
+// rows m.. are pocket nodes, coupled only through the film cells' faces (the matrix stays symmetric).
+function solvePressure(m, size, nb, w, diag, rhs, x, absTol2) {
+  const r = new Float64Array(size);
+  const z = new Float64Array(size);
+  const p = new Float64Array(size);
+  const q = new Float64Array(size);
   const apply = (v, out) => {
-    for (let k = 0; k < m; k++) {
-      let s = diag[k] * v[k];
-      for (let e = 4 * k; e < 4 * k + 4; e++) if (nb[e] >= 0) s -= v[nb[e]];
-      out[k] = s;
-    }
+    for (let k = 0; k < size; k++) out[k] = diag[k] * v[k];
+    for (let k = 0; k < m; k++)
+      for (let e = 4 * k; e < 4 * k + 4; e++) {
+        const j = nb[e];
+        if (j < 0) continue;
+        out[k] -= w[e] * v[j];
+        if (j >= m) out[j] -= w[e] * v[k];
+      }
   };
   apply(x, q);
   let rz = 0;
   let norm0 = 0;
-  for (let k = 0; k < m; k++) {
+  for (let k = 0; k < size; k++) {
     r[k] = rhs[k] - q[k];
     z[k] = r[k] / diag[k];
     p[k] = z[k];
     rz += r[k] * z[k];
     norm0 += rhs[k] * rhs[k];
   }
-  // Relative residual 1e-4 is ample: the transferred volume is rescaled to the exact excess afterwards.
-  const tol = 1e-8 * Math.max(norm0, 1e-30);
-  for (let it = 0; it < 2000; it++) {
+  const tol = Math.max(1e-20 * norm0, absTol2);
+  for (let it = 0; it < 4000; it++) {
     let rr = 0;
-    for (let k = 0; k < m; k++) rr += r[k] * r[k];
+    for (let k = 0; k < size; k++) rr += r[k] * r[k];
     if (rr <= tol) break;
     apply(p, q);
     let pq = 0;
-    for (let k = 0; k < m; k++) pq += p[k] * q[k];
+    for (let k = 0; k < size; k++) pq += p[k] * q[k];
     if (!(pq > 0)) break;
     const alpha = rz / pq;
     let next = 0;
-    for (let k = 0; k < m; k++) {
+    for (let k = 0; k < size; k++) {
       x[k] += alpha * p[k];
       r[k] -= alpha * q[k];
       z[k] = r[k] / diag[k];
@@ -92,21 +127,696 @@ function solvePressure(cells, nb, diag, rhs, x) {
     }
     const beta = next / rz;
     rz = next;
-    for (let k = 0; k < m; k++) p[k] = z[k] + beta * p[k];
+    for (let k = 0; k < size; k++) p[k] = z[k] + beta * p[k];
   }
   return x;
 }
 
+/**
+ * Squeeze a rasterised deposit. `raster` = { cols, rows, cellSize, volume (mm³ per cell) }.
+ * `settings` = { gap, airMode, force (N), pressSpeed (mm/s cap), viscosity (Pa·s), yieldStress (Pa),
+ *   settleTime (s), frames, sourceFraction (per cell, for frame coverage), trace (debug callback after
+ *   every air classification) }.
+ */
+export function squeezeRaster(raster, settings) {
+  const { cols, rows, cellSize } = raster;
+  const n = cols * rows;
+  const area = cellSize * cellSize;
+  const volume = Float64Array.from(raster.volume);
+  const gap = settings.gap;
+  const mode = settings.airMode || 'compressible';
+  const mu = settings.viscosity;
+  const force = settings.force;
+  const tauY = settings.yieldStress || 0;
+  const settle = Math.max(0, settings.settleTime ?? PRESS_DEFAULTS.settleTime);
+  const vmax = settings.pressSpeed > 0 ? settings.pressSpeed : Infinity; // mm/s approach-speed cap
+  const frameBudget = settings.frames || 0;
+  const sourceFraction = settings.sourceFraction || null;
+  let sourceArea = 0;
+  if (sourceFraction) for (let i = 0; i < n; i++) sourceArea += sourceFraction[i] * area;
+  let crest = 0;
+  for (let i = 0; i < n; i++) crest = Math.max(crest, volume[i] / area);
+
+  const neighbours = (i, out) => {
+    const x = i % cols;
+    out[0] = x > 0 ? i - 1 : -1;
+    out[1] = x + 1 < cols ? i + 1 : -1;
+    out[2] = i >= cols ? i - cols : -1;
+    out[3] = i + cols < n ? i + cols : -1;
+    return out;
+  };
+  const nbBuf = [0, 0, 0, 0];
+
+  // ── air bookkeeping ──
+  const state = new Uint8Array(n).fill(OPEN);
+  const prevState = new Uint8Array(n);
+  const pocketOf = new Int32Array(n).fill(-1);
+  const prevPocket = new Int32Array(n);
+  const reach = new Uint8Array(n);
+  const comp = new Int32Array(n);
+  const stack = new Int32Array(n);
+  const pockets = new Map();
+  let nextId = 0;
+  const events = { sealed: 0, vented: 0, collapsed: 0, dissolved: 0, ventedAtmMm3: 0 };
+  const tinyGas = ATM * area * gap;
+  let time = 0;
+  let phase = 'press';
+  let peakBubble = 0;
+
+  const air = (i, cap) => Math.max(0, cap - volume[i]);
+  const gauge = (b) => b.gas / Math.max(b.air, 1e-12) - ATM;
+
+  function classify(cap, h, record = true) {
+    const lim = cap * (1 - DRY);
+    const dry = (i) => volume[i] < lim && state[i] !== FROZEN;
+    reach.fill(0);
+    let top = 0;
+    for (let i = 0; i < n; i++) {
+      const x = i % cols;
+      if ((x === 0 || x === cols - 1 || i < cols || i >= n - cols) && dry(i)) {
+        reach[i] = 1;
+        stack[top++] = i;
+      }
+    }
+    while (top) {
+      const i = stack[--top];
+      for (const j of neighbours(i, nbBuf))
+        if (j >= 0 && !reach[j] && dry(j)) {
+          reach[j] = 1;
+          stack[top++] = j;
+        }
+    }
+    if (mode !== 'compressible') {
+      for (let i = 0; i < n; i++) {
+        if (state[i] === FROZEN) continue;
+        if (!dry(i)) state[i] = FILLED;
+        else if (reach[i] || mode === 'vent') state[i] = OPEN;
+        else state[i] = FROZEN;
+      }
+      return;
+    }
+    prevState.set(state);
+    prevPocket.set(pocketOf);
+    comp.fill(-1);
+    const comps = [];
+    for (let i0 = 0; i0 < n; i0++) {
+      if (comp[i0] >= 0 || reach[i0] || !(volume[i0] < lim)) continue;
+      const c = { cells: [], fresh: 0, drained: 0, prior: new Map() };
+      comp[i0] = comps.length;
+      stack[0] = i0;
+      top = 1;
+      while (top) {
+        const i = stack[--top];
+        c.cells.push(i);
+        const a = air(i, cap);
+        if (prevState[i] === POCKET) c.prior.set(prevPocket[i], (c.prior.get(prevPocket[i]) || 0) + a);
+        else if (prevState[i] === OPEN) c.fresh += a;
+        else c.drained += a; // film cell the pocket's own air moved into this step
+        for (const j of neighbours(i, nbBuf))
+          if (j >= 0 && comp[j] < 0 && !reach[j] && volume[j] < lim) {
+            comp[j] = comps.length;
+            stack[top++] = j;
+          }
+      }
+      comps.push(c);
+    }
+    state.fill(OPEN);
+    pocketOf.fill(-1);
+    for (let i = 0; i < n; i++) if (!(volume[i] < lim)) state[i] = FILLED;
+    const claimed = new Set();
+    const next = new Map();
+    // Each previous pocket's gas is split over the components its air now occupies: its former cells
+    // plus the film cells its air drained this step (shared among the pockets in that component), and
+    // the part that reached an open front, which is lost.
+    const priorTotal = new Map();
+    const add = (b, a) => priorTotal.set(b, (priorTotal.get(b) || 0) + a);
+    for (const c of comps) {
+      let own = 0;
+      for (const a of c.prior.values()) own += a;
+      for (const [b, a] of c.prior) {
+        const share = a + (own > 0 ? (c.drained * a) / own : c.drained / c.prior.size);
+        c.prior.set(b, share);
+        add(b, share);
+      }
+    }
+    for (let i = 0; i < n; i++) if (prevState[i] === POCKET && reach[i]) add(prevPocket[i], air(i, cap));
+    // Gas before this step: a record reused by one component must not shrink another's share.
+    const priorGas = new Map([...pockets.values()].map((b) => [b.id, b.gas]));
+    for (const c of comps) {
+      let gas = c.fresh * ATM;
+      let lead = null;
+      let leadAir = -1;
+      for (const [b, a] of c.prior) {
+        const old = pockets.get(b);
+        if (!old) continue;
+        gas += (priorGas.get(b) * a) / Math.max(priorTotal.get(b) || a, 1e-15);
+        if (a > leadAir) {
+          lead = old;
+          leadAir = a;
+        }
+      }
+      if (!(gas > 0)) {
+        // Drained below the plate with no air source at all (solver round-off): still film.
+        for (const i of c.cells) state[i] = FILLED;
+        continue;
+      }
+      if (gas < tinyGas) {
+        // Less air than one final-gap cell at 1 atm: below the grid's resolution. It stays a free
+        // surface at atmospheric pressure (fills like an open front) rather than a tracked bubble.
+        if (c.prior.size) events.dissolved++;
+        continue;
+      }
+      let rec;
+      if (lead && !claimed.has(lead.id)) {
+        claimed.add(lead.id);
+        rec = lead;
+      } else {
+        rec = { id: nextId++, sealGap: lead ? lead.sealGap : h, sealTime: lead ? lead.sealTime : time, sealPhase: lead ? lead.sealPhase : phase, maxP: 0, minRatio: 1, q: null };
+        if (!lead) events.sealed++;
+      }
+      rec.gas = gas;
+      rec.cells = c.cells.length;
+      let a = 0;
+      let sx = 0;
+      let sy = 0;
+      for (const i of c.cells) {
+        state[i] = POCKET;
+        pocketOf[i] = rec.id;
+        const ai = air(i, cap);
+        a += ai;
+        sx += (i % cols) * ai;
+        sy += Math.floor(i / cols) * ai;
+      }
+      rec.air = a;
+      rec.cx = a > 0 ? sx / a : c.cells[0] % cols;
+      rec.cy = a > 0 ? sy / a : Math.floor(c.cells[0] / cols);
+      const p = gauge(rec);
+      rec.p = p;
+      if (record) {
+        rec.maxP = Math.max(rec.maxP, p);
+        rec.minRatio = Math.min(rec.minRatio, (a * ATM) / rec.gas);
+        if (phase === 'press' && rec.gas >= 3 * tinyGas) peakBubble = Math.max(peakBubble, p);
+      }
+      next.set(rec.id, rec);
+    }
+    const reached = new Set();
+    for (let i = 0; i < n; i++) if (prevState[i] === POCKET && state[i] === OPEN) reached.add(prevPocket[i]);
+    const merged = new Set();
+    for (const c of comps) for (const b of c.prior.keys()) merged.add(b);
+    for (const [id, old] of pockets) {
+      if (next.has(id) || claimed.has(id) || merged.has(id)) continue;
+      // Gone: either its air now reaches an open front (vented) or material filled it.
+      if (reached.has(id)) {
+        events.vented++;
+        events.ventedAtmMm3 += old.gas / ATM;
+      } else events.collapsed++;
+    }
+    pockets.clear();
+    for (const [id, rec] of next) pockets.set(id, rec);
+    settings.trace?.({ h, time, phase, record, pockets: [...pockets.values()], events: { ...events }, comps });
+  }
+
+  // Shortest film path (mm) from each pocket to an open front, for the yield-stress hold.
+  const dist = new Float64Array(n);
+  function holdPressures(h) {
+    if (!(tauY > 0)) {
+      for (const b of pockets.values()) b.hold = 0;
+      return;
+    }
+    dist.fill(Infinity);
+    let head = 0;
+    let tail = 0;
+    for (let i = 0; i < n; i++)
+      if (state[i] === OPEN) {
+        dist[i] = 0;
+        stack[tail++] = i;
+      }
+    while (head < tail) {
+      const i = stack[head++];
+      for (const j of neighbours(i, nbBuf))
+        if (j >= 0 && state[j] === FILLED && dist[j] === Infinity) {
+          dist[j] = dist[i] + 1;
+          stack[tail++] = j;
+        }
+    }
+    const best = new Map();
+    for (let i = 0; i < n; i++) {
+      if (state[i] !== POCKET) continue;
+      for (const j of neighbours(i, nbBuf)) if (j >= 0 && state[j] === FILLED) best.set(pocketOf[i], Math.min(best.get(pocketOf[i]) ?? Infinity, dist[j]));
+    }
+    // Bingham slit: flow needs |∇p| > 2τy/h, so a pocket holds Δp = 2τy·L/h against the open front.
+    for (const b of pockets.values()) b.hold = ((2 * tauY) / h) * ((best.get(b.id) ?? Infinity) + 0.5) * cellSize;
+  }
+
+  // ── linear system for one step ──
+  const idx = new Int32Array(n).fill(-1);
+  const warm = new Float64Array(n);
+  function build(cap, activePockets) {
+    const cells = [];
+    for (let i = 0; i < n; i++) if (state[i] === FILLED) idx[i] = cells.push(i) - 1;
+    const m = cells.length;
+    const node = new Map();
+    activePockets.forEach((b, k) => node.set(b.id, m + k));
+    const size = m + activePockets.length;
+    const nb = new Int32Array(4 * m).fill(-1);
+    const w = new Float64Array(4 * m);
+    const diag = new Float64Array(size);
+    const rhsVol = new Float64Array(m);
+    const open = [];
+    const pface = [];
+    const anchored = new Uint8Array(m);
+    let excess = 0;
+    for (let k = 0; k < m; k++) {
+      const i = cells[k];
+      rhsVol[k] = volume[i] - cap;
+      excess += Math.max(0, rhsVol[k]);
+      neighbours(i, nbBuf);
+      for (let e = 0; e < 4; e++) {
+        const j = nbBuf[e];
+        if (j < 0) continue;
+        const s = state[j];
+        if (s === FILLED) {
+          nb[4 * k + e] = idx[j];
+          w[4 * k + e] = 1;
+          diag[k] += 1;
+          continue;
+        }
+        if (s === FROZEN) continue;
+        // Ghost front: the interface sits inside the partly filled neighbour, (½ + fill) cells away.
+        const g = 1 / (0.5 + Math.min(1, Math.max(0, volume[j] / cap)));
+        if (s === OPEN) {
+          open.push(k, j, g);
+          diag[k] += g;
+          anchored[k] = 1;
+        } else {
+          const nd = node.get(pocketOf[j]);
+          if (nd === undefined) continue; // settled pocket: held by yield stress, acts as a wall
+          nb[4 * k + e] = nd;
+          w[4 * k + e] = g;
+          diag[k] += g;
+          diag[nd] += g;
+          pface.push(k, j, nd, g, 4 * k + e);
+          anchored[k] = 1;
+        }
+      }
+    }
+    // Film regions with no open front and no pocket cannot move (incompressible, sealed): freeze them.
+    const seen = new Uint8Array(m);
+    const members = [];
+    for (let k0 = 0; k0 < m; k0++) {
+      if (seen[k0]) continue;
+      members.length = 0;
+      let ok = false;
+      seen[k0] = 1;
+      members.push(k0);
+      for (let s = 0; s < members.length; s++) {
+        const k = members[s];
+        if (anchored[k]) ok = true;
+        for (let e = 4 * k; e < 4 * k + 4; e++) {
+          const j = nb[e];
+          if (j >= 0 && j < m && !seen[j]) {
+            seen[j] = 1;
+            members.push(j);
+          }
+        }
+      }
+      if (!ok)
+        for (const k of members) {
+          diag[k] = 1;
+          rhsVol[k] = 0;
+          nb.fill(-1, 4 * k, 4 * k + 4);
+        }
+    }
+    for (let k = 0; k < size; k++) if (!(diag[k] > 0)) diag[k] = 1;
+    return { cells, m, size, nb, w, diag, rhsVol, open, pface, activePockets, excess, cap };
+  }
+
+  // Solve with film conductance κ = h³Δt/12μ (mm³/Pa); pocket nodes use Newton on pV = const.
+  // With κ = 1 and no pockets the unknowns are in volume units ("unit" solve) and scale with 1/κ.
+  function solve(sys, kappa, guessScale = 1, tight = false) {
+    const { m, size, nb, w, rhsVol, activePockets: act, pface } = sys;
+    const x = new Float64Array(size);
+    for (let k = 0; k < m; k++) x[k] = warm[sys.cells[k]] * guessScale;
+    const B = act.length;
+    const V0 = act.map((b) => b.air);
+    const hold = act.map((b) => (phase === 'relax' ? b.hold || 0 : 0));
+    const fgas = (b, q) => V0[b] - act[b].gas / Math.max(ATM + q + hold[b], 0.02 * ATM);
+    const qi = act.map((b, k) => {
+      const now = gauge(b) - hold[k];
+      return Number.isFinite(b.q) ? Math.max(now, b.q) : now;
+    });
+    const absTol2 = size * (((tight ? 1e-10 : CG_TOL) * sys.cap) / kappa) ** 2;
+    let inflow = new Float64Array(B);
+    for (let it = 0; it < (B ? 5 : 1); it++) {
+      const diag = Float64Array.from(sys.diag);
+      const rhs = new Float64Array(size);
+      for (let k = 0; k < m; k++) rhs[k] = rhsVol[k] / kappa;
+      for (let b = 0; b < B; b++) {
+        const pa = Math.max(ATM + qi[b] + hold[b], 0.02 * ATM);
+        const C = act[b].gas / (pa * pa);
+        diag[m + b] += C / kappa;
+        rhs[m + b] = (C * qi[b] - fgas(b, qi[b])) / kappa;
+        x[m + b] = qi[b];
+      }
+      solvePressure(m, size, nb, w, diag, rhs, x, absTol2);
+      inflow = new Float64Array(B);
+      for (let f = 0; f < pface.length; f += 5) inflow[pface[f + 2] - m] += kappa * pface[f + 3] * (x[pface[f]] - x[pface[f + 2]]);
+      let worst = 0;
+      for (let b = 0; b < B; b++) {
+        const q = Math.max(x[m + b], 0.02 * ATM - ATM - hold[b]);
+        worst = Math.max(worst, Math.abs(inflow[b] - fgas(b, q)) / (V0[b] + 0.05 * sys.cap));
+        qi[b] = q;
+      }
+      if (worst < 0.02) break;
+    }
+    return { x, kappa, inflow, q: qi, hold };
+  }
+
+  // Move material along every face; air entering a film cell from a pocket moves no material.
+  function trialVolumes(sys, sol) {
+    const { cells, m, nb, w, open, pface } = sys;
+    const { x, kappa } = sol;
+    const trial = Float64Array.from(volume);
+    for (let k = 0; k < m; k++)
+      for (let e = 4 * k; e < 4 * k + 4; e++) {
+        const j = nb[e];
+        if (j <= k || j >= m) continue;
+        const F = kappa * w[e] * (x[k] - x[j]);
+        trial[cells[k]] -= F;
+        trial[cells[j]] += F;
+      }
+    // At an interface face, flow toward the film first pushes the material still in the partly filled
+    // interface cell; only once that cell is empty does air advance into the film cell (which then
+    // loses that volume through its other faces). Keeps the air/material interface one cell wide.
+    const airIn = new Float64Array(m);
+    const across = (k, j, F) => {
+      if (F >= 0) {
+        trial[cells[k]] -= F;
+        trial[j] += F;
+        return;
+      }
+      const g = Math.min(-F, Math.max(0, trial[j]));
+      trial[j] -= g;
+      trial[cells[k]] += g;
+      airIn[k] += -F - g;
+    };
+    for (let f = 0; f < open.length; f += 3) across(open[f], open[f + 1], kappa * open[f + 2] * x[open[f]]);
+    for (let f = 0; f < pface.length; f += 5) across(pface[f], pface[f + 1], kappa * pface[f + 3] * (x[pface[f]] - x[pface[f + 2]]));
+    // Material entering a pocket fills it from the interface inward: overflow of an interface cell moves
+    // on into the same pocket's neighbouring cells, so the pocket's air stays equal to V0 − inflow.
+    for (let f = 0; f < pface.length; f += 5) {
+      const j0 = pface[f + 1];
+      if (!(trial[j0] > sys.cap)) continue;
+      const id = pocketOf[j0];
+      let excess = trial[j0] - sys.cap;
+      trial[j0] = sys.cap;
+      const queue = [j0];
+      const visited = new Set(queue);
+      for (let q = 0; q < queue.length && excess > 0; q++)
+        for (const j of neighbours(queue[q], [0, 0, 0, 0])) {
+          if (j < 0 || visited.has(j) || state[j] !== POCKET || pocketOf[j] !== id) continue;
+          visited.add(j);
+          queue.push(j);
+          const room = Math.max(0, sys.cap - trial[j]);
+          const put = Math.min(room, excess);
+          trial[j] += put;
+          excess -= put;
+        }
+      trial[j0] += excess; // the whole pocket is full: the rest stays as overshoot
+    }
+    let drain = 0;
+    let negative = false;
+    for (let k = 0; k < m; k++) {
+      drain = Math.max(drain, airIn[k] / sys.cap);
+      if (trial[cells[k]] < -1e-12 * sys.cap) negative = true;
+    }
+    // Front overshoot: how far past full a receiving cell ends up (≈ cells the front should have moved).
+    let front = 0;
+    for (let f = 0; f < open.length; f += 3) front = Math.max(front, (trial[open[f + 1]] - sys.cap) / sys.cap);
+    for (let f = 0; f < pface.length; f += 5) front = Math.max(front, (trial[pface[f + 1]] - sys.cap) / sys.cap);
+    let swing = 0;
+    sys.activePockets.forEach((b, k) => (swing = Math.max(swing, Math.abs(sol.inflow[k]) / (b.air + 0.5 * sys.cap))));
+    return { trial, drain, swing, negative, front };
+  }
+
+  // Film load (N) for a physical solve: film cells plus every pocket's gauge pressure.
+  function load(sys, sol) {
+    let s = 0;
+    for (let k = 0; k < sys.m; k++) s += sol.x[k];
+    sys.activePockets.forEach((b, k) => (s += Math.max(0, sol.q[k] + sol.hold[k]) * b.cells));
+    return s * area * 1e-6;
+  }
+  const unitLoad = (sys, sol) => {
+    let s = 0;
+    for (let k = 0; k < sys.m; k++) s += sol.x[k];
+    return s * area * 1e-6;
+  };
+
+  // Rejected steps must leave the air bookkeeping untouched.
+  const saveAir = () => ({
+    state: state.slice(),
+    pocketOf: pocketOf.slice(),
+    pockets: [...pockets.values()].map((b) => ({ ...b })),
+    events: { ...events },
+    nextId,
+    peakBubble,
+  });
+  const restoreAir = (s) => {
+    state.set(s.state);
+    pocketOf.set(s.pocketOf);
+    pockets.clear();
+    for (const b of s.pockets) pockets.set(b.id, b);
+    Object.assign(events, s.events);
+    nextId = s.nextId;
+    peakBubble = s.peakBubble;
+  };
+
+  // ── frames ──
+  const frames = [];
+  const snapshot = (h, cap) => {
+    const cov = new Uint8Array(n);
+    const trapped = new Uint8Array(n);
+    let covered = 0;
+    for (let i = 0; i < n; i++) {
+      const f = state[i] === FROZEN ? 0 : Math.min(1, volume[i] / cap);
+      cov[i] = Math.round(f * 255);
+      if (state[i] === FROZEN || (state[i] === POCKET && f < 0.5)) trapped[i] = 1;
+      if (sourceFraction) covered += sourceFraction[i] * f * area;
+    }
+    // Count bubbles the way the summary does (at least max(3 cells, 0.5 mm²) of footprint).
+    const minArea = Math.max(3 * area, 0.5);
+    let maxP = 0;
+    let count = 0;
+    for (const b of pockets.values())
+      if (b.air / h >= minArea - 1e-9) {
+        count++;
+        maxP = Math.max(maxP, gauge(b));
+      }
+    frames.push({
+      gap: h,
+      t: time,
+      phase,
+      coverage: cov,
+      trapped,
+      coveredPercent: sourceArea > 0 ? (covered / sourceArea) * 100 : 0,
+      bubbles: count,
+      bubbleKPa: maxP / 1000,
+    });
+  };
+
+  // ── phase 1: constant force press from the crest down to the spacer gap ──
+  // The plate step adapts so the film front advances about one cell per step (one pressure solve moves
+  // material only into the neighbouring cells); a step that crushes a pocket or drains a cell is retried
+  // at half the height change.
+  const relaxFrames = mode === 'compressible' && settle > 0 && frameBudget > 1 ? Math.max(1, Math.round(frameBudget * 0.3)) : 0;
+  const pressFrames = frameBudget > 1 ? frameBudget - relaxFrames : 0;
+  const h0 = Math.max(crest, gap);
+  const targets = pressFrames > 1 ? Array.from({ length: pressFrames - 1 }, (_, k) => h0 * (gap / h0) ** ((k + 1) / (pressFrames - 1))) : [];
+  let target = 0;
+  classify(h0 * area, h0, true);
+  if (pressFrames > 1) snapshot(h0, h0 * area);
+  const DLN_MAX = 0.07;
+  let dln = DLN_MAX;
+  let kappaPrev = 0;
+  let excessPrev = 0;
+  let dtLast = 0;
+  let substeps = 0;
+  let steps = 0;
+  let hCur = h0;
+  while (hCur > gap * (1 + 1e-12) && steps < 600) {
+    const h = Math.max(gap, hCur * Math.exp(-dln));
+    const cap = h * area;
+    const saved = saveAir();
+    classify(cap, h, false);
+    let crushed = false;
+    for (const b of saved.pockets) {
+      const now = pockets.get(b.id);
+      if (now && now.air < 0.6 * b.air && dln > 2e-4) crushed = true;
+    }
+    const act = mode === 'compressible' ? [...pockets.values()] : [];
+    const sys = build(cap, act);
+    if (!crushed && (sys.m === 0 || sys.excess <= 1e-12 * cap)) {
+      if (Number.isFinite(vmax) && sys.m) time += (hCur - h) / vmax;
+      hCur = h; // the plate has not reached any material yet
+      continue;
+    }
+    let sol = null;
+    let kappa = 0;
+    let t = null;
+    if (!crushed) {
+      const guess = kappaPrev && excessPrev ? (kappaPrev * sys.excess) / excessPrev : 0;
+      // The plate moves no faster than the approach speed; below that the press force limits it.
+      const kappaSpeed = Number.isFinite(vmax) ? (h ** 3 * ((hCur - h) / vmax)) / (12 * mu) : 0;
+      if (!act.length) {
+        // Pressures scale exactly with 1/κ: solve once in volume units and pick κ to carry the force.
+        sol = solve(sys, 1, guess);
+        kappa = Math.max(kappaSpeed, force > 0 ? Math.max(1e-30, unitLoad(sys, sol) / force) : 1);
+      } else {
+        kappa = Math.max(kappaSpeed, guess || Math.max(1e-30, unitLoad(sys, solve(build(cap, []), 1, 0)) / force));
+        for (let r = 0; r < 3; r++) {
+          sol = solve(sys, kappa);
+          const ratio = load(sys, sol) / force;
+          if (!(ratio > 0) || Math.abs(ratio - 1) < 0.35 || (ratio < 1 && kappa <= kappaSpeed * (1 + 1e-9))) break;
+          kappa = Math.max(kappaSpeed, kappa * Math.min(20, Math.max(0.05, ratio)));
+        }
+      }
+      t = trialVolumes(sys, sol);
+    }
+    if ((crushed || t.negative || t.drain > 0.9 || t.swing > 0.6) && dln > 2e-4) {
+      restoreAir(saved);
+      dln *= 0.5;
+      substeps++;
+      continue;
+    }
+    volume.set(t.trial);
+    const scale = act.length ? 1 : kappa;
+    for (let q = 0; q < sys.m; q++) warm[sys.cells[q]] = sol.x[q] / scale;
+    act.forEach((b, q) => (b.q = sol.q[q]));
+    const dt = (12 * mu * kappa) / h ** 3;
+    time += dt;
+    dtLast = dt;
+    kappaPrev = kappa;
+    excessPrev = sys.excess;
+    hCur = h;
+    steps++;
+    classify(cap, h, true);
+    if (t.front > FRONT || t.swing > 0.3) dln = Math.max(2e-4, dln * 0.6);
+    else if (t.front < FRONT * 0.4 && t.swing < 0.15) dln = Math.min(DLN_MAX, dln * 1.25);
+    while (target < targets.length && hCur <= targets[target] * (1 + 1e-9)) {
+      snapshot(hCur, cap);
+      target++;
+    }
+  }
+  const cap = gap * area;
+  classify(cap, gap);
+  const pressTime = time;
+  let wetAtSeat = 0;
+  for (let i = 0; i < n; i++) if (state[i] === FILLED) wetAtSeat += area;
+
+  // ── phase 2: the plate rests on the spacers; pockets relax against the yield-stress hold ──
+  let relaxTime = 0;
+  let settled = true;
+  if (mode === 'compressible' && settle > 0 && pockets.size) {
+    phase = 'relax';
+    let dt = Math.min(Math.max(dtLast, 1e-3), settle / 20);
+    const marks = Array.from({ length: Math.max(0, relaxFrames - 1) }, (_, k) => settle * 0.002 * 500 ** (k / Math.max(1, relaxFrames - 2)));
+    let mark = 0;
+    for (let iter = 0; iter < 800; iter++) {
+      holdPressures(gap);
+      const act = [...pockets.values()].filter((b) => gauge(b) - b.hold > HELD);
+      if (!act.length) break;
+      if (relaxTime >= settle * (1 - 1e-9)) {
+        settled = false;
+        break;
+      }
+      const step = Math.min(dt, settle - relaxTime);
+      const sys = build(cap, act);
+      if (sys.m === 0) break;
+      const sol = solve(sys, (gap ** 3 * step) / (12 * mu));
+      const t = trialVolumes(sys, sol);
+      if ((t.negative || t.drain > 0.6 || t.swing > 0.3) && dt > 1e-6) {
+        dt *= 0.5;
+        continue;
+      }
+      volume.set(t.trial);
+      for (let q = 0; q < sys.m; q++) warm[sys.cells[q]] = sol.x[q];
+      act.forEach((b, q) => (b.q = sol.q[q]));
+      relaxTime += step;
+      time += step;
+      classify(cap, gap);
+      while (mark < marks.length && relaxTime >= marks[mark]) {
+        snapshot(gap, cap);
+        mark++;
+      }
+      if (t.swing < 0.05 && t.drain < 0.15) dt *= 2;
+      else if (t.swing < 0.12) dt *= 1.3;
+    }
+  }
+  // Final material overshoot: a few rounds with every pocket held in place (no time accounting).
+  // Material sealed in by held pockets cannot move; stop once a round no longer reduces the total.
+  let before = Infinity;
+  for (let round = 0; round < 60; round++) {
+    let overshoot = 0;
+    let sum = 0;
+    for (let i = 0; i < n; i++)
+      if (state[i] === FILLED && volume[i] > cap) {
+        overshoot = Math.max(overshoot, volume[i] - cap);
+        sum += volume[i] - cap;
+      }
+    if (overshoot < 1e-9 * cap || sum > 0.9 * before) break;
+    before = sum;
+    const sys = build(cap, []);
+    if (sys.m === 0) break;
+    volume.set(trialVolumes(sys, solve(sys, 1, 0, true)).trial);
+    classify(cap, gap);
+  }
+  holdPressures(gap);
+  if (frameBudget > 1) {
+    if (frames.length >= frameBudget) frames.length = frameBudget - 1;
+    snapshot(gap, cap);
+  }
+
+  return {
+    volume,
+    state,
+    pocketOf,
+    pockets: [...pockets.values()],
+    frames,
+    crest,
+    cap,
+    press: {
+      time: pressTime,
+      relaxTime,
+      settled,
+      substeps,
+      steps,
+      seatPressureKPa: wetAtSeat > 0 ? force / (wetAtSeat * 1e-6) / 1000 : 0,
+      peakBubbleKPa: peakBubble / 1000,
+      ...events,
+    },
+  };
+}
+
 export function estimateCompression(run, options) {
   const c = run.config;
-  const o = { shape: 'rectangle', offsetX: 0, offsetY: 0, cellSize: 1, power: 25, frames: 0, ...options };
-  for (const k of ['width', 'depth', 'offsetX', 'offsetY', 'gap', 'cellSize', 'power'])
+  const o = { shape: 'rectangle', offsetX: 0, offsetY: 0, cellSize: 1, power: 25, frames: 0, ...PRESS_DEFAULTS, ...options };
+  for (const k of ['width', 'depth', 'offsetX', 'offsetY', 'gap', 'cellSize', 'power', 'pressKgf', 'pressSpeed', 'settleTime'])
     if (!Number.isFinite(o[k])) throw new Error(`${k} 必須是有限數值`);
   if (!['rectangle', 'circle'].includes(o.shape)) throw new Error('熱源形狀必須為矩形或圓形');
+  if (!AIR_MODES.includes(o.airMode)) throw new Error('夾氣處理方式無效');
   if (o.width <= 0 || o.width > 1000 || o.depth <= 0 || o.depth > 1000 || o.gap < 0.02 || o.gap > 10 || o.cellSize < 0.2 || o.cellSize > 10)
     throw new Error('熱源尺寸需為 0–1000 mm、間隙 0.02–10 mm、網格 0.2–10 mm');
   if (o.power < 0 || o.power > 10000) throw new Error('熱源功耗需介於 0 與 10000 W');
+  if (o.pressKgf < 0.01 || o.pressKgf > 5000) throw new Error('壓合力需介於 0.01 與 5000 kgf');
+  if (o.settleTime < 0 || o.settleTime > 3600) throw new Error('靜置時間需介於 0 與 3600 s');
+  if (o.pressSpeed < 0.01 || o.pressSpeed > 100) throw new Error('壓板下降速度上限需介於 0.01 與 100 mm/s');
   const material = MATERIALS[c.material] || MATERIALS.putty;
+  // null / undefined means "material default"; anything else must be a valid number.
+  if (o.viscosity != null && !(o.viscosity >= 1 && o.viscosity <= 1e7)) throw new Error('有效黏度需介於 1 與 10,000,000 Pa·s');
+  if (o.yieldStress != null && !(o.yieldStress >= 0 && o.yieldStress <= 1e6)) throw new Error('降伏應力需介於 0 與 1,000,000 Pa');
+  const { viscosity, yieldStress } = squeezeRheology(c, o);
+  if (!(viscosity >= 1 && viscosity <= 1e7)) throw new Error('有效黏度需介於 1 與 10,000,000 Pa·s');
+  if (!(yieldStress >= 0 && yieldStress <= 1e6)) throw new Error('降伏應力需介於 0 與 1,000,000 Pa');
   const conductivity = Number.isFinite(o.conductivity) && o.conductivity > 0 ? o.conductivity : material.conductivity;
   const contact = Number.isFinite(o.contactResistance) && o.contactResistance >= 0 ? o.contactResistance : material.contactResistance;
   const deposits = run.summary.deposits;
@@ -149,16 +859,16 @@ export function estimateCompression(run, options) {
   };
 
   // Rasterise the undisturbed deposit with its own cross-section (half-ellipse bead, spherical-cap dot).
-  const volume = new Float64Array(n);
+  const deposit = new Float64Array(n);
   const addWeighted = (v, samples, fx, fy) => {
     let sum = 0;
     for (const [, w] of samples) sum += w;
     if (sum <= 0) {
       const i = cellOf(fx, fy);
-      if (i >= 0) volume[i] += v;
+      if (i >= 0) deposit[i] += v;
       return;
     }
-    for (const [i, w] of samples) volume[i] += (v * w) / sum;
+    for (const [i, w] of samples) deposit[i] += (v * w) / sum;
   };
   if (dot && sources.length) {
     const s = sources[0];
@@ -194,147 +904,7 @@ export function estimateCompression(run, options) {
       addWeighted(s.v, samples, s.x, s.y);
     }
   }
-  let crest = 0;
-  for (let i = 0; i < n; i++) crest = Math.max(crest, volume[i] / area);
 
-  // Air: a dry cell (not filled to the plate) is open if it can reach the plate edge through dry cells.
-  const trapped = new Uint8Array(n);
-  const reach = new Uint8Array(n);
-  const stack = new Int32Array(n);
-  const neighbours = (i, out) => {
-    const x = i % cols;
-    out[0] = x > 0 ? i - 1 : -1;
-    out[1] = x + 1 < cols ? i + 1 : -1;
-    out[2] = i >= cols ? i - cols : -1;
-    out[3] = i + cols < n ? i + cols : -1;
-    return out;
-  };
-  const nbBuf = [0, 0, 0, 0];
-  const markTrapped = (cap) => {
-    reach.fill(0);
-    let top = 0;
-    const dry = (i) => volume[i] < cap * (1 - 1e-9) && !trapped[i];
-    for (let i = 0; i < n; i++) {
-      const x = i % cols;
-      const border = x === 0 || x === cols - 1 || i < cols || i >= n - cols;
-      if (border && dry(i)) {
-        reach[i] = 1;
-        stack[top++] = i;
-      }
-    }
-    while (top) {
-      const i = stack[--top];
-      for (const j of neighbours(i, nbBuf))
-        if (j >= 0 && !reach[j] && dry(j)) {
-          reach[j] = 1;
-          stack[top++] = j;
-        }
-    }
-    let added = 0;
-    for (let i = 0; i < n; i++)
-      if (dry(i) && !reach[i]) {
-        trapped[i] = 1;
-        added++;
-      }
-    return added;
-  };
-
-  // Press the film to plate height h: push every cell's excess out through the pressure field.
-  let unresolved = 0;
-  const warm = new Float64Array(n);
-  const index = new Int32Array(n).fill(-1);
-  // Intermediate plate steps take one pressure solve and carry any front overshoot to the next step;
-  // the final step iterates until no cell stands above the plate.
-  const press = (h, rounds) => {
-    const cap = h * area;
-    for (let round = 0; round < rounds; round++) {
-      const cells = [];
-      for (let i = 0; i < n; i++) if (volume[i] > cap * (1 + 1e-12) || (volume[i] >= cap * (1 - 1e-12) && !trapped[i])) cells.push(i);
-      let excess = 0;
-      for (const i of cells) excess += Math.max(0, volume[i] - cap);
-      if (excess <= 1e-12 * Math.max(totalMm3, 1)) break; // movable share is checked below
-      const m = cells.length;
-      cells.forEach((i, k) => (index[i] = k));
-      const nb = new Int32Array(4 * m);
-      const diag = new Float64Array(m);
-      const rhs = new Float64Array(m);
-      const outlets = [];
-      const hasOutlet = new Uint8Array(m);
-      for (let k = 0; k < m; k++) {
-        const i = cells[k];
-        rhs[k] = Math.max(0, volume[i] - cap);
-        neighbours(i, nbBuf);
-        for (let e = 0; e < 4; e++) {
-          const j = nbBuf[e];
-          nb[4 * k + e] = -1;
-          if (j < 0 || trapped[j]) continue; // plate edge never reached; trapped air is a wall
-          diag[k]++;
-          if (index[j] >= 0) nb[4 * k + e] = index[j];
-          else {
-            outlets.push(k, j);
-            hasOutlet[k] = 1;
-          }
-        }
-      }
-      // A pressed region sealed off by trapped air has no free cell to flow into: its pressure problem
-      // is singular (pure Neumann) and the material physically cannot move. Leave it in place.
-      const open = new Uint8Array(m);
-      const seen = new Uint8Array(m);
-      const pending = [];
-      for (let k0 = 0; k0 < m; k0++) {
-        if (seen[k0]) continue;
-        const members = [];
-        let outlet = false;
-        seen[k0] = 1;
-        pending.push(k0);
-        while (pending.length) {
-          const k = pending.pop();
-          members.push(k);
-          if (hasOutlet[k]) outlet = true;
-          for (let e = 4 * k; e < 4 * k + 4; e++) {
-            const j = nb[e];
-            if (j >= 0 && !seen[j]) {
-              seen[j] = 1;
-              pending.push(j);
-            }
-          }
-        }
-        if (outlet) for (const k of members) open[k] = 1;
-      }
-      let movable = 0;
-      for (let k = 0; k < m; k++) {
-        if (open[k]) movable += rhs[k];
-        else {
-          rhs[k] = 0;
-          diag[k] = 1;
-          nb.fill(-1, 4 * k, 4 * k + 4);
-        }
-      }
-      if (movable <= 1e-12 * Math.max(totalMm3, 1)) {
-        cells.forEach((i) => (index[i] = -1));
-        break;
-      }
-      const guess = new Float64Array(m);
-      for (let k = 0; k < m; k++) guess[k] = open[k] ? warm[cells[k]] : 0;
-      const pressure = solvePressure(cells, nb, diag, rhs, guess);
-      warm.fill(0);
-      for (let k = 0; k < m; k++) warm[cells[k]] = pressure[k];
-      let sent = 0;
-      for (let e = 0; e < outlets.length; e += 2) sent += Math.max(0, pressure[outlets[e]]);
-      if (!(sent > 0) || !Number.isFinite(sent)) {
-        cells.forEach((i) => (index[i] = -1));
-        break; // nothing could be routed this round; keep every cell's volume unchanged
-      }
-      const scale = movable / sent;
-      cells.forEach((i, k) => open[k] && (volume[i] = Math.min(volume[i], cap)));
-      for (let e = 0; e < outlets.length; e += 2) volume[outlets[e + 1]] += Math.max(0, pressure[outlets[e]]) * scale;
-      cells.forEach((i) => (index[i] = -1));
-    }
-    return cap;
-  };
-
-  // Plate steps from the crest to the gap; at most ~7 % volume pushed per step.
-  const frames = [];
   const sourceFraction = new Float32Array(n);
   const partFraction = new Float32Array(n);
   const insideSource = (x, y) =>
@@ -358,33 +928,25 @@ export function estimateCompression(run, options) {
       partFraction[i] = p;
       sourceSampleArea += f * area;
     }
-  const snapshot = (h, cap) => {
-    const cov = new Uint8Array(n);
-    let covered = 0;
-    for (let i = 0; i < n; i++) {
-      const f = Math.min(1, volume[i] / cap);
-      cov[i] = trapped[i] ? 0 : Math.round(f * 255);
-      covered += trapped[i] ? 0 : sourceFraction[i] * f * area;
-    }
-    frames.push({ gap: h, coverage: cov, trapped: trapped.slice(), coveredPercent: sourceSampleArea > 0 ? (covered / sourceSampleArea) * 100 : 0 });
-  };
-  const steps = crest > o.gap ? Math.min(80, Math.max(4, Math.ceil(Math.log(o.gap / crest) / Math.log(0.93)))) : 1;
-  const keep = o.frames > 1 ? new Set(Array.from({ length: o.frames }, (_, k) => Math.round((k * steps) / (o.frames - 1)))) : new Set();
-  if (keep.has(0)) snapshot(Math.max(crest, o.gap), Math.max(crest, o.gap) * area);
-  let cap = o.gap * area;
-  for (let k = 1; k <= steps; k++) {
-    const h = crest > o.gap ? crest * (o.gap / crest) ** (k / steps) : o.gap;
-    cap = press(h, k === steps ? 60 : 1);
-    markTrapped(cap);
-    if (keep.has(k)) snapshot(h, cap);
-  }
 
-  // Material still standing above the plate at the final gap (sealed by trapped air).
+  const force = o.pressKgf * KGF;
+  const sq = squeezeRaster(
+    { cols, rows, cellSize, volume: deposit },
+    { gap: o.gap, airMode: o.airMode, force, pressSpeed: o.pressSpeed, viscosity, yieldStress, settleTime: o.settleTime, frames: o.frames, sourceFraction, trace: o.trace },
+  );
+  const volume = sq.volume;
+  const cap = sq.cap;
+  const crest = sq.crest;
+
+  // Material still standing above the plate at the final gap (sealed by rigid trapped air).
+  let unresolved = 0;
   for (let i = 0; i < n; i++) unresolved += Math.max(0, volume[i] - cap);
 
-  // Final metrics at the assembly gap.
+  // Final metrics at the assembly gap. Air fraction per cell: a rigid trapped cell is all air; a
+  // compressible pocket cell holds its unfilled share.
   const coverage = new Float32Array(n);
   const voidMask = new Uint8Array(n);
+  const airFraction = new Float32Array(n);
   let coveredArea = 0;
   let inside = 0;
   let offWorkpiece = 0;
@@ -393,8 +955,10 @@ export function estimateCompression(run, options) {
   let squeezeOut = 0;
   for (let i = 0; i < n; i++) {
     const v = volume[i];
-    coverage[i] = trapped[i] ? 0 : Math.min(1, v / cap);
-    voidMask[i] = trapped[i];
+    const s = sq.state[i];
+    coverage[i] = s === FROZEN ? 0 : Math.min(1, v / cap);
+    airFraction[i] = s === FROZEN ? 1 : s === POCKET ? 1 - coverage[i] : 0;
+    voidMask[i] = s === FROZEN || (s === POCKET && coverage[i] < 0.5) ? 1 : 0;
     coveredArea += sourceFraction[i] * coverage[i] * area;
     wetArea += coverage[i] * area;
     inside += v * sourceFraction[i];
@@ -410,12 +974,15 @@ export function estimateCompression(run, options) {
       squeezeOut = Math.max(squeezeOut, out);
     }
   }
-  // Connected trapped-air pockets (4-connectivity).
+  // Air pockets: compressible pockets by identity, rigid ones as connected frozen cells.
   const voids = [];
+  const pocketById = new Map(sq.pockets.map((b) => [b.id, b]));
   const seen = new Uint8Array(n);
+  const stack = new Int32Array(n);
   for (let i = 0; i < n; i++) {
-    if (!voidMask[i] || seen[i]) continue;
-    let cells = 0;
+    if (!airFraction[i] || seen[i]) continue;
+    const id = sq.pocketOf[i];
+    let a = 0;
     let inSource = 0;
     let sx = 0;
     let sy = 0;
@@ -424,17 +991,36 @@ export function estimateCompression(run, options) {
     stack[top++] = i;
     while (top) {
       const k = stack[--top];
-      cells++;
-      inSource += sourceFraction[k];
-      sx += centerX(k);
-      sy += centerY(k);
-      for (const j of neighbours(k, nbBuf))
-        if (j >= 0 && voidMask[j] && !seen[j]) {
+      const f = airFraction[k];
+      a += f * area;
+      inSource += f * sourceFraction[k] * area;
+      sx += centerX(k) * f;
+      sy += centerY(k) * f;
+      const x = k % cols;
+      for (const j of [x > 0 ? k - 1 : -1, x + 1 < cols ? k + 1 : -1, k >= cols ? k - cols : -1, k + cols < n ? k + cols : -1])
+        if (j >= 0 && airFraction[j] && !seen[j] && sq.pocketOf[j] === id) {
           seen[j] = 1;
           stack[top++] = j;
         }
     }
-    voids.push({ areaMm2: cells * area, inSourceMm2: inSource * area, x: sx / cells, y: sy / cells });
+    if (!(a > 0)) continue;
+    const b = id >= 0 ? pocketById.get(id) : null;
+    voids.push({
+      areaMm2: a,
+      inSourceMm2: inSource,
+      x: sx / (a / area),
+      y: sy / (a / area),
+      ...(b
+        ? {
+            pressureKPa: (b.gas / Math.max(b.air, 1e-12) - ATM) / 1000,
+            volumeRatio: (b.air * ATM) / b.gas,
+            atmVolumeMm3: b.gas / ATM,
+            sealGapMm: b.sealGap,
+            minRatio: b.minRatio,
+            sealedDuring: b.sealPhase,
+          }
+        : {}),
+    });
   }
   voids.sort((a, b) => b.inSourceMm2 - a.inSourceMm2 || b.areaMm2 - a.areaMm2);
   // One- or two-cell pockets are lattice noise where fronts meet diagonally; report them separately.
@@ -465,10 +1051,45 @@ export function estimateCompression(run, options) {
   thermal.idealRise = thermal.idealResistance * o.power;
   thermal.rise = thermal.resistance * o.power;
 
+  const pressed = sourceVoids.filter((v) => Number.isFinite(v.volumeRatio));
+  const press = {
+    airMode: o.airMode,
+    forceN: force,
+    forceKgf: o.pressKgf,
+    pressSpeed: o.pressSpeed,
+    viscosity,
+    yieldStress,
+    settleTime: o.settleTime,
+    pressTime: sq.press.time,
+    relaxTime: sq.press.relaxTime,
+    settled: sq.press.settled,
+    seatPressureKPa: sq.press.seatPressureKPa,
+    peakBubbleKPa: sq.press.peakBubbleKPa,
+    sealed: sq.press.sealed,
+    vented: sq.press.vented,
+    collapsed: sq.press.collapsed,
+    remaining: voids.filter((v) => v.areaMm2 >= minVoid - 1e-9).length, // resolved bubbles left anywhere
+    bubbleKPa: pressed.length ? Math.max(...pressed.map((v) => v.pressureKPa)) : 0,
+    volumeRatio: pressed.length ? pressed.reduce((s, v) => s + v.volumeRatio * v.inSourceMm2, 0) / pressed.reduce((s, v) => s + v.inSourceMm2, 0) : null,
+    substeps: sq.press.substeps,
+  };
+
+  const AIR_TEXT = {
+    compressible: '被膠包圍的空氣依 pV = 常數（等溫）壓縮與回脹，可隨膠流移動、在膠牆變薄時排出',
+    rigid: '被膠包圍的乾區凍結為不可變形的夾氣（v1.0 剛性牆）',
+    vent: '被膠包圍的空氣假設全部排出（覆蓋率上限）',
+  };
   const warnings = [
-    '覆蓋與空洞來自平行板 Hele-Shaw 擠壓近似（牛頓流體形狀、被包圍的乾區視為夾氣不再填入）；未含屈服應力、壁滑、潤濕、壓合力與氣體壓縮，不能判定實際接觸或可靠度。',
+    `覆蓋與空洞來自平行板 Hele-Shaw 擠壓近似（等效牛頓黏度 ${Math.round(viscosity)} Pa·s、定力 ${o.pressKgf} kgf 壓到墊片）；${AIR_TEXT[o.airMode]}。未含剪切稀化、壁滑、潤濕與指狀穿透，不能判定實際接觸或可靠度。`,
     '熱阻為一維估算：(間隙 ÷ 導熱率 + TDS 推算接觸熱阻) ÷ 濕潤面積；不含擴散熱阻與空洞周邊的橫向傳熱，只供方案相對比較。',
   ];
+  if (o.airMode === 'compressible' && sq.press.sealed > 0)
+    warnings.push(
+      `壓到墊片後膠壓消退，被壓縮的氣泡會回脹（降伏應力 ${yieldStress} Pa 只擋住一小部分）；靜置 ${o.settleTime} s ${sq.press.settled ? '內已大致穩定' : '時仍在回脹'}。透明板實測建議在壓好後 0 s、30 s、2 min、10 min 各拍一張比對。`,
+    );
+  if (sq.press.time > 120) warnings.push(`以 ${o.pressKgf} kgf 壓到墊片約需 ${sq.press.time.toFixed(0)} s；實際手壓若較快，壓合中的氣泡壓縮會更大。`);
+  if (o.airMode === 'compressible' && sq.press.sealed > 0)
+    warnings.push('氣泡在膠牆變薄處排出（吹破）的位置與時機受網格影響（指狀穿透未完整解析）；比較圖樣請使用相同網格，建議 ≤ 0.5 mm。');
   if (unresolved > 1e-9) warnings.push('部分膠量被夾氣區完全包圍而無法再推出，已保留在原位；局部膜厚可能高於間隙。');
   if (cellSize > o.cellSize * 1.001)
     warnings.push(`為控制計算量，網格由 ${o.cellSize.toFixed(2)} mm 調整為 ${cellSize.toFixed(2)} mm；細節精度下降。`);
@@ -490,7 +1111,7 @@ export function estimateCompression(run, options) {
 
   return {
     options: o,
-    grid: { originX, originY, cellSize, cols, rows, coverage, sourceFraction, voidMask, frames, crest },
+    grid: { originX, originY, cellSize, cols, rows, coverage, sourceFraction, voidMask, airFraction, frames: sq.frames, crest },
     summary: {
       depositedMl,
       sourceAreaMm2: sourceArea,
@@ -512,13 +1133,14 @@ export function estimateCompression(run, options) {
       tinyVoidMm2,
       minVoidMm2: minVoid,
       crestMm: crest,
-      steps,
+      steps: sq.press.steps,
+      press,
       thermal,
       material: material.name,
     },
     voids,
     warnings,
     assumptions: 'engineering_assumption',
-    model: 'hele_shaw_squeeze_v1',
+    model: `hele_shaw_squeeze_v1.1_${o.airMode}`,
   };
 }

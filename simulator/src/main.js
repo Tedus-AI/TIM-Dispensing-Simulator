@@ -5,7 +5,7 @@ import { PARAMETER_UPDATES, parameterValue } from './parameters.js';
 import { MATERIALS } from './materials.js';
 import { DispenseScene, VIEW_LABELS } from './scene.js';
 import { HARDWARE_REFERENCES } from './hardware-reference.js';
-import { estimateCompression } from './compression.js';
+import { estimateCompression, squeezeRheology, PRESS_DEFAULTS } from './compression.js';
 import { tuneForVolume } from './tuning.js';
 import { pageTemplate, ICONS, PATTERN_ICONS, PATTERN_NAMES } from './ui/template.js';
 import { drawChart, moveCursor, CHARTS } from './ui/chart.js';
@@ -45,7 +45,14 @@ const DEFAULT_HEAT = () => ({
   gap: parameterValue(registry, 'assembly.gap'),
   cellSize: 0.5,
   power: parameterValue(registry, 'thermal.power'),
+  ...PRESS_DEFAULTS,
+  viscosity: null, // null = material default (see squeezeRheology)
+  yieldStress: null,
 });
+// Heat-panel keys that only affect the squeeze estimate (no dispensing re-run).
+const PRESS_KEYS = ['gap', 'cellSize', 'power', 'airMode', 'pressKgf', 'pressSpeed', 'settleTime', 'viscosity', 'yieldStress'];
+const AIR_MODE_NAMES = { compressible: '可壓縮氣泡', rigid: '剛性牆（v1.0）', vent: '全部排出' };
+const AIR_MODE_SHORT = { compressible: '可壓縮', rigid: '剛性牆', vent: '全排出' };
 const DEFAULT_PATTERN = () => ({ pattern: 'n', spacing: 5, edgeInset: 2, spiralShape: 'auto', spiralDirection: 'outside-in' });
 
 const S = {
@@ -189,6 +196,7 @@ function switchProfile(material, architecture) {
   next.material = material;
   next.architecture = architecture;
   next.profile = fresh.profile;
+  if (material !== S.config.material) S.heat = { ...S.heat, viscosity: null, yieldStress: null };
   if (!tryRecompute(next)) {
     $('#sel-material') && ($('#sel-material').value = S.config.material);
     $('#sel-arch') && ($('#sel-arch').value = S.config.architecture);
@@ -291,8 +299,26 @@ function renderHeat() {
     <button class="primary" id="press">${ICONS.press}<span>模擬壓合</span></button>
     <button class="secondary" id="compare">${ICONS.compare}<span>比較所有圖樣</span></button>
   </div>
-  ${group('估算網格', num({ bind: 'h.cellSize', label: '網格解析度', value: h.cellSize, unit: 'mm', min: 0.2, max: 5, tag: 'ai', hint: '越小越細，計算時間增加；上限 90,000 格' }), { open: false })}
-  <p class="note">壓合採平行板 Hele-Shaw 擠壓近似：被膠包圍的乾區視為夾氣。熱阻 =（間隙 ÷ k + TDS 推算接觸熱阻）÷ 濕潤面積。皆未經透明板實測校準。</p>`;
+  ${group('壓合條件（透明板＋墊片）', pressFields(h), { open: true, note: '定力壓下，到墊片（組裝間隙）即停；之後膠壓消退，被壓縮的氣泡回脹到降伏應力擋住為止。實際手壓若先快後慢，壓合中的氣泡壓縮程度會不同，最終回脹結果影響較小。' })}
+  ${group('估算網格', num({ bind: 'h.cellSize', label: '網格解析度', value: h.cellSize, unit: 'mm', min: 0.2, max: 5, tag: 'ai', hint: '越小越細，計算時間增加；上限 90,000 格。夾氣數量對網格敏感，比較圖樣請用相同網格' }), { open: false })}
+  <p class="note">壓合採平行板 Hele-Shaw 擠壓：定力壓到墊片，被膠包圍的空氣依所選方式處理（預設可壓縮：pV = 常數、可隨膠流移動、膠牆變薄時排出）。熱阻 =（間隙 ÷ k + TDS 推算接觸熱阻）÷ 濕潤面積。皆未經透明板實測校準。</p>`;
+}
+
+function pressFields(h) {
+  const c = S.config;
+  const rh = squeezeRheology(c, h);
+  const grease = c.material === 'grease';
+  return `${select({ bind: 'h.airMode', label: '夾氣處理', value: h.airMode, options: [['compressible', '可壓縮氣泡（會壓縮、遷移、排出）'], ['rigid', '剛性牆（v1.0 舊模型）'], ['vent', '全部排出（覆蓋率上限）']] })}
+  <div class="pair">
+    ${num({ bind: 'h.pressKgf', label: '壓合力', value: h.pressKgf, unit: 'kgf', min: 0.01, max: 5000, tag: 'ai', hint: '手壓或治具的力' })}
+    ${num({ bind: 'h.pressSpeed', label: '下降速度上限', value: h.pressSpeed, unit: 'mm/s', min: 0.01, max: 100, tag: 'ai', hint: '剛接觸時的壓板速度' })}
+  </div>
+  <div class="pair">
+    ${num({ bind: 'h.viscosity', label: '有效黏度', value: rh.viscosity, unit: 'Pa·s', min: 1, max: 1e7, tag: grease ? 'tds' : 'derived', hint: grease ? 'TDS Brookfield 2 rpm（同設備頁）' : '由針嘴冪律擬合推算 @1 s⁻¹' })}
+    ${num({ bind: 'h.yieldStress', label: '降伏應力', value: rh.yieldStress, unit: 'Pa', min: 0, max: 1e6, tag: 'ai', hint: '公開散熱膏實測約 7–30 Pa' })}
+  </div>
+  ${num({ bind: 'h.settleTime', label: '靜置觀察時間', value: h.settleTime, unit: 's', min: 0, max: 3600, tag: 'ai', hint: '壓到墊片後氣泡回脹的時間；建議與透明板拍照時間一致' })}
+  ${h.viscosity != null || h.yieldStress != null ? '<button class="chip-btn" id="rheo-reset">恢復材料預設黏度／降伏應力</button>' : ''}`;
 }
 
 function renderPath() {
@@ -440,7 +466,7 @@ $('#tab-body').addEventListener('change', (e) => {
   const target = scope === 'h' ? 'heat' : 'pattern';
   const previous = S[target];
   S[target] = { ...previous, [key]: value };
-  if (scope === 'h' && ['gap', 'cellSize', 'power'].includes(key)) {
+  if (scope === 'h' && PRESS_KEYS.includes(key)) {
     markPressStale();
     return renderTab();
   }
@@ -470,6 +496,10 @@ $('#tab-body').addEventListener('click', (e) => {
       return tryRecompute({ ...S.config, reverseRpm: 30, reverseDuration: 0.05 });
     case 'tune':
       return tune();
+    case 'rheo-reset':
+      S.heat = { ...S.heat, viscosity: null, yieldStress: null };
+      markPressStale();
+      return renderTab();
     case 'press':
       return runPress();
     case 'compare':
@@ -595,6 +625,22 @@ function kpi(label, value, unit, hint = '', cls = '') {
   return `<div class="kpi ${cls}"><span>${label}</span><b>${value}<small>${unit}</small></b>${hint ? `<em>${hint}</em>` : ''}</div>`;
 }
 
+function pressKpis(pr) {
+  if (!pr) return '';
+  const air = pr.airMode === 'compressible';
+  const bubbles = air
+    ? kpi('氣泡留下', `${pr.remaining}`, '個', pr.sealed ? `封住 ${pr.sealed} 次 · 排出 ${pr.vented} 次${pr.peakBubbleKPa ? ` · 壓合中最高 ${fmt(pr.peakBubbleKPa, 0)} kPa` : ''}` : '壓合過程沒有封住空氣', pr.remaining ? 'warn' : 'good')
+    : kpi('氣泡', '—', '', pr.airMode === 'rigid' ? '剛性牆：封住即凍結' : '假設全部排出');
+  const relax = air
+    ? kpi('靜置回脹', fmt(pr.relaxTime, pr.relaxTime < 10 ? 1 : 0), 's', pr.volumeRatio != null ? `剩餘氣泡 = 1 atm 體積 ${fmt(pr.volumeRatio * 100, 0)}%${pr.settled ? '' : ' · 仍在回脹'}` : '無剩餘氣泡', pr.settled ? '' : 'warn')
+    : kpi('靜置回脹', '—', '', '此模式不計');
+  return `<div class="kpis three">
+    ${kpi('壓到墊片', fmt(pr.pressTime, pr.pressTime < 10 ? 1 : 0), 's', `${fmt(pr.forceKgf, 1)} kgf · 座落 ${fmt(pr.seatPressureKPa, 0)} kPa`)}
+    ${bubbles}
+    ${relax}
+  </div>`;
+}
+
 function renderResults() {
   const run = S.run;
   const c = S.config;
@@ -625,7 +671,7 @@ function renderResults() {
     </div>
   </section>
   <section class="card-sec press-sec">
-    <div class="sec-head"><span class="eyebrow">壓合 · 熱阻估算</span>${S.press ? `<span class="pill ${stale ? 'pill-warn' : ''}">${stale ? '設定已變更' : `間隙 ${fmt(S.press.settings.gap, 2)} mm`}</span>` : ''}</div>
+    <div class="sec-head"><span class="eyebrow">壓合 · 熱阻估算</span>${S.press ? `<span class="pill ${stale ? 'pill-warn' : ''}">${stale ? '設定已變更' : `${fmt(S.press.settings.gap, 2)} mm · ${AIR_MODE_SHORT[S.press.settings.airMode]}`}</span>` : ''}</div>
     ${
       p && !stale
         ? `<div class="press-grid">${ring(p.coveredPercent)}<div class="press-sum"><b>熱源等效覆蓋</b><span>沉積 ${fmt(p.depositedMl, 3)} mL = 間隙體積 ${fmt(p.volumeRatio, 2)}×</span><span>${esc(p.material)} · k ${p.thermal.conductivity} W/m·K</span></div></div><div class="kpis">
@@ -634,6 +680,7 @@ function renderResults() {
           ${kpi('TIM 溫升', fmt(p.thermal.rise, 2), '°C', `滿覆蓋 ${fmt(p.thermal.idealRise, 2)} °C @ ${fmt(p.thermal.power, 0)} W`, p.thermal.rise > p.thermal.idealRise * 1.1 ? 'warn' : '')}
           ${kpi('熱阻', fmt(p.thermal.resistance, 4), 'K/W', `θ ${fmt(p.thermal.impedanceCm2, 3)} °C·cm²/W`)}
         </div>
+        ${pressKpis(p.press)}
         <div class="press-actions"><button class="chip-btn" id="press-replay">${ICONS.play}重播壓合</button><button class="chip-btn" id="press-save">保存壓合基準</button></div>
         ${S.pressBaseline ? `<div class="compare-box"><b>壓合基準 → 目前</b><p>覆蓋 ${fmt(S.pressBaseline.summary.coveredPercent, 1)}% → ${fmt(p.coveredPercent, 1)}%　夾氣 ${S.pressBaseline.summary.voidCount} → ${p.voidCount}　溫升 ${fmt(S.pressBaseline.summary.thermal.rise, 2)} → ${fmt(p.thermal.rise, 2)} °C</p><small>${esc(S.pressBaseline.describe)}</small></div>` : ''}`
         : `<div class="cta"><p>${stale ? '熱源或點膠設定已變更，請重新模擬。' : '以完整試驗的沉積分布估算壓合覆蓋、夾氣與熱阻。'}</p><button class="primary" id="press-cta">${ICONS.press}<span>模擬壓合</span></button><button class="secondary" id="compare-cta">${ICONS.compare}<span>比較所有圖樣</span></button></div>`
@@ -908,7 +955,10 @@ function showPressFrame(k) {
   scene.setCompressionFrame(k);
   const f = view.frames[k];
   $('#press-scrub').value = String(k);
-  $('#press-gap').textContent = `間隙 ${fmt(f.gap, 3)} mm · 覆蓋 ${fmt(f.coveredPercent ?? S.press.result.summary.coveredPercent, 1)}%`;
+  const seat = S.press.result.summary.press?.pressTime ?? 0;
+  const when = f.phase === 'relax' ? `靜置 +${fmt(f.t - seat, f.t - seat < 10 ? 1 : 0)} s` : `${f.t !== undefined ? `壓合 ${fmt(f.t, 1)} s · ` : ''}間隙 ${fmt(f.gap, 3)} mm`;
+  const air = f.bubbles ? ` · 氣泡 ${f.bubbles}（${fmt(f.bubbleKPa, 0)} kPa）` : '';
+  $('#press-gap').textContent = `${when} · 覆蓋 ${fmt(f.coveredPercent ?? S.press.result.summary.coveredPercent, 1)}%${air}`;
 }
 function animatePress(fromStart) {
   const view = scene.compression;
@@ -977,7 +1027,7 @@ function renderCompare(controls) {
   const bestRise = best('rise', -1);
   const bestCycle = best('cycle', -1);
   $('#compare-body').innerHTML = `${controls}
-  <p class="note">熱源 ${S.heat.shape === 'circle' ? `Ø${S.heat.width}` : `${S.heat.width} × ${S.heat.depth}`} mm、間隙 ${S.heat.gap} mm，需求 ${fmt(r.required, 3)} mL。${r.matchVolume ? `每個圖樣自動調整移動速度，使沉積 ≈ 需求 × ${r.factor}。` : '沿用目前速度與流量，膠量隨路徑長改變。'}其他設定沿用目前配置；網格 ≥ 0.5 mm。</p>
+  <p class="note">熱源 ${S.heat.shape === 'circle' ? `Ø${S.heat.width}` : `${S.heat.width} × ${S.heat.depth}`} mm、間隙 ${S.heat.gap} mm，需求 ${fmt(r.required, 3)} mL。${r.matchVolume ? `每個圖樣自動調整移動速度，使沉積 ≈ 需求 × ${r.factor}。` : '沿用目前速度與流量，膠量隨路徑長改變。'}其他設定沿用目前配置；網格 ≥ 0.5 mm；夾氣處理：${AIR_MODE_NAMES[S.heat.airMode]}，${S.heat.pressKgf} kgf 壓到墊片${S.heat.airMode === 'compressible' ? `、靜置 ${S.heat.settleTime} s` : ''}。</p>
   <div class="table-scroll"><table class="cmp"><thead><tr><th>圖樣</th><th>速度<br><small>mm/s</small></th><th>沉積<br><small>mL（×需求）</small></th><th>覆蓋<br><small>%</small></th><th>夾氣<br><small>處 / mm²</small></th><th>溢出<br><small>mm</small></th><th>溫升<br><small>°C</small></th><th>動作<br><small>s</small></th><th></th></tr></thead><tbody>
   ${r.rows
     .map((x) =>
@@ -1027,7 +1077,7 @@ function exportRecord() {
       lineGeometry: 'shared_half_ellipse_rings_total_volume_normalized',
       pointGeometry: 'spherical_cap',
       surfaceAllocation: 'outlet_before_first_lift_only_except_legacy',
-      squeeze: 'parallel_plate_hele_shaw_trapped_air_frozen',
+      squeeze: `parallel_plate_hele_shaw_constant_force_to_spacer_${S.heat.airMode}_air`,
       thermal: 'one_dimensional_bulk_plus_tds_derived_contact',
       hardwareAppearance: 'reference_envelopes_with_assumed_details_not_OEM_CAD',
     },
@@ -1119,7 +1169,7 @@ function renderSources() {
   $('#source-rows').innerHTML = rows
     .map((p) => {
       const old = p.v1 && original.get(p.id);
-      return `<tr class="${p.v1 ? 'v1' : ''}"><td><code>${esc(p.id)}</code>${p.v1 ? '<em class="tag tag-derived">v1.0 更新</em>' : ''}</td><td>${esc(p.value)} ${esc(p.unit || '')}${old ? `<br><small>原 v0.3：${esc(old.value)}</small>` : ''}</td><td>${esc(EVIDENCE[p.evidence] || p.evidence)}<br><small>${esc(p.role || '控制初值')}</small></td><td>${esc(p.basis)}<br><small>${esc((p.source_refs || []).join(' / '))}</small></td></tr>`;
+      return `<tr class="${p.v1 ? 'v1' : ''}"><td><code>${esc(p.id)}</code>${p.v1 ? `<em class="tag tag-derived">v${p.since || '1.0'} 更新</em>` : ''}</td><td>${esc(p.value)} ${esc(p.unit || '')}${old ? `<br><small>原 v0.3：${esc(old.value)}</small>` : ''}</td><td>${esc(EVIDENCE[p.evidence] || p.evidence)}<br><small>${esc(p.role || '控制初值')}</small></td><td>${esc(p.basis)}<br><small>${esc((p.source_refs || []).join(' / '))}</small></td></tr>`;
     })
     .join('');
 }
@@ -1129,7 +1179,7 @@ $('#help-body').innerHTML = `
   <li><b>熱源</b>：輸入元件接觸面尺寸、位置、組裝間隙與功耗。可「自動調整移動速度」讓膠量 = 間隙體積 × 係數。</li>
   <li><b>路徑</b>：依熱源選中心線／N／蛇形／螺旋／外框，或直線、單點。多段路徑在轉角依 junction deviation 減速。</li>
   <li><b>播放</b>：空白鍵播放／暫停；拖曳時間軸或點曲線跳到該時刻；時間軸上的標記可跳到關膠、到位、抬針、退離。</li>
-  <li><b>壓合</b>：按「模擬壓合」看透明板下降、膠膜擴散與夾氣（紅色）；可切換「前緣時序」著色。</li>
+  <li><b>壓合</b>：按「模擬壓合」看透明板以定力壓到墊片、膠膜擴散、氣泡（紅色）壓縮／遷移／排出，以及靜置後的回脹；可切換「前緣時序」著色。夾氣處理可在熱源頁切換為 v1.0 剛性牆或全部排出作對照。</li>
   <li><b>比較</b>：「比較所有圖樣」在等膠量下比較覆蓋、夾氣、溢膠、溫升與動作時間，可直接套用。</li>
 </ol>
 <p class="muted">視角：全機／工作區／機頭／供膠站／近看／跟隨；①–④ 等角方向；360° 自由旋轉；正交與透視可切換。所有零件以 mm 真實比例繪製；設備外形依公開尺寸，細部與管路為示意。</p>
