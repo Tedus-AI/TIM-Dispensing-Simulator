@@ -57,12 +57,19 @@ export function drawChart(svg, run, type, time, baseline) {
     .filter(([, t]) => Number.isFinite(t))
     .map(([k, t, label]) => `<line class="marker ${k}" x1="${x(t)}" x2="${x(t)}" y1="${T}" y2="${H - B}"><title>${label} ${t.toFixed(3)} s</title></line>`)
     .join('');
+  // After the motion ends the run only integrates the decaying tail flow (20 time constants) so the volume
+  // ledger closes; the machine is not waiting there.
+  const tail =
+    duration - e.motionEnd > 0.05 && e.motionEnd < run.duration
+      ? `<rect class="tail" x="${x(e.motionEnd)}" y="${T}" width="${x(run.duration) - x(e.motionEnd)}" height="${H - B - T}"><title>動作已完成；之後只結算尾膠（離面出膠），不是機台等待時間</title></rect><text class="tail-label" x="${(x(e.motionEnd) + x(run.duration)) / 2}" y="${T + 13}" text-anchor="middle">尾膠結算 · 非等待</text>`
+      : '';
   const command =
     type === 'q' ? `<path class="command" d="M${L},${y(run.Q)} H${x(e.commandOff)} V${y(0)} H${W - R}"/>` : '';
   const base = baseline ? `<path class="baseline" d="${line(baseline.frames)}"/>` : '';
   svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
   svg.innerHTML =
     grid +
+    tail +
     ticks.join('') +
     markers +
     base +

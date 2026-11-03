@@ -1,6 +1,7 @@
 import { simulate } from './engine.js';
 import { estimateCompression } from './compression.js';
 import { tuneForVolume } from './tuning.js';
+import { optimizeSettings } from './optimize.js';
 
 // Squeeze estimates and pattern comparisons run here so the 3D view stays responsive.
 const slim = (run) => ({
@@ -66,6 +67,16 @@ self.onmessage = (event) => {
         }
       });
       self.postMessage({ id, ok: true, result: { rows, required, factor, matchVolume } });
+      return;
+    }
+    if (type === 'optimize') {
+      const { config, heat, goals, dose } = payload;
+      const result = optimizeSettings(config, heat, {
+        goals,
+        dose,
+        onProgress: (progress, label) => self.postMessage({ id, progress, label }),
+      });
+      self.postMessage({ id, ok: true, result });
       return;
     }
     throw new Error('unknown job');

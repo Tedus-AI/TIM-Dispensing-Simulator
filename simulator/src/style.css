@@ -417,3 +417,33 @@ tr.v1 td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
 }
+
+/* Chart: post-motion tail accounting window. */
+.chart .tail, svg .tail { fill: var(--muted); opacity: 0.08; }
+svg .tail-label { font: 600 10px var(--sans, inherit); fill: var(--muted); }
+
+/* Goals, scenarios and optimisation dialogs. */
+.wide-btn { width: 100%; margin-top: 8px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+.top-actions .count { font-style: normal; font: 600 10.5px var(--mono); background: var(--accent); color: #fff; border-radius: 999px; padding: 1px 6px; margin-left: 4px; }
+.goal-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin: 6px 0 10px; font-size: 12.5px; }
+.goal-controls label { display: inline-flex; align-items: center; gap: 6px; }
+.goal-controls input[type='number'] { width: 72px; padding: 4px 6px; border-radius: 7px; border: 1px solid var(--line-2); background: var(--panel); color: var(--strong); font: 12.5px var(--mono); }
+.goal-controls .muted { flex-basis: 100%; font-size: 11.5px; }
+.ok-badge, .no-badge { display: inline-block; padding: 2px 7px; border-radius: 999px; font-size: 11px; font-weight: 600; white-space: nowrap; }
+.ok-badge { background: var(--good-soft, rgba(22, 163, 74, 0.14)); color: var(--good); }
+.no-badge { background: var(--warn-soft); color: var(--warn); white-space: normal; }
+table.cmp tr.top td { box-shadow: inset 0 1px 0 var(--accent), inset 0 -1px 0 var(--accent); }
+table.cmp tr.top td:first-child { box-shadow: inset 1px 1px 0 var(--accent), inset 0 -1px 0 var(--accent); }
+table.cmp .row-actions { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+.scen-name { min-width: 220px; }
+.scen-name input { width: 100%; font: 600 12.5px inherit; padding: 3px 6px; border-radius: 6px; border: 1px solid transparent; background: transparent; color: var(--strong); }
+.scen-name input:hover, .scen-name input:focus { border-color: var(--line-2); background: var(--panel); }
+.scen-name small { display: block; font-size: 10.5px; color: var(--muted); line-height: 1.35; margin-top: 2px; white-space: normal; }
+.scen-tools { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.chip-btn.danger:hover { border-color: var(--bad); color: var(--bad); }
+.chip-btn[disabled] { opacity: 0.45; pointer-events: none; }
+.opt-scope { display: grid; gap: 4px; padding: 9px 10px; border-radius: 10px; background: var(--panel-2); font-size: 12px; margin-bottom: 6px; }
+.opt-scope div { display: grid; grid-template-columns: 38px 1fr; gap: 8px; }
+.opt-scope b { color: var(--strong); }
+#scenarios-body .empty { padding: 18px; border: 1px dashed var(--line-2); border-radius: 10px; color: var(--muted); font-size: 13px; }
+table.cmp.scen th, table.cmp.scen td:not(.scen-name) { white-space: nowrap; }
