@@ -643,16 +643,28 @@ export function squeezeRaster(raster, settings) {
   let substeps = 0;
   let steps = 0;
   let hCur = h0;
-  while (hCur > gap * (1 + 1e-12) && steps < 600) {
+  // Past the step budget the rest of the descent uses fixed coarse steps without retries, so the plate
+  // always reaches the spacers (with a warning) instead of stopping short.
+  const STEP_BUDGET = 900;
+  let coarse = false;
+  while (hCur > gap * (1 + 1e-12)) {
+    if (!coarse && steps >= STEP_BUDGET) {
+      coarse = true;
+      dln = DLN_MAX;
+    }
     const h = Math.max(gap, hCur * Math.exp(-dln));
     const cap = h * area;
     const saved = saveAir();
     classify(cap, h, false);
+    // A step that compresses a pocket by geometry alone (absolute pressure up more than 1.8×) is
+    // retried smaller. Pinching a channel into pieces is not compression: the gas is split with the
+    // air, so each piece keeps the parent's pressure.
     let crushed = false;
-    for (const b of saved.pockets) {
-      const now = pockets.get(b.id);
-      if (now && now.air < 0.6 * b.air && dln > 2e-4) crushed = true;
-    }
+    if (!coarse && dln > 2e-4)
+      for (const b of saved.pockets) {
+        const now = pockets.get(b.id);
+        if (now && now.gas / Math.max(now.air, 1e-15) > 1.8 * (b.gas / Math.max(b.air, 1e-15))) crushed = true;
+      }
     const act = mode === 'compressible' ? [...pockets.values()] : [];
     const sys = build(cap, act);
     if (!crushed && (sys.m === 0 || sys.excess <= 1e-12 * cap)) {
@@ -682,7 +694,7 @@ export function squeezeRaster(raster, settings) {
       }
       t = trialVolumes(sys, sol);
     }
-    if ((crushed || t.negative || t.drain > 0.9 || t.swing > 0.6) && dln > 2e-4) {
+    if (!coarse && (crushed || t.negative || t.drain > 0.9 || t.swing > 0.6) && dln > 2e-4) {
       restoreAir(saved);
       dln *= 0.5;
       substeps++;
@@ -700,7 +712,8 @@ export function squeezeRaster(raster, settings) {
     hCur = h;
     steps++;
     classify(cap, h, true);
-    if (t.front > FRONT || t.swing > 0.3) dln = Math.max(2e-4, dln * 0.6);
+    if (coarse) dln = DLN_MAX;
+    else if (t.front > FRONT || t.swing > 0.3) dln = Math.max(2e-4, dln * 0.6);
     else if (t.front < FRONT * 0.4 && t.swing < 0.15) dln = Math.min(DLN_MAX, dln * 1.25);
     while (target < targets.length && hCur <= targets[target] * (1 + 1e-9)) {
       snapshot(hCur, cap);
@@ -790,6 +803,7 @@ export function squeezeRaster(raster, settings) {
       settled,
       substeps,
       steps,
+      coarse,
       seatPressureKPa: wetAtSeat > 0 ? force / (wetAtSeat * 1e-6) / 1000 : 0,
       peakBubbleKPa: peakBubble / 1000,
       ...events,
@@ -1087,6 +1101,8 @@ export function estimateCompression(run, options) {
     warnings.push(
       `壓到墊片後膠壓消退，被壓縮的氣泡會回脹（降伏應力 ${yieldStress} Pa 只擋住一小部分）；靜置 ${o.settleTime} s ${sq.press.settled ? '內已大致穩定' : '時仍在回脹'}。透明板實測建議在壓好後 0 s、30 s、2 min、10 min 各拍一張比對。`,
     );
+  if (sq.press.coarse)
+    warnings.push('壓合步數超過上限，後段改以粗步長完成；覆蓋與夾氣仍有效，但壓合時間與壓合中的氣壓精度下降。');
   if (sq.press.time > 120) warnings.push(`以 ${o.pressKgf} kgf 壓到墊片約需 ${sq.press.time.toFixed(0)} s；實際手壓若較快，壓合中的氣泡壓縮會更大。`);
   if (o.airMode === 'compressible' && sq.press.sealed > 0)
     warnings.push('氣泡在膠牆變薄處排出（吹破）的位置與時機受網格影響（指狀穿透未完整解析）；比較圖樣請使用相同網格，建議 ≤ 0.5 mm。');
