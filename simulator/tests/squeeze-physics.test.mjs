@@ -131,3 +131,27 @@ test('frames carry the press and relaxation phases with time; options are valida
   assert.throws(() => estimateCompression(run, { ...heat, viscosity: -5 }), /黏度/);
   assert.throws(() => estimateCompression(run, { ...heat, yieldStress: -1 }), /降伏應力/);
 });
+
+test('a thin bond line with a tight spiral still reaches the spacers: more material spreads further and takes longer', async () => {
+  // Field case: Tgrease square spiral 1.5 mm pitch, Ø2 mm nozzle, 0.05 mm spacers, two travel speeds.
+  // v1.1.0 ran out of plate steps here and jumped to the gap, leaving most material unspread.
+  const { simulate } = await import('../src/engine.js');
+  const heat = { shape: 'rectangle', width: 30, depth: 30, offsetX: 0, offsetY: 0, gap: 0.05, cellSize: 0.75, power: 25 };
+  const base = { ...fromRegistry(registry, 'grease'), mode: 'pattern', diameter: 2, pathSettings: { ...heat, pattern: 'spiral', spacing: 1.5, edgeInset: 3, spiralShape: 'square', spiralDirection: 'inside-out' } };
+  const [fast, slow] = [
+    { speed: 100, acceleration: 500 },
+    { speed: 50, acceleration: 250 },
+  ].map((m) => estimateCompression(simulate({ ...base, ...m }), heat).summary);
+  assert.ok(slow.depositedMl > fast.depositedMl * 1.3);
+  for (const s of [fast, slow]) {
+    assert.ok(s.unresolvedMl < 1e-3 * s.depositedMl, `unspread ${s.unresolvedMl} mL`);
+    assert.ok(Math.abs(s.conservationErrorMl) < 1e-9);
+    assert.ok(s.press.peakBubbleKPa < 5000, `peak bubble ${s.press.peakBubbleKPa} kPa`);
+  }
+  assert.ok(slow.squeezeOutMm > fast.squeezeOutMm + 2, 'more material squeezes out further');
+  assert.ok(slow.coveredPercent >= fast.coveredPercent - 1);
+  // Stefan: closing time grows with the square of the volume at a fixed force.
+  const ratio = slow.press.pressTime / fast.press.pressTime;
+  const expected = (slow.depositedMl / fast.depositedMl) ** 2;
+  assert.ok(ratio > 0.6 * expected && ratio < 1.6 * expected, `time ratio ${ratio} vs V² ratio ${expected}`);
+});
