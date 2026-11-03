@@ -26,6 +26,8 @@ export const ICONS = {
   press: icon('<path d="M4 6h16M12 6v6M8 12h8l-2 4h-4zM4 20h16"/>'),
   compare: icon('<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>'),
   close: icon('<path d="M6 6l12 12M18 6 6 18"/>'),
+  save: icon('<path d="M5 3h11l3 3v15H5z"/><path d="M8 3v6h8V3M8 21v-7h8v7"/>'),
+  spark: icon('<path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M6 18l2.5-2.5M15.5 8.5 18 6"/>'),
   pin: icon('<path d="M12 21s-6-5.3-6-11a6 6 0 1 1 12 0c0 5.7-6 11-6 11z"/><circle cx="12" cy="10" r="2"/>'),
 };
 
@@ -39,6 +41,7 @@ export function pageTemplate(version) {
   <div class="scenario" id="scenario" aria-label="目前情境"></div>
   <div class="top-actions">
     <span class="badge-warn" title="所有結果皆為工程假設，尚未經實機校準">工程假設 · 未校準</span>
+    <button class="ghost" id="show-scenarios" title="已存情境的比較">${ICONS.compare}<span>情境比較</span><em class="count" id="scenario-count" hidden></em></button>
     <button class="ghost" id="show-sources" title="參數來源與假設">${ICONS.book}<span>來源</span></button>
     <button class="ghost" id="help" title="使用說明">${ICONS.help}<span>說明</span></button>
     <button class="ghost icon-only" id="theme" title="切換深色／淺色">${ICONS.moon}</button>
@@ -121,6 +124,8 @@ export function pageTemplate(version) {
 </div>
 <dialog id="sources-dialog" class="dialog wide"><div class="dialog-head"><h2>參數來源與假設</h2><button data-close class="ghost">${ICONS.close}</button></div><p class="muted">「v1.0 更新」為本次查證後替換或新增的值；研究原檔 v0.3 不變。所有項目目前均未經實機驗證。</p><div class="table-scroll"><table><thead><tr><th>參數</th><th>值</th><th>類型</th><th>依據與出處</th></tr></thead><tbody id="source-rows"></tbody></table></div></dialog>
 <dialog id="compare-dialog" class="dialog wide"><div class="dialog-head"><h2>熱源圖樣比較</h2><button data-close class="ghost">${ICONS.close}</button></div><div id="compare-body"></div></dialog>
+<dialog id="scenarios-dialog" class="dialog wide"><div class="dialog-head"><h2>情境比較</h2><button data-close class="ghost">${ICONS.close}</button></div><div id="scenarios-body"></div></dialog>
+<dialog id="optimize-dialog" class="dialog wide"><div class="dialog-head"><h2>自動最佳化（數值搜尋）</h2><button data-close class="ghost">${ICONS.close}</button></div><div id="optimize-body"></div></dialog>
 <dialog id="help-dialog" class="dialog"><div class="dialog-head"><h2>使用說明</h2><button data-close class="ghost">${ICONS.close}</button></div><div id="help-body"></div></dialog>
 <div id="toast" role="status"></div>`;
 }

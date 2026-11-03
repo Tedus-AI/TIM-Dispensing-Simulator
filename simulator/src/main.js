@@ -6,6 +6,7 @@ import { MATERIALS } from './materials.js';
 import { DispenseScene, VIEW_LABELS } from './scene.js';
 import { HARDWARE_REFERENCES } from './hardware-reference.js';
 import { estimateCompression, squeezeRheology, PRESS_DEFAULTS } from './compression.js';
+import { GOAL_DEFAULTS, judge, rank, metricsOf } from './optimize.js';
 import { tuneForVolume } from './tuning.js';
 import { pageTemplate, ICONS, PATTERN_ICONS, PATTERN_NAMES } from './ui/template.js';
 import { drawChart, moveCursor, CHARTS } from './ui/chart.js';
@@ -76,7 +77,18 @@ const S = {
   tuneFactor: 1.2,
   compare: null,
   busy: false,
+  goals: { ...GOAL_DEFAULTS, ...(readJson('tim-goals') || {}) },
+  scenarios: readJson('tim-scenarios') || [],
+  optimize: null,
 };
+
+function readJson(key) {
+  try {
+    return JSON.parse(store.get(key) || 'null');
+  } catch {
+    return null;
+  }
+}
 
 // ───────────────────────── page ─────────────────────────
 $('#app').innerHTML = pageTemplate(VERSION);
@@ -113,19 +125,29 @@ try {
 let worker = null;
 let jobId = 0;
 const jobs = new Map();
-try {
-  worker = new Worker(new URL('./compute-worker.js', import.meta.url), { type: 'module' });
-  worker.onmessage = ({ data }) => {
-    const job = jobs.get(data.id);
-    if (!job) return;
-    if (data.progress !== undefined) return job.progress?.(data.progress, data.label);
-    jobs.delete(data.id);
-    if (data.ok) job.resolve(data.result);
-    else job.reject(new Error(data.error));
-  };
-  worker.onerror = () => (worker = null);
-} catch {
-  worker = null;
+function startWorker() {
+  try {
+    worker = new Worker(new URL('./compute-worker.js', import.meta.url), { type: 'module' });
+    worker.onmessage = ({ data }) => {
+      const job = jobs.get(data.id);
+      if (!job) return;
+      if (data.progress !== undefined) return job.progress?.(data.progress, data.label);
+      jobs.delete(data.id);
+      if (data.ok) job.resolve(data.result);
+      else job.reject(new Error(data.error));
+    };
+    worker.onerror = () => (worker = null);
+  } catch {
+    worker = null;
+  }
+}
+startWorker();
+// Long searches are cancelled by replacing the worker; pending jobs are rejected.
+function cancelJobs() {
+  worker?.terminate();
+  for (const job of jobs.values()) job.reject(new Error('已取消'));
+  jobs.clear();
+  startWorker();
 }
 const slimRun = (run) => ({ config: run.config, summary: { deposits: run.summary.deposits }, path: run.path, gridStart: run.gridStart, cellLength: run.cellLength, maxHeight: run.maxHeight });
 function compute(type, payload, progress) {
@@ -299,6 +321,7 @@ function renderHeat() {
     <button class="primary" id="press">${ICONS.press}<span>模擬壓合</span></button>
     <button class="secondary" id="compare">${ICONS.compare}<span>比較所有圖樣</span></button>
   </div>
+  <button class="secondary wide-btn" id="optimize">${ICONS.spark}<span>自動最佳化目前圖樣</span></button>
   ${group('壓合條件（透明板＋墊片）', pressFields(h), { open: true, note: '定力壓下，到墊片（組裝間隙）即停；之後膠壓消退，被壓縮的氣泡回脹到降伏應力擋住為止。實際手壓若先快後慢，壓合中的氣泡壓縮程度會不同，最終回脹結果影響較小。' })}
   ${group('估算網格', num({ bind: 'h.cellSize', label: '網格解析度', value: h.cellSize, unit: 'mm', min: 0.2, max: 5, tag: 'ai', hint: '越小越細，計算時間增加；上限 90,000 格。夾氣數量對網格敏感，比較圖樣請用相同網格' }), { open: false })}
   <p class="note">壓合採平行板 Hele-Shaw 擠壓：定力壓到墊片，被膠包圍的空氣依所選方式處理（預設可壓縮：pV = 常數、可隨膠流移動、膠牆變薄時排出）。熱阻 =（間隙 ÷ k + TDS 推算接觸熱阻）÷ 濕潤面積。皆未經透明板實測校準。</p>`;
@@ -496,6 +519,8 @@ $('#tab-body').addEventListener('click', (e) => {
       return tryRecompute({ ...S.config, reverseRpm: 30, reverseDuration: 0.05 });
     case 'tune':
       return tune();
+    case 'optimize':
+      return openOptimize();
     case 'rheo-reset':
       S.heat = { ...S.heat, viscosity: null, yieldStress: null };
       markPressStale();
@@ -681,9 +706,9 @@ function renderResults() {
           ${kpi('熱阻', fmt(p.thermal.resistance, 4), 'K/W', `θ ${fmt(p.thermal.impedanceCm2, 3)} °C·cm²/W`)}
         </div>
         ${pressKpis(p.press)}
-        <div class="press-actions"><button class="chip-btn" id="press-replay">${ICONS.play}重播壓合</button><button class="chip-btn" id="press-save">保存壓合基準</button></div>
+        <div class="press-actions"><button class="chip-btn" id="press-replay">${ICONS.play}重播壓合</button><button class="chip-btn" id="press-save">保存壓合基準</button><button class="chip-btn" id="scenario-save">${ICONS.save}存成情境</button></div>
         ${S.pressBaseline ? `<div class="compare-box"><b>壓合基準 → 目前</b><p>覆蓋 ${fmt(S.pressBaseline.summary.coveredPercent, 1)}% → ${fmt(p.coveredPercent, 1)}%　夾氣 ${S.pressBaseline.summary.voidCount} → ${p.voidCount}　溫升 ${fmt(S.pressBaseline.summary.thermal.rise, 2)} → ${fmt(p.thermal.rise, 2)} °C</p><small>${esc(S.pressBaseline.describe)}</small></div>` : ''}`
-        : `<div class="cta"><p>${stale ? '熱源或點膠設定已變更，請重新模擬。' : '以完整試驗的沉積分布估算壓合覆蓋、夾氣與熱阻。'}</p><button class="primary" id="press-cta">${ICONS.press}<span>模擬壓合</span></button><button class="secondary" id="compare-cta">${ICONS.compare}<span>比較所有圖樣</span></button></div>`
+        : `<div class="cta"><p>${stale ? '熱源或點膠設定已變更，請重新模擬。' : '以完整試驗的沉積分布估算壓合覆蓋、夾氣與熱阻。'}</p><button class="primary" id="press-cta">${ICONS.press}<span>模擬壓合</span></button><button class="secondary" id="compare-cta">${ICONS.compare}<span>比較所有圖樣</span></button><button class="secondary" id="scenario-save-cta">${ICONS.save}<span>存成情境（自動壓合）</span></button></div>`
     }
   </section>
   <section class="card-sec">
@@ -749,6 +774,9 @@ $('#results').addEventListener('click', (e) => {
       return openCompare();
     case 'press-replay':
       return animatePress(true);
+    case 'scenario-save':
+    case 'scenario-save-cta':
+      return saveScenario();
     case 'press-save':
       S.pressBaseline = { summary: structuredClone(S.press.result.summary), describe: describe(S.config, S.press.settings) };
       toast('已保存壓合基準', 'ok');
@@ -1052,6 +1080,259 @@ $('#compare-body').addEventListener('click', (e) => {
   if (tryRecompute(next)) toast(`已套用 ${PATTERN_NAMES[b.dataset.apply]}`, 'ok');
 });
 
+// ───────────────────────── goals, scenarios and optimisation ─────────────────────────
+// Goal: coverage ≥ target and overflow ≤ limit with the least material (ranking in optimize.js).
+const goalControls = () =>
+  `<div class="goal-controls"><label>覆蓋率目標 <input type="number" data-goal="coverage" value="${S.goals.coverage}" min="50" max="100" step="any"> %</label><label>溢膠上限 <input type="number" data-goal="overflow" value="${S.goals.overflow}" min="0" max="50" step="any"> mm</label><span class="muted">達標＝覆蓋 ≥ 目標且溢膠 ≤ 上限；達標者膠量越少排越前，未達標者依差距排序。</span></div>`;
+function verdict(m) {
+  const j = judge(m, S.goals);
+  if (j.pass) return '<span class="ok-badge">達標</span>';
+  const why = [j.short > 0 ? `覆蓋差 ${fmt(j.short, 1)}%` : '', j.over > 0 ? `溢膠超 ${fmt(j.over, 1)} mm` : ''].filter(Boolean).join('・');
+  return `<span class="no-badge">${why}</span>`;
+}
+function bindGoals(root, rerender) {
+  root.querySelectorAll('[data-goal]').forEach(
+    (el) =>
+      (el.onchange = () => {
+        const v = Number(el.value);
+        if (!el.value.trim() || !el.checkValidity()) return toast('請輸入欄位範圍內的數值', 'error');
+        S.goals = { ...S.goals, [el.dataset.goal]: v };
+        store.set('tim-goals', JSON.stringify(S.goals));
+        rerender();
+      }),
+  );
+}
+const PITCHED = ['serpentine', 'spiral'];
+function settingsText(x) {
+  const c = x.config;
+  const p = x.pattern;
+  const drive = c.architecture === 'P300' ? `${fmt(c.rpm, 0)} rpm` : `${fmt(c.pressure, 0)} psi`;
+  const path =
+    c.mode === 'pattern'
+      ? `${PATTERN_NAMES[p.pattern]}${PITCHED.includes(p.pattern) ? ` 間距 ${p.spacing}` : ''} 內縮 ${p.edgeInset}`
+      : c.mode === 'point'
+        ? `單點 ${fmt(c.gateDuration, 2)} s`
+        : `直線 ${c.lineLength} mm`;
+  return `${MATERIALS[c.material].name} · ${drive} · Ø${c.diameter} · ${fmt(c.speed, 1)} mm/s · a ${c.acceleration} · ${path} · 間隙 ${x.heat.gap} · ${x.heat.pressKgf} kgf`;
+}
+
+function persistScenarios() {
+  store.set('tim-scenarios', JSON.stringify(S.scenarios));
+  const n = S.scenarios.length;
+  $('#scenario-count').hidden = !n;
+  $('#scenario-count').textContent = String(n);
+}
+function addScenario(entry) {
+  const used = new Set(S.scenarios.map((x) => x.name));
+  let k = S.scenarios.length + 1;
+  while (used.has(`情境 ${k}`)) k++;
+  const scenario = { id: `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`, name: `情境 ${k}`, savedAt: new Date().toISOString(), ...entry };
+  S.scenarios.push(scenario);
+  persistScenarios();
+  toast(`已存成「${scenario.name}」，共 ${S.scenarios.length} 個情境`, 'ok');
+  if ($('#scenarios-dialog').open) renderScenarios();
+}
+async function saveScenario() {
+  let metrics;
+  const heat = { ...S.heat };
+  const run = S.run;
+  if (S.press && !S.press.stale) metrics = metricsOf(run, S.press.result);
+  else {
+    if (S.busy) return;
+    S.busy = true;
+    document.body.classList.add('busy');
+    toast('計算壓合後存成情境…');
+    try {
+      metrics = metricsOf(run, await compute('compress', { run: slimRun(run), heat, frames: 0 }));
+    } catch (e) {
+      return toast(`壓合估算失敗：${e.message}`, 'error');
+    } finally {
+      S.busy = false;
+      document.body.classList.remove('busy');
+    }
+    if (run !== S.run || JSON.stringify(heat) !== JSON.stringify(S.heat)) return toast('計算期間設定已變更，請再存一次');
+  }
+  addScenario({ config: structuredClone(S.config), heat, pattern: { ...S.pattern }, metrics, source: '手動設定' });
+}
+function loadScenario(x) {
+  S.heat = { ...DEFAULT_HEAT(), ...x.heat };
+  S.pattern = { ...DEFAULT_PATTERN(), ...x.pattern };
+  if (tryRecompute(structuredClone(x.config))) {
+    $('#scenarios-dialog').close();
+    toast(`已載入「${x.name}」`, 'ok');
+  }
+}
+
+function renderScenarios() {
+  const body = $('#scenarios-body');
+  const list = S.scenarios;
+  const order = rank(
+    list.map((x) => ({ ...x.metrics, id: x.id })),
+    S.goals,
+  ).map((m) => list.find((x) => x.id === m.id));
+  const best = (key, dir) => (list.length ? Math.min(...list.map((x) => dir * x.metrics[key])) * dir : null);
+  const b = { cover: best('coveredPercent', -1), out: best('squeezeOutMm', 1), dep: best('depositedMl', 1), rise: best('rise', 1) };
+  const mark = (v, ref) => (ref !== null && Math.abs(v - ref) < 1e-9 ? 'best' : '');
+  body.innerHTML = `${goalControls()}
+  ${
+    list.length
+      ? `<div class="table-scroll"><table class="cmp scen"><thead><tr><th>#</th><th>情境</th><th>判定</th><th>膠量<br><small>mL（×需求）</small></th><th>覆蓋<br><small>%</small></th><th>溢出<br><small>mm</small></th><th>夾氣<br><small>處 / mm²</small></th><th>溫升<br><small>°C</small></th><th>動作<br><small>s</small></th><th></th></tr></thead><tbody>
+      ${order
+        .map((x, i) => {
+          const m = x.metrics;
+          return `<tr class="${i === 0 && judge(m, S.goals).pass ? 'top' : ''}"><td>${i + 1}</td><td class="scen-name"><input value="${esc(x.name)}" data-rename="${x.id}" aria-label="情境名稱"><small>${esc(settingsText(x))}</small><small class="muted">${esc(x.source || '')} · ${new Date(x.savedAt).toLocaleString()}</small></td><td>${verdict(m)}</td><td class="${mark(m.depositedMl, b.dep)}">${fmt(m.depositedMl, 3)} <small>(${fmt(m.volumeRatio, 2)}×)</small></td><td class="${mark(m.coveredPercent, b.cover)}">${fmt(m.coveredPercent, 1)}</td><td class="${mark(m.squeezeOutMm, b.out)}">${fmt(m.squeezeOutMm, 1)}</td><td class="${m.voidCount ? 'bad' : ''}">${m.voidCount} / ${fmt(m.voidAreaMm2, 1)}</td><td class="${mark(m.rise, b.rise)}">${fmt(m.rise, 2)}</td><td>${fmt(m.cycle, 2)}</td><td class="row-actions"><button class="chip-btn" data-load="${x.id}">載入</button><button class="chip-btn" data-remove="${x.id}">刪除</button></td></tr>`;
+        })
+        .join('')}
+      </tbody></table></div>
+      <p class="note">綠色為各欄最佳值；第一列加框代表依目標排序的最佳情境。情境存在這台電腦的瀏覽器中，可匯出 JSON 帶到其他電腦再匯入。夾氣與覆蓋來自未校準的模型，僅供相對比較。</p>`
+      : `<div class="empty"><p>還沒有情境。調好一組參數後，在右側結果卡按「存成情境」（未壓合會自動先壓合），或在「自動最佳化」結果中存入。</p></div>`
+  }
+  <div class="scen-tools"><button class="chip-btn" id="scen-csv" ${list.length ? '' : 'disabled'}>${ICONS.download}匯出 CSV</button><button class="chip-btn" id="scen-export" ${list.length ? '' : 'disabled'}>${ICONS.download}匯出 JSON</button><label class="chip-btn">匯入 JSON<input type="file" id="scen-import" accept=".json,application/json" hidden></label><button class="chip-btn danger" id="scen-clear" ${list.length ? '' : 'disabled'}>清除全部</button></div>`;
+  bindGoals(body, renderScenarios);
+}
+$('#show-scenarios').onclick = () => {
+  renderScenarios();
+  $('#scenarios-dialog').showModal();
+};
+$('#scenarios-body').addEventListener('click', (e) => {
+  const el = e.target.closest('button');
+  if (!el) return;
+  if (el.dataset.load) return loadScenario(S.scenarios.find((x) => x.id === el.dataset.load));
+  if (el.dataset.remove) {
+    S.scenarios = S.scenarios.filter((x) => x.id !== el.dataset.remove);
+    persistScenarios();
+    return renderScenarios();
+  }
+  if (el.id === 'scen-clear' && confirm(`刪除全部 ${S.scenarios.length} 個情境？`)) {
+    S.scenarios = [];
+    persistScenarios();
+    return renderScenarios();
+  }
+  if (el.id === 'scen-export') return download(JSON.stringify({ application: 'TIM Dispensing Lab', version: VERSION, goals: S.goals, scenarios: S.scenarios }, null, 2), 'TIM_情境.json', 'application/json');
+  if (el.id === 'scen-csv') {
+    const cols = ['排名', '情境', '判定', '膠量 mL', '需求倍數', '覆蓋 %', '溢出 mm', '夾氣 處', '夾氣 mm²', '溫升 °C', '動作 s', '設定', '來源'];
+    const order = rank(S.scenarios.map((x) => ({ ...x.metrics, id: x.id })), S.goals).map((m) => S.scenarios.find((x) => x.id === m.id));
+    const quote = (v) => `"${String(v).replaceAll('"', '""')}"`;
+    const rows = order.map((x, i) => {
+      const m = x.metrics;
+      const j = judge(m, S.goals);
+      return [i + 1, x.name, j.pass ? '達標' : '未達標', m.depositedMl.toFixed(4), m.volumeRatio.toFixed(3), m.coveredPercent.toFixed(2), m.squeezeOutMm.toFixed(2), m.voidCount, m.voidAreaMm2.toFixed(2), m.rise.toFixed(3), m.cycle.toFixed(3), settingsText(x), x.source || ''];
+    });
+    return download(`﻿${[cols, ...rows].map((r) => r.map(quote).join(',')).join('\n')}`, 'TIM_情境比較.csv', 'text/csv');
+  }
+});
+$('#scenarios-body').addEventListener('change', async (e) => {
+  const el = e.target;
+  if (el.dataset.rename) {
+    const x = S.scenarios.find((y) => y.id === el.dataset.rename);
+    if (x) x.name = el.value.trim() || x.name;
+    return persistScenarios();
+  }
+  if (el.id === 'scen-import' && el.files?.[0]) {
+    try {
+      const data = JSON.parse(await el.files[0].text());
+      const items = (Array.isArray(data) ? data : data.scenarios || []).filter((x) => x && x.config && x.heat && x.pattern && x.metrics && Number.isFinite(x.metrics.coveredPercent));
+      if (!items.length) throw new Error('檔案中沒有可用的情境');
+      for (const x of items) S.scenarios.push({ ...x, id: `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}` });
+      persistScenarios();
+      toast(`已匯入 ${items.length} 個情境`, 'ok');
+    } catch (err) {
+      toast(`匯入失敗：${err.message}`, 'error');
+    }
+    renderScenarios();
+  }
+});
+
+// Numerical search over dose (travel speed), pitch and edge inset for the current pattern.
+function openOptimize() {
+  if (S.config.mode !== 'pattern') return toast('自動最佳化需先在「路徑」選擇依熱源圖樣', 'error');
+  renderOptimize();
+  $('#optimize-dialog').showModal();
+}
+function renderOptimize() {
+  const o = S.optimize || {};
+  const pattern = S.pattern.pattern;
+  const pitched = PITCHED.includes(pattern);
+  const dose = o.dose || [0.8, 2.5];
+  const body = $('#optimize-body');
+  const r = o.result;
+  const rows = r ? r.candidates.slice(0, 12) : [];
+  const anyPass = rows.some((x) => x.pass);
+  body.innerHTML = `
+  <p class="lead">在目前條件下，用模擬器搜尋「最少膠量達到覆蓋目標、且溢膠不超過上限」的設定。這是數值搜尋，不是統計學習；結果與模型同樣未經實機校準。</p>
+  <div class="opt-scope"><div><b>固定</b><span>${esc(PATTERN_NAMES[pattern])}圖樣、熱源 ${S.heat.shape === 'circle' ? `Ø${S.heat.width}` : `${S.heat.width} × ${S.heat.depth}`} mm、間隙 ${S.heat.gap} mm、${esc(MATERIALS[S.config.material].name)}、${S.config.architecture === 'P300' ? `${S.config.rpm} rpm` : `${fmt(S.config.pressure, 0)} psi`}、Ø${S.config.diameter} 針嘴、加速度 ${S.config.acceleration}、壓合 ${S.heat.pressKgf} kgf／${AIR_MODE_SHORT[S.heat.airMode]}</span></div><div><b>搜尋</b><span>膠量（以移動速度調整）${pitched ? '、路徑間距' : ''}、邊界內縮</span></div></div>
+  ${goalControls()}
+  <div class="goal-controls"><label>膠量範圍 <input type="number" id="opt-dose-lo" value="${dose[0]}" min="0.3" max="5" step="any"> – <input type="number" id="opt-dose-hi" value="${dose[1]}" min="0.4" max="6" step="any"> × 間隙體積</label>
+  ${o.running ? `<button class="secondary" id="opt-cancel">停止</button>` : `<button class="primary" id="opt-run">${ICONS.spark}<span>${r ? '重新搜尋' : '開始搜尋'}</span></button>`}</div>
+  ${o.running ? `<div class="progress"><i style="width:${(o.progress || 0) * 100}%"></i></div><p class="note" id="opt-status">${esc(o.label || '準備中…')}（約需數十秒到數分鐘，視膠材與網格）</p>` : ''}
+  ${o.error ? `<p class="note warn-note">${esc(o.error)}</p>` : ''}
+  ${
+    r
+      ? `<p class="note">${esc(o.describe)}　需求 ${fmt(r.required, 3)} mL；試算 ${r.evaluations} 次（粗網格 ${fmt(r.searchCell, 2)} mm，前 3 名以 ${fmt(S.heat.cellSize, 2)} mm 複核）。</p>
+      ${anyPass ? '' : '<p class="note warn-note">沒有組合同時達到兩個目標；下表依差距排序，第一列是最接近的取捨。可放寬溢膠上限或覆蓋目標，或換圖樣。</p>'}
+      <div class="table-scroll"><table class="cmp"><thead><tr><th>#</th><th>判定</th>${pitched ? '<th>間距<br><small>mm</small></th>' : ''}<th>內縮<br><small>mm</small></th><th>膠量<br><small>mL（×需求）</small></th><th>速度<br><small>mm/s</small></th><th>覆蓋<br><small>%</small></th><th>溢出<br><small>mm</small></th><th>夾氣<br><small>處 / mm²</small></th><th>溫升<br><small>°C</small></th><th></th></tr></thead><tbody>
+      ${rows
+        .map(
+          (x, i) =>
+            `<tr class="${i === 0 ? 'top' : ''}"><td>${i + 1}</td><td>${verdict(x)}</td>${pitched ? `<td>${x.spacing}</td>` : ''}<td>${x.edgeInset}</td><td class="${x.reached ? '' : 'warn'}" title="${x.reached ? '' : '加速度與轉角限制下達不到此膠量'}">${fmt(x.depositedMl, 3)} <small>(${fmt(x.volumeRatio, 2)}×)</small>${x.reached ? '' : ' ⚠'}</td><td>${fmt(x.speed, 1)}</td><td>${fmt(x.coveredPercent, 1)}</td><td>${fmt(x.squeezeOutMm, 1)}</td><td>${x.voidCount} / ${fmt(x.voidAreaMm2, 1)}</td><td>${fmt(x.rise, 2)}</td><td class="row-actions"><button class="chip-btn" data-opt-apply="${i}">套用</button><button class="chip-btn" data-opt-save="${i}">存成情境</button>${x.verified ? '' : '<small class="muted">粗網格</small>'}</td></tr>`,
+        )
+        .join('')}
+      </tbody></table></div>
+      <p class="note">每種幾何以二分法找「達到覆蓋目標的最少膠量」；覆蓋到不了目標的組合列出上限膠量時的結果。套用後請再按「模擬壓合」以完整網格與動畫確認。</p>`
+      : ''
+  }`;
+  bindGoals(body, renderOptimize);
+}
+async function runOptimize() {
+  const lo = Number($('#opt-dose-lo').value);
+  const hi = Number($('#opt-dose-hi').value);
+  if (!(lo > 0 && hi > lo)) return toast('膠量範圍需為 0 < 下限 < 上限', 'error');
+  const config = { ...S.config, pathSettings: pathSettings() };
+  const heat = { ...S.heat };
+  S.optimize = { running: true, progress: 0, dose: [lo, hi] };
+  renderOptimize();
+  try {
+    const result = await compute('optimize', { config, heat, goals: { ...S.goals }, dose: [lo, hi] }, (progress, label) => {
+      S.optimize.progress = progress;
+      S.optimize.label = label;
+      const bar = $('#optimize-body .progress i');
+      if (bar) bar.style.width = `${progress * 100}%`;
+      const st = $('#opt-status');
+      if (st) st.textContent = `${label}（${Math.round(progress * 100)}%）`;
+    });
+    S.optimize = { result, dose: [lo, hi], config, heat, pattern: { ...S.pattern }, describe: describe(config, heat) };
+  } catch (e) {
+    S.optimize = { error: e.message === '已取消' ? '已停止搜尋。' : e.message, dose: [lo, hi] };
+  }
+  if ($('#optimize-dialog').open) renderOptimize();
+}
+function candidateEntry(x) {
+  const o = S.optimize;
+  const pattern = { ...o.pattern, spacing: x.spacing, edgeInset: x.edgeInset };
+  const config = { ...o.config, speed: x.speed, pathSettings: { ...o.config.pathSettings, spacing: x.spacing, edgeInset: x.edgeInset } };
+  const { spacing, edgeInset, factor, speed, reached, verified, pass, short, over, deficit, ...metrics } = x;
+  return { config, heat: { ...o.heat }, pattern, metrics, source: verified ? '自動最佳化（已複核）' : '自動最佳化（粗網格）' };
+}
+$('#optimize-body').addEventListener('click', (e) => {
+  const el = e.target.closest('button');
+  if (!el) return;
+  if (el.id === 'opt-run') return runOptimize();
+  if (el.id === 'opt-cancel') return cancelJobs();
+  const rows = S.optimize?.result?.candidates || [];
+  if (el.dataset.optSave !== undefined) return addScenario(candidateEntry(rows[Number(el.dataset.optSave)]));
+  if (el.dataset.optApply !== undefined) {
+    const x = rows[Number(el.dataset.optApply)];
+    const entry = candidateEntry(x);
+    S.heat = { ...entry.heat };
+    S.pattern = entry.pattern;
+    if (tryRecompute({ ...S.config, ...entry.config })) {
+      $('#optimize-dialog').close();
+      toast(`已套用：${PITCHED.includes(entry.pattern.pattern) ? `間距 ${x.spacing} mm、` : ''}內縮 ${x.edgeInset} mm、速度 ${fmt(x.speed, 1)} mm/s`, 'ok');
+    }
+  }
+});
+persistScenarios();
+
 // ───────────────────────── exports ─────────────────────────
 function download(content, name, type) {
   const a = document.createElement('a');
@@ -1181,6 +1462,9 @@ $('#help-body').innerHTML = `
   <li><b>播放</b>：空白鍵播放／暫停；拖曳時間軸或點曲線跳到該時刻；時間軸上的標記可跳到關膠、到位、抬針、退離。</li>
   <li><b>壓合</b>：按「模擬壓合」看透明板以定力壓到墊片、膠膜擴散、氣泡（紅色）壓縮／遷移／排出，以及靜置後的回脹；可切換「前緣時序」著色。夾氣處理可在熱源頁切換為 v1.0 剛性牆或全部排出作對照。</li>
   <li><b>比較</b>：「比較所有圖樣」在等膠量下比較覆蓋、夾氣、溢膠、溫升與動作時間，可直接套用。</li>
+  <li><b>情境</b>：覺得不錯的參數按結果卡的「存成情境」（未壓合會自動先算），再改參數繼續試；右上「情境比較」一次比較全部，依「覆蓋 ≥ 目標、溢膠 ≤ 上限、膠量最少」排序，可載入、改名、刪除、匯出 CSV／JSON。情境存在這台電腦的瀏覽器。</li>
+  <li><b>自動最佳化</b>：熱源頁「自動最佳化目前圖樣」固定圖樣、熱源、間隙與設備，搜尋膠量（以移動速度調整）、間距（蛇形／螺旋）與邊界內縮，找出達標且膠量最少的設定；結果可套用或存成情境。</li>
+  <li><b>曲線</b>：退離完成後的灰色區域是「尾膠結算」——模型繼續積分關膠後逐漸衰減的出膠，讓體積帳目完整，並非機台等待時間；週期時間以「動作完成」計。</li>
 </ol>
 <p class="muted">視角：全機／工作區／機頭／供膠站／近看／跟隨；①–④ 等角方向；360° 自由旋轉；正交與透視可切換。所有零件以 mm 真實比例繪製；設備外形依公開尺寸，細部與管路為示意。</p>
 <p class="muted">本工具所有結果為工程假設、未經實機校準，用於縮小試驗範圍與比較方案，不能取代透明板或首件驗證。</p>`;
