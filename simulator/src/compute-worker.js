@@ -70,10 +70,10 @@ self.onmessage = (event) => {
       return;
     }
     if (type === 'optimize') {
-      const { config, heat, goals, dose } = payload;
+      const { config, heat, goals, options } = payload;
       const result = optimizeSettings(config, heat, {
+        ...options,
         goals,
-        dose,
         onProgress: (progress, label) => self.postMessage({ id, progress, label }),
       });
       self.postMessage({ id, ok: true, result });
