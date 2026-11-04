@@ -1,9 +1,10 @@
 import { simulate } from './engine.js';
 import { estimateCompression } from './compression.js';
 import { tuneDose } from './tuning.js';
-import { optimizeSettings } from './optimize.js';
+import { evaluateTask, calibrateTask } from './optimize.js';
 
-// Squeeze estimates, dose tuning, pattern comparisons and searches run here so the 3D view stays responsive.
+// Squeeze estimates, dose tuning, pattern comparisons and optimiser evaluations run here (the optimiser
+// spreads its evaluations over a pool of these workers) so the 3D view stays responsive.
 const slim = (run) => ({
   config: run.config,
   summary: { deposits: run.summary.deposits },
@@ -80,14 +81,19 @@ self.onmessage = (event) => {
       self.postMessage({ id, ok: true, result: { config: t.config, key: t.key, reached: t.reached, fallback: t.fallback, deposited: t.run.summary.deposited } });
       return;
     }
-    if (type === 'optimize') {
-      const { config, heat, goals, options } = payload;
-      const result = optimizeSettings(config, heat, {
-        ...options,
-        goals,
-        onProgress: (progress, label) => self.postMessage({ id, progress, label }),
-      });
+    if (type === 'evaluate') {
+      // One optimiser evaluation; a failed one (e.g. outside the equipment range) is reported as null.
+      let result = null;
+      try {
+        result = evaluateTask(payload);
+      } catch {
+        result = null;
+      }
       self.postMessage({ id, ok: true, result });
+      return;
+    }
+    if (type === 'calibrate') {
+      self.postMessage({ id, ok: true, result: calibrateTask(payload) });
       return;
     }
     throw new Error('unknown job');

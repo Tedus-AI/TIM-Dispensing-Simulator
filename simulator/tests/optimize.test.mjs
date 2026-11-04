@@ -61,13 +61,14 @@ test('bead match: matched bore from the bead cross-section, speed ratio against 
   assert.equal(nearestNeedle(0.55).label, '21G');
 });
 
-test('robust search: the nominal dose keeps the tolerance inside the window and the band is verified', () => {
+test('robust search: the nominal dose keeps the tolerance inside the window and the band is verified', async () => {
   const heat = { shape: 'rectangle', width: 16, depth: 16, offsetX: 0, offsetY: 0, gap: 0.5, cellSize: 1, power: 10, ...PRESS_DEFAULTS, airMode: 'vent' };
   const config = { ...fromRegistry(registry, 'grease'), mode: 'pattern', speed: 10, pathSettings: { ...heat, pattern: 'n', spacing: 5, edgeInset: 2 } };
   const goal = { coverage: 80, overflow: 6 };
   const progress = [];
-  const r = optimizeSettings(config, heat, { goals: goal, tolerance: 0.1, searchCell: 1, keep: 2, verify: 1, bisections: 3, onProgress: (p) => progress.push(p) });
-  assert.ok(r.evaluations > 4 && progress.length === r.evaluations && progress.at(-1) <= 1);
+  const r = await optimizeSettings(config, heat, { goals: goal, tolerance: 0.1, searchCell: 1, keep: 2, verify: 1, bisections: 3, onProgress: (p) => progress.push(p) });
+  assert.ok(r.evaluations > 4 && progress.length === r.evaluations + 1 && progress.at(-1) === 1 && r.complete);
+  assert.ok(progress.slice(0, -1).every((p, i, a) => p < 1 && (i === 0 || p >= a[i - 1])), 'progress rises and only reaches 1 at the end');
   assert.equal(r.knob.key, 'pressure');
   assert.equal(r.candidates.length, r.space.insets.length);
   const best = r.candidates[0];
@@ -75,7 +76,7 @@ test('robust search: the nominal dose keeps the tolerance inside the window and 
   assert.ok(best.verified && best.worst.coveredPercent >= goal.coverage && best.worst.squeezeOutMm <= goal.overflow);
   assert.ok(best.fCov !== null && best.factor * 0.9 >= best.fCov - 1e-9 && best.factor * 1.1 <= best.fOvf + 1e-9);
   if (best.reached && !best.fallback) assert.equal(best.settings.speed, 10, 'pressure sets the dose, travel speed stays');
-  for (const c of r.candidates.filter((x) => x.pass)) assert.ok(c.depositedMl >= best.depositedMl * 0.99 - 1e-12);
+  for (const c of r.candidates.filter((x) => x.pass)) assert.ok(c.verified && c.depositedMl >= best.depositedMl * 0.99 - 1e-12);
 });
 
 test('dose knob: drive first, motion only at the drive limit, or motion directly', async () => {
@@ -98,32 +99,35 @@ test('dose knob: drive first, motion only at the drive limit, or motion directly
   assert.ok(gate.reached && gate.key === 'gateDuration' && Math.abs(gate.run.summary.deposited - 0.05) <= 0.05 * 0.03);
 });
 
-test('a single dot or a line is optimised by dose alone', () => {
+test('a single dot or a line is optimised by dose alone', async () => {
   const heat = { shape: 'rectangle', width: 12, depth: 12, offsetX: 0, offsetY: 0, gap: 0.5, cellSize: 1, power: 10, ...PRESS_DEFAULTS, airMode: 'vent' };
   const dot = { ...fromRegistry(registry, 'grease'), mode: 'point', gateDuration: 1, offsetX: 0, offsetY: 0 };
   const sp = searchSpace(dot, heat);
   assert.equal(sp.geometry, false);
   assert.deepEqual([sp.spacings, sp.insets], [[null], [null]]);
   const goal = { coverage: 80, overflow: 8 };
-  const r = optimizeSettings(dot, heat, { goals: goal, knob: 'motion', tolerance: 0.1, searchCell: 1, verify: 1, bisections: 3 });
+  const r = await optimizeSettings(dot, heat, { goals: goal, knob: 'motion', tolerance: 0.1, searchCell: 1, verify: 1, bisections: 3 });
   assert.equal(r.candidates.length, 1);
   assert.equal(r.knob.key, 'gateDuration');
   assert.equal(r.nozzle, 'fixed');
   const best = r.candidates[0];
   assert.ok(best.verified && best.settings.gateDuration > 0);
   assert.ok(best.pass === (best.worst.coveredPercent >= goal.coverage && best.worst.squeezeOutMm <= goal.overflow && best.reached && best.cycleOk));
+  assert.ok(!byDriveUnverified(r), 'nothing passes without the final-grid check');
   // The drive knob on a dot works through pressure first.
-  const byDrive = optimizeSettings(dot, heat, { goals: goal, searchCell: 1, verify: 0, bisections: 1 });
+  const byDrive = await optimizeSettings(dot, heat, { goals: goal, searchCell: 1, verify: 0, bisections: 1 });
   assert.equal(byDrive.knob.key, 'pressure');
   assert.equal(byDrive.motion.key, 'gateDuration');
+  assert.ok(byDrive.candidates.every((c) => !c.pass), 'verify: 0 leaves every result unchecked, so none passes');
 });
+const byDriveUnverified = (r) => r.candidates.some((c) => c.pass && !c.verified);
 
 test('nozzle matching picks standard needles sized to the bead of each pitch', async () => {
   const { searchSpace, NEEDLES } = await import('../src/optimize.js');
   const heat = { shape: 'rectangle', width: 16, depth: 16, offsetX: 0, offsetY: 0, gap: 0.5, cellSize: 1, power: 10, ...PRESS_DEFAULTS, airMode: 'vent' };
   // Volumetric PCP: flow does not depend on the needle, so the search stays fast.
   const config = { ...fromRegistry(registry, 'grease', 'P300'), mode: 'pattern', speed: 20, pathSettings: { ...heat, pattern: 'serpentine', spacing: 4, edgeInset: 2 } };
-  const r = optimizeSettings(config, heat, { goals: { coverage: 80, overflow: 6 }, nozzle: 'match', searchCell: 1, keep: 1, verify: 0, bisections: 1 });
+  const r = await optimizeSettings(config, heat, { goals: { coverage: 80, overflow: 6 }, nozzle: 'match', searchCell: 1, keep: 1, verify: 0, bisections: 1 });
   assert.equal(r.knob.key, 'rpm');
   const ids = new Set(NEEDLES.map((n) => n.id));
   assert.ok(r.candidates.every((c) => ids.has(c.diameter)));
@@ -131,4 +135,84 @@ test('nozzle matching picks standard needles sized to the bead of each pitch', a
   const bySpacing = new Map(r.candidates.filter((c) => c.edgeInset === 2).map((c) => [c.spacing, c.diameter]));
   const sp = searchSpace(config, heat).spacings;
   for (let k = 1; k < sp.length; k++) if (bySpacing.has(sp[k]) && bySpacing.has(sp[k - 1])) assert.ok(bySpacing.get(sp[k]) >= bySpacing.get(sp[k - 1]));
+});
+
+test('search levels: more candidates, windows, band points and finer grids; time estimate follows', async () => {
+  const { SEARCH_LEVELS, planSearch, estimateSeconds, squeezeMs } = await import('../src/optimize.js');
+  const heat = { shape: 'rectangle', width: 30, depth: 30, offsetX: 0, offsetY: 0, gap: 0.5, cellSize: 0.5, power: 10, ...PRESS_DEFAULTS };
+  const config = { ...fromRegistry(registry, 'grease'), mode: 'pattern', pathSettings: { ...heat, pattern: 'serpentine', spacing: 5, edgeInset: 2 } };
+  const plans = SEARCH_LEVELS.map((l) => planSearch(config, heat, { level: l.level }));
+  for (let k = 1; k < plans.length; k++) {
+    const [a, b] = [plans[k - 1], plans[k]];
+    assert.ok(b.geometries >= a.geometries && b.keep > a.keep && b.coarse > a.coarse && b.fine >= a.fine, JSON.stringify([a, b]));
+    assert.ok(b.searchCell < a.searchCell && b.verifyCell < a.verifyCell);
+  }
+  assert.ok(plans.every((p) => p.screenDoses === 2), 'every level screens at two doses in the decision zone');
+  assert.equal(plans[3].band, 5);
+  // Grid time grows as cells^q (q fitted between the calibration grids, at least 1.8 finer than 0.5 mm)
+  // until the 90,000-cell cap.
+  const cal = { tune: 200, cells: [{ cell: 1, ms: 300, n: 7000, gridCell: 1 }, { cell: 0.5, ms: 2400, n: 28000, gridCell: 0.5 }] };
+  assert.ok(Math.abs(squeezeMs(cal, 0.5) - 2400) < 1, 'q = ln 8 / ln 4 = 1.5 reproduces the second point');
+  assert.ok(squeezeMs(cal, 0.3) > squeezeMs(cal, 0.4) && squeezeMs(cal, 0.1) === squeezeMs(cal, 0.05), 'capped grid');
+  const times = plans.map((p) => estimateSeconds(p, cal, 1));
+  for (let k = 1; k < times.length; k++) assert.ok(times[k] > times[k - 1]);
+  assert.ok(estimateSeconds(plans[2], cal, 4) < times[2] / 2, 'parallel workers shorten the search');
+  // A real calibration on this machine: positive times, more cells on the finer grid.
+  const { calibrateTask } = await import('../src/optimize.js');
+  const real = calibrateTask({ config, heat, target: 0.45 * 1.4, knob: 'drive' });
+  assert.ok(real.tune > 0 && real.cells[1].n > real.cells[0].n && real.cells.every((c) => c.ms > 0));
+});
+
+test('parallel evaluation finishing in any order gives the same result; partial results and stopping', async () => {
+  const { evaluateTask } = await import('../src/optimize.js');
+  const heat = { shape: 'rectangle', width: 14, depth: 14, offsetX: 0, offsetY: 0, gap: 0.5, cellSize: 1, power: 10, ...PRESS_DEFAULTS, airMode: 'vent' };
+  const config = { ...fromRegistry(registry, 'grease'), mode: 'pattern', speed: 10, pathSettings: { ...heat, pattern: 'serpentine', spacing: 3, edgeInset: 2 } };
+  const opts = { goals: { coverage: 80, overflow: 6 }, searchCell: 1, candidates: 3, keep: 2, verify: 1, bisections: 2 };
+  const sequential = await optimizeSettings(config, heat, opts);
+  let seed = 7;
+  const random = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  const scrambled = async (task) => {
+    await new Promise((r) => setTimeout(r, random() * 4));
+    try {
+      return evaluateTask(task);
+    } catch {
+      return null;
+    }
+  };
+  const partials = [];
+  const parallel = await optimizeSettings(config, heat, { ...opts, evaluate: scrambled, onPartial: (p) => partials.push(p) });
+  const key = (r) => r.candidates.map((c) => [c.spacing, c.edgeInset, c.factor.toFixed(6), c.pass, c.verified ?? false].join('/')).join(' ');
+  assert.equal(key(parallel), key(sequential));
+  assert.equal(parallel.evaluations, sequential.evaluations);
+  assert.ok(partials.length >= 2 && !partials[0].complete && partials[0].candidates.every((c) => c.screenedOnly) && parallel.complete);
+  // Stopping: pending evaluations reject; the search rejects and the last partial result remains.
+  let n = 0;
+  const stopping = async (task) => {
+    if (++n > 6) throw new Error('已取消');
+    return evaluateTask(task);
+  };
+  const seen = [];
+  await assert.rejects(optimizeSettings(config, heat, { ...opts, evaluate: stopping, onPartial: (p) => seen.push(p) }), /已取消/);
+  await new Promise((r) => setImmediate(r));
+  assert.ok(seen.length >= 1 && seen.at(-1).candidates.length > 0 && !seen.at(-1).complete);
+});
+
+test('dose tuning: secant search reaches 0.1 % in a few simulations, range ends are exact', async () => {
+  const { tuneForVolume } = await import('../src/tuning.js');
+  const { simulate } = await import('../src/engine.js');
+  const line = { ...fromRegistry(registry, 'grease'), mode: 'line', lineLength: 60, shutoffDistance: 0, speed: 10 };
+  for (const target of [0.06, 0.2, 0.35]) {
+    const t = tuneForVolume(line, target, { key: 'pressure', lo: 10, hi: 100 });
+    assert.ok(t.reached && t.simulations <= 10 && Math.abs(t.run.summary.deposited / target - 1) < 2e-3, `${target}: ${t.simulations}`);
+  }
+  // The deposit at exactly 100 psi is reachable (no rounding past the limit).
+  const top = simulate({ ...line, pressure: 100 }).summary.deposited;
+  const atTop = tuneForVolume(line, top, { key: 'pressure', lo: 10, hi: 100 });
+  assert.ok(atTop.reached && atTop.config.pressure <= 100);
+  // Travel speed that no longer lowers the deposit (acceleration-limited): out of range, and the least
+  // extreme speed with that deposit is returned rather than the 800 mm/s end of the range.
+  const pcp = { ...fromRegistry(registry, 'grease', 'P300'), mode: 'pattern', pathSettings: { shape: 'rectangle', width: 30, depth: 30, offsetX: 0, offsetY: 0, pattern: 'serpentine', spacing: 5, edgeInset: 2, spiralShape: 'auto', spiralDirection: 'outside-in' } };
+  const floor = simulate({ ...pcp, speed: 800 }).summary.deposited;
+  const t = tuneForVolume(pcp, floor * 0.3);
+  assert.ok(!t.reached && t.config.speed < 300 && Math.abs(t.run.summary.deposited / floor - 1) < 3e-3, `${t.config.speed}`);
 });
