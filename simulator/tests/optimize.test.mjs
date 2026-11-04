@@ -147,7 +147,7 @@ test('search levels: more candidates, windows, band points and finer grids; time
     assert.ok(b.geometries >= a.geometries && b.keep > a.keep && b.coarse > a.coarse && b.fine >= a.fine, JSON.stringify([a, b]));
     assert.ok(b.searchCell < a.searchCell && b.verifyCell < a.verifyCell);
   }
-  assert.equal(plans[0].screenDoses, 1);
+  assert.ok(plans.every((p) => p.screenDoses === 2), 'every level screens at two doses in the decision zone');
   assert.equal(plans[3].band, 5);
   // Grid time grows as cells^q (q fitted between the calibration grids, at least 1.8 finer than 0.5 mm)
   // until the 90,000-cell cap.

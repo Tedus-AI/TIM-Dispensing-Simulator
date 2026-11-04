@@ -121,7 +121,7 @@ const spread = (lo, hi, n, geometric) =>
  * for that final check.
  */
 export const SEARCH_LEVELS = Object.freeze([
-  { level: 1, name: '快速', candidates: 3, screenDoses: 1, keep: 2, bisections: 3, verify: 1, band: 3, searchCell: 1, verifyCell: 0.75 },
+  { level: 1, name: '快速', candidates: 3, screenDoses: 2, keep: 2, bisections: 3, verify: 1, band: 3, searchCell: 1, verifyCell: 0.75 },
   { level: 2, name: '標準', candidates: 5, screenDoses: 2, keep: 4, bisections: 4, verify: 3, band: 3, searchCell: 0.75, verifyCell: 0.5 },
   { level: 3, name: '精細', candidates: 7, screenDoses: 2, keep: 6, bisections: 5, verify: 4, band: 5, searchCell: 0.6, verifyCell: 0.4 },
   { level: 4, name: '極精細', candidates: 9, screenDoses: 2, keep: 8, bisections: 6, verify: 5, band: 5, searchCell: 0.5, verifyCell: 0.3 },
