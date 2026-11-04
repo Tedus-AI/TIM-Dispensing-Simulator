@@ -6,7 +6,7 @@ import { MATERIALS } from './materials.js';
 import { DispenseScene, VIEW_LABELS } from './scene.js';
 import { HARDWARE_REFERENCES } from './hardware-reference.js';
 import { estimateCompression, squeezeRheology, PRESS_DEFAULTS } from './compression.js';
-import { GOAL_DEFAULTS, OPTIMIZE_DEFAULTS, SEARCH_LEVELS, levelOf, planSearch, estimateSeconds, optimizeSettings, judge, rank, metricsOf, beadMatch, needleLabel } from './optimize.js';
+import { GOAL_DEFAULTS, OPTIMIZE_DEFAULTS, SEARCH_LEVELS, levelOf, planSearch, estimateSeconds, screeningDoses, optimizeSettings, judge, rank, metricsOf, beadMatch, needleLabel } from './optimize.js';
 import { tuneDose, driveOf } from './tuning.js';
 import { pageTemplate, ICONS, PATTERN_ICONS, PATTERN_NAMES } from './ui/template.js';
 import { drawChart, moveCursor, CHARTS } from './ui/chart.js';
@@ -1385,17 +1385,18 @@ function durationText(s) {
   return `約 ${(s / 3600).toFixed(1)} 小時`;
 }
 
-// Duration estimate: one timed dose tuning and two squeezes (1.0 and 0.5 mm) for the current settings, run
-// in the background when the dialog opens, then scaled by each level's plan and the worker count.
+// Duration estimate: one timed dose tuning and two squeezes (1.0 and 0.5 mm) for the current settings at the
+// upper screening dose (where most evaluations happen; squeezing more glue takes longer), run in the
+// background when the dialog opens, then scaled by each level's plan and the worker count.
 function calibrationKey() {
-  return JSON.stringify([searchConfig(), S.heat, knobFor()]);
+  return JSON.stringify([searchConfig(), S.heat, knobFor(), S.goals, S.optOptions.tolerance, S.optOptions.dose]);
 }
 function requestCalibration() {
   const key = calibrationKey();
   if (S.optCal?.key === key || S.optimize?.running) return;
   S.optCal = { key, pending: true };
   const config = searchConfig();
-  const target = requiredMl() * Math.sqrt(S.optOptions.dose[0] * S.optOptions.dose[1]);
+  const target = requiredMl() * screeningDoses(S.goals, S.optOptions.tolerance, S.optOptions.dose).at(-1);
   compute('calibrate', { config, heat: { ...S.heat }, target, knob: knobFor(config.mode) })
     .then((cal) => {
       if (S.optCal?.key !== key) return;
@@ -1495,6 +1496,7 @@ function updateOptRunning() {
   if (tm) tm.textContent = optTimeText(o);
 }
 function renderOptimize() {
+  if (!S.optimize?.running) requestCalibration();
   const o = S.optimize || {};
   const opt = S.optOptions;
   const c = S.config;
