@@ -1,9 +1,9 @@
 import { simulate } from './engine.js';
 import { estimateCompression } from './compression.js';
-import { tuneForVolume } from './tuning.js';
+import { tuneDose } from './tuning.js';
 import { optimizeSettings } from './optimize.js';
 
-// Squeeze estimates and pattern comparisons run here so the 3D view stays responsive.
+// Squeeze estimates, dose tuning, pattern comparisons and searches run here so the 3D view stays responsive.
 const slim = (run) => ({
   config: run.config,
   summary: { deposits: run.summary.deposits },
@@ -28,7 +28,7 @@ self.onmessage = (event) => {
       return;
     }
     if (type === 'compare') {
-      const { config, heat, patterns, factor, matchVolume } = payload;
+      const { config, heat, patterns, factor, matchVolume, knob = 'drive' } = payload;
       const required = ((heat.shape === 'circle' ? (Math.PI * heat.width ** 2) / 4 : heat.width * heat.depth) * heat.gap) / 1000;
       const rows = [];
       patterns.forEach((pattern, k) => {
@@ -38,18 +38,24 @@ self.onmessage = (event) => {
           let run;
           let tuned = c;
           let reached = true;
+          let fallback = false;
           if (matchVolume) {
-            const t = tuneForVolume(c, required * factor);
+            // Same dose for every pattern, set the way the dose bar sets it (drive first, or travel speed).
+            const t = tuneDose(c, required * factor, knob);
             run = t.run;
             tuned = t.config;
             reached = t.reached;
+            fallback = t.fallback;
           } else run = simulate(c);
           const r = compress(run, heat, 0).summary;
           rows.push({
             pattern,
             ok: true,
             reached,
+            fallback,
             speed: tuned.speed,
+            pressure: tuned.pressure,
+            rpm: tuned.rpm,
             pathLength: run.pathLength,
             cycle: run.ending.motionEnd,
             deposited: run.summary.deposited,
@@ -67,6 +73,11 @@ self.onmessage = (event) => {
         }
       });
       self.postMessage({ id, ok: true, result: { rows, required, factor, matchVolume } });
+      return;
+    }
+    if (type === 'tune') {
+      const t = tuneDose(payload.config, payload.target, payload.knob);
+      self.postMessage({ id, ok: true, result: { config: t.config, key: t.key, reached: t.reached, fallback: t.fallback, deposited: t.run.summary.deposited } });
       return;
     }
     if (type === 'optimize') {

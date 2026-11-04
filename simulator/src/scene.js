@@ -70,8 +70,8 @@ function volumeOf(g) {
 }
 
 // Shared bead mesh builder: rings at each grid node, a flat underside, no internal caps.
-function beadGeometry(deposits, cellLength, ratio, ringAt) {
-  const profile = beadProfile(deposits, cellLength, ratio);
+function beadGeometry(deposits, cellLength, ratio, ringAt, standoff, nozzle) {
+  const profile = beadProfile(deposits, cellLength, ratio, standoff, nozzle);
   const n = deposits.length;
   const sides = BEAD_SIDES;
   const m = sides + 1;
@@ -110,19 +110,19 @@ function beadGeometry(deposits, cellLength, ratio, ringAt) {
 }
 
 // One watertight surface with shared longitudinal rings: no internal end caps or overlapping slices.
-function continuousLineGeometry(deposits, cellLength, ratio) {
-  return beadGeometry(deposits, cellLength, ratio, (i) => ({ x: i * cellLength, y: 0, nx: 0, ny: 1 }));
+function continuousLineGeometry(deposits, cellLength, ratio, standoff, nozzle) {
+  return beadGeometry(deposits, cellLength, ratio, (i) => ({ x: i * cellLength, y: 0, nx: 0, ny: 1 }), standoff, nozzle);
 }
 
 // Bins follow path arc length; the nozzle footprint may extend beyond the ends, so extend the end
 // tangent. Bent rings are a geometric illustration; crossings are not a material union.
-function continuousPathGeometry(deposits, cellLength, ratio, path, gridStart) {
+function continuousPathGeometry(deposits, cellLength, ratio, path, gridStart, standoff, nozzle) {
   return beadGeometry(deposits, cellLength, ratio, (i) => {
     const s = gridStart + i * cellLength;
     const q = pointOnPath(path, s);
     const extra = s - Math.max(0, Math.min(path.length, s));
     return { x: q.x + q.tx * extra, y: q.y + q.ty * extra, nx: -q.ty, ny: q.tx };
-  });
+  }, standoff, nozzle);
 }
 
 // Heat-source footprint: a coordinate guide, not the chip itself.
@@ -429,9 +429,9 @@ export class DispenseScene {
     if (c.mode === 'point') this.dotGeo = capGeometry(c.dotRatio);
     const geometry =
       c.mode === 'pattern'
-        ? continuousPathGeometry(run.frames[0].deposits, run.cellLength, c.lineRatio, run.path, run.gridStart)
+        ? continuousPathGeometry(run.frames[0].deposits, run.cellLength, c.lineRatio, run.path, run.gridStart, c.standoff, c.diameter)
         : c.mode === 'line'
-          ? continuousLineGeometry(run.frames[0].deposits, run.cellLength, c.lineRatio)
+          ? continuousLineGeometry(run.frames[0].deposits, run.cellLength, c.lineRatio, c.standoff, c.diameter)
           : this.dotGeo;
     const bead = new THREE.Mesh(geometry, this.glue);
     bead.visible = false;
@@ -770,14 +770,14 @@ export class DispenseScene {
         bead.geometry.dispose();
         bead.geometry =
           c.mode === 'pattern'
-            ? continuousPathGeometry(s.deposits, this.run.cellLength, c.lineRatio, this.run.path, this.run.gridStart)
-            : continuousLineGeometry(s.deposits, this.run.cellLength, c.lineRatio);
+            ? continuousPathGeometry(s.deposits, this.run.cellLength, c.lineRatio, this.run.path, this.run.gridStart, c.standoff, c.diameter)
+            : continuousLineGeometry(s.deposits, this.run.cellLength, c.lineRatio, c.standoff, c.diameter);
         this.lastDeposits = s.deposits;
       }
       if (c.mode === 'pattern') bead.position.set(0, 0, c.surfaceZ + 0.001);
       else bead.position.set(c.offsetX - c.lineLength / 2 + this.run.gridStart, c.offsetY, c.surfaceZ + 0.001);
     } else if (bead.visible) {
-      const d = dotDimensions(v, c.dotRatio);
+      const d = dotDimensions(v, c.dotRatio, c.standoff, c.diameter);
       bead.scale.set(d.radius, d.radius, (v * 1000) / (this.dotGeo.userData.unitVolume * d.radius * d.radius));
       bead.position.set(c.offsetX, c.offsetY, c.surfaceZ + 0.001);
     }

@@ -74,9 +74,48 @@ test('robust search: the nominal dose keeps the tolerance inside the window and 
   assert.ok(best.pass, JSON.stringify({ ...best, bead: undefined }));
   assert.ok(best.verified && best.worst.coveredPercent >= goal.coverage && best.worst.squeezeOutMm <= goal.overflow);
   assert.ok(best.fCov !== null && best.factor * 0.9 >= best.fCov - 1e-9 && best.factor * 1.1 <= best.fOvf + 1e-9);
-  if (best.reached && !best.speedChanged) assert.equal(best.settings.speed, 10, 'pressure sets the dose, travel speed stays');
+  if (best.reached && !best.fallback) assert.equal(best.settings.speed, 10, 'pressure sets the dose, travel speed stays');
   for (const c of r.candidates.filter((x) => x.pass)) assert.ok(c.depositedMl >= best.depositedMl * 0.99 - 1e-12);
-  assert.throws(() => optimizeSettings({ ...config, mode: 'line' }, heat), /依熱源/);
+});
+
+test('dose knob: drive first, motion only at the drive limit, or motion directly', async () => {
+  const { tuneDose } = await import('../src/tuning.js');
+  const line = { ...fromRegistry(registry, 'grease'), mode: 'line', lineLength: 60, shutoffDistance: 0, speed: 10 };
+  // About 0.04 mL at 10 psi and 0.41 mL at 100 psi along this line at 10 mm/s.
+  const inRange = tuneDose(line, 0.2, 'drive');
+  assert.ok(inRange.reached && !inRange.fallback && inRange.key === 'pressure' && inRange.config.speed === 10);
+  // Too much material for 100 psi at 10 mm/s: pressure goes to its limit and the travel speed drops.
+  const pushed = tuneDose(line, 0.6, 'drive');
+  assert.ok(pushed.fallback && pushed.key === 'speed' && pushed.config.pressure === 100 && pushed.config.speed < 10);
+  assert.ok(pushed.reached && Math.abs(pushed.run.summary.deposited - 0.6) <= 0.6 * 0.03);
+  // Too little for 10 psi: pressure goes to its lower limit and the travel speed rises.
+  const thin = tuneDose(line, 0.02, 'drive');
+  assert.ok(thin.fallback && thin.config.pressure === 10 && thin.config.speed > 10 && thin.reached);
+  const motion = tuneDose(line, 0.2, 'motion');
+  assert.ok(motion.reached && motion.key === 'speed' && motion.config.pressure === line.pressure);
+  const dot = { ...line, mode: 'point', gateDuration: 1 };
+  const gate = tuneDose(dot, 0.05, 'motion');
+  assert.ok(gate.reached && gate.key === 'gateDuration' && Math.abs(gate.run.summary.deposited - 0.05) <= 0.05 * 0.03);
+});
+
+test('a single dot or a line is optimised by dose alone', () => {
+  const heat = { shape: 'rectangle', width: 12, depth: 12, offsetX: 0, offsetY: 0, gap: 0.5, cellSize: 1, power: 10, ...PRESS_DEFAULTS, airMode: 'vent' };
+  const dot = { ...fromRegistry(registry, 'grease'), mode: 'point', gateDuration: 1, offsetX: 0, offsetY: 0 };
+  const sp = searchSpace(dot, heat);
+  assert.equal(sp.geometry, false);
+  assert.deepEqual([sp.spacings, sp.insets], [[null], [null]]);
+  const goal = { coverage: 80, overflow: 8 };
+  const r = optimizeSettings(dot, heat, { goals: goal, knob: 'motion', tolerance: 0.1, searchCell: 1, verify: 1, bisections: 3 });
+  assert.equal(r.candidates.length, 1);
+  assert.equal(r.knob.key, 'gateDuration');
+  assert.equal(r.nozzle, 'fixed');
+  const best = r.candidates[0];
+  assert.ok(best.verified && best.settings.gateDuration > 0);
+  assert.ok(best.pass === (best.worst.coveredPercent >= goal.coverage && best.worst.squeezeOutMm <= goal.overflow && best.reached && best.cycleOk));
+  // The drive knob on a dot works through pressure first.
+  const byDrive = optimizeSettings(dot, heat, { goals: goal, searchCell: 1, verify: 0, bisections: 1 });
+  assert.equal(byDrive.knob.key, 'pressure');
+  assert.equal(byDrive.motion.key, 'gateDuration');
 });
 
 test('nozzle matching picks standard needles sized to the bead of each pitch', async () => {

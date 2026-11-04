@@ -3,7 +3,7 @@ import { motionProfile, timeAtDistance, planPolylineMotion } from './motion.js';
 import { withUpdates } from './parameters.js';
 
 export { motionProfile, timeAtDistance };
-export const VERSION = '1.3.0';
+export const VERSION = '1.4.0';
 export const LABEL = '工程假設／未經實機校準';
 export const BEAD_SIDES = 32;
 
@@ -287,37 +287,93 @@ export function lineDimensions(volumeMl, length, ratio) {
   return { width, height: ratio * width, area };
 }
 
-export function dotDimensions(volumeMl, ratio) {
-  const b = Math.cbrt((1000 * volumeMl * 3) / (Math.PI * ratio * (3 + 4 * ratio * ratio)));
-  return { radius: b, height: 2 * ratio * b };
+// The nozzle face levels material only beneath it: about the bore plus the standoff on each side
+// (engineering assumption). A lower nozzle presses a bead or dot to the standoff height while it still
+// fits under that reach; beyond it the material piles around a buried nozzle and stays taller.
+export const troweledWidth = (nozzle, standoff) => nozzle + 2 * standoff;
+
+// Spherical cap: free cap keeps its proportion; pressed caps keep their volume V = πh(3b² + h²)/6.
+export function dotDimensions(volumeMl, ratio, standoff = Infinity, nozzle = Infinity) {
+  const v = 1000 * volumeMl;
+  const b = Math.cbrt((v * 3) / (Math.PI * ratio * (3 + 4 * ratio * ratio)));
+  const h = 2 * ratio * b;
+  if (!(h > standoff)) return { radius: b, height: h, flattened: false, freeHeight: h };
+  const flat = Math.sqrt(Math.max(0, (6 * v) / (Math.PI * standoff) - standoff ** 2) / 3);
+  const reach = Math.max(b, troweledWidth(nozzle, standoff) / 2);
+  if (flat <= reach) return { radius: flat, height: standoff, flattened: true, freeHeight: h };
+  // Radius limited by the nozzle's reach: solve πh(3r² + h²)/6 = V for the height (monotonic in h).
+  let lo = standoff;
+  let hi = h;
+  for (let i = 0; i < 60; i++) {
+    const mid = (lo + hi) / 2;
+    if ((Math.PI * mid * (3 * reach * reach + mid * mid)) / 6 > v) hi = mid;
+    else lo = mid;
+  }
+  return { radius: reach, height: (lo + hi) / 2, flattened: true, freeHeight: h };
 }
 
-// Shared continuous half-ellipse rings. Reconstruct radii without overshoot, then normalize
-// the exact frustum integral to the deposited volume. This is geometric reconstruction, not wetting physics.
-export function beadProfile(deposits, cellLength, ratio) {
+// Shared continuous half-ellipse rings. Each node's cross-section area comes from the neighbouring cells;
+// a free bead keeps the height/width ratio, but a nozzle lower than that height presses the bead to the
+// standoff and it widens (area πwh/4 conserved). The lofted ring integral is then normalized to the
+// deposited volume. This is geometric reconstruction, not wetting physics.
+export function beadProfile(deposits, cellLength, ratio, standoff = Infinity, nozzle = Infinity) {
   const n = deposits.length;
   const widths = new Float64Array(n + 1);
   const heights = new Float64Array(n + 1);
+  const areas = new Float64Array(n + 1);
+  const k = (BEAD_SIDES * Math.sin(Math.PI / BEAD_SIDES)) / 4; // polygon ring area = k·w·h
   let target = 0;
-  let integral = 0;
   for (const v of deposits) target += v * 1000;
-  for (let i = 1; i < n; i++)
-    widths[i] = Math.sqrt((4 * 1000 * (deposits[i - 1] + deposits[i])) / (2 * cellLength * Math.PI * ratio));
-  for (let i = 0; i < n; i++)
-    integral +=
-      ((((BEAD_SIDES * Math.sin(Math.PI / BEAD_SIDES) * ratio) / 4) * cellLength) *
-        (widths[i] ** 2 + widths[i] * widths[i + 1] + widths[i + 1] ** 2)) /
-      3;
-  const scale = integral > 0 ? Math.sqrt(target / integral) : 0;
+  for (let i = 1; i < n; i++) areas[i] = (1000 * (deposits[i - 1] + deposits[i])) / (2 * cellLength);
+  let freeMaxHeight = 0;
+  const reach = troweledWidth(nozzle, standoff);
+  const shape = (c) => {
+    for (let i = 0; i <= n; i++) {
+      const a = c * areas[i];
+      const w = Math.sqrt((4 * a) / (Math.PI * ratio));
+      const h = ratio * w;
+      if (h > freeMaxHeight) freeMaxHeight = h;
+      if (h > standoff) {
+        // Pressed to the standoff while it fits under the nozzle's reach, else as wide as the reach.
+        widths[i] = Math.min((4 * a) / (Math.PI * standoff), Math.max(w, reach));
+        heights[i] = (4 * a) / (Math.PI * widths[i]);
+      } else {
+        heights[i] = h;
+        widths[i] = w;
+      }
+    }
+  };
+  const integral = () => {
+    let sum = 0;
+    for (let i = 0; i < n; i++)
+      sum += (k * cellLength * (widths[i] * heights[i] + (widths[i] * heights[i + 1] + widths[i + 1] * heights[i]) / 2 + widths[i + 1] * heights[i + 1])) / 3;
+    return sum;
+  };
+  // Scale the node areas until the lofted volume matches (exact in one step for a free bead), then remove
+  // the last residual by scaling widths alone, which is exactly linear at fixed heights.
+  let c = 1;
+  for (let it = 0; it < 6; it++) {
+    freeMaxHeight = 0;
+    shape(c);
+    const v = integral();
+    if (!(v > 0)) break;
+    const next = (c * target) / v;
+    if (Math.abs(next / c - 1) < 1e-12) break;
+    c = next;
+  }
+  freeMaxHeight = 0;
+  shape(c);
+  const v = integral();
+  const fix = v > 0 ? target / v : 0;
   let maxHeight = 0;
   let maxWidth = 0;
   for (let i = 0; i <= n; i++) {
-    widths[i] *= scale;
-    heights[i] = widths[i] * ratio;
+    widths[i] *= fix;
+    if (fix === 0) heights[i] = 0;
     if (heights[i] > maxHeight) maxHeight = heights[i];
     if (widths[i] > maxWidth) maxWidth = widths[i];
   }
-  return { widths, heights, volumeMm3: target, maxHeight, maxWidth };
+  return { widths, heights, volumeMm3: target, maxHeight, maxWidth, freeMaxHeight, flattened: freeMaxHeight > standoff };
 }
 
 function buildMotion(c, path, pathLength) {
@@ -468,8 +524,11 @@ export function simulate(input) {
       nextFrame += 0.01;
     }
   }
-  const profile = moving ? beadProfile(deposits, cellLength, c.lineRatio) : null;
-  const maxHeight = profile ? profile.maxHeight : dotDimensions(deposits[0], c.dotRatio).height;
+  const profile = moving ? beadProfile(deposits, cellLength, c.lineRatio, c.standoff, c.diameter) : null;
+  const dotShape = moving ? null : dotDimensions(deposits[0], c.dotRatio, c.standoff, c.diameter);
+  const maxHeight = profile ? profile.maxHeight : dotShape.height;
+  const freeHeight = profile ? profile.freeMaxHeight : dotShape.freeHeight;
+  const flattened = profile ? profile.flattened : dotShape.flattened;
   const last = frames.at(-1);
   const warnings = [];
   const afterStopVolume = Math.max(0, last.output - evaluate(movementEnd).output);
@@ -530,10 +589,16 @@ export function simulate(input) {
     warnings.push('末段平均截面低於中段一半，可能欠膠；此比較門檻為 AI 初估，不是產品驗收標準。');
   if (moving && endRatio !== null && endRatio > 1.5)
     warnings.push('末段平均截面高於中段 1.5 倍，可能積膠；此比較門檻為 AI 初估，不是產品驗收標準。');
-  if (maxHeight > c.standoff) warnings.push('簡化膠形高於針距，可能干涉；尚未計算壓扁或拉絲。');
+  const shapeName = moving ? '膠條' : '膠點';
+  if (maxHeight > c.standoff + 1e-9)
+    warnings.push(
+      `${shapeName}高 ${maxHeight.toFixed(2)} mm 高於針嘴離面 ${c.standoff} mm：膠量超過針嘴口能刮平的範圍，針嘴埋入膠內，可能拖膠、沾針；請提高針距或減少每 mm 膠量。`,
+    );
+  else if (flattened)
+    warnings.push(`針嘴離面 ${c.standoff} mm 低於${shapeName}自然高度 ${freeHeight.toFixed(2)} mm：已按膠量守恆壓平成 ${c.standoff} mm 高、變寬。`);
   if (c.material === 'putty' && !pcp && Math.abs(c.pressureExponent - 1) > 1e-9)
     warnings.push(`putty 流動指數 m=${c.pressureExponent}：針嘴內徑與長度依冪律 d^(3+m)/L^m 一併換算；仍是單點映射假設。`);
-  const maxWidth = profile ? profile.maxWidth : dotDimensions(last.deposited, c.dotRatio).radius * 2;
+  const maxWidth = profile ? profile.maxWidth : dotDimensions(last.deposited, c.dotRatio, c.standoff, c.diameter).radius * 2;
   if (path) {
     let outside = false;
     for (const p of path.points)
@@ -579,9 +644,11 @@ export function simulate(input) {
     warnings,
     maxHeight,
     maxWidth,
+    freeHeight,
+    flattened,
     motion: motionSummary,
     ending,
-    summary: { ...last, deposits: Array.from(last.deposits), maxHeight, maxWidth, ending },
+    summary: { ...last, deposits: Array.from(last.deposits), maxHeight, maxWidth, freeHeight, flattened, ending },
   };
 }
 
