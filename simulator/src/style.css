@@ -529,3 +529,17 @@ table.cmp.opt th, table.cmp.opt td:not(:nth-child(2)) { white-space: nowrap; }
 .stop-btn { display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px; border-radius: 10px; border: 1px solid var(--bad); background: var(--bad); color: #fff; font-weight: 700; }
 .stop-btn:hover:not(:disabled) { filter: brightness(1.08); }
 .stop-btn:disabled { opacity: 0.6; cursor: progress; }
+
+/* v1.6: optimiser search-variable table. */
+.opt-vars { margin: 4px 0 8px; display: grid; gap: 6px; }
+table.vars { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+table.vars th, table.vars td { padding: 6px 8px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: middle; }
+table.vars thead th { font-size: 11.5px; color: var(--muted); font-weight: 600; }
+table.vars tbody th { color: var(--strong); white-space: nowrap; font-weight: 650; }
+table.vars td small { display: block; color: var(--muted); font-size: 11px; margin-top: 3px; }
+table.vars td small.warn { color: var(--warn); }
+table.vars .var-na { font-size: 12px; }
+table.vars .chk { display: inline-flex; align-items: center; gap: 4px; margin-right: 12px; white-space: nowrap; }
+.var-toggle button { white-space: nowrap; }
+.var-range { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.var-range input { width: 70px; padding: 4px 6px; border-radius: 7px; border: 1px solid var(--line-2); background: var(--panel); color: var(--strong); font: 12.5px var(--mono); }
