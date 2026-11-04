@@ -41,3 +41,28 @@ export function tuneForVolume(config, targetMl, { iterations = 26, key, lo, hi }
     reached: Math.abs(run.summary.deposited - targetMl) <= Math.max(1e-6, targetMl * 0.03),
   };
 }
+
+// Drive that sets the flow: air pressure on the R75, metering-shaft speed on the P300 (working ranges).
+export const DRIVES = Object.freeze({
+  R75: { key: 'pressure', lo: 10, hi: 100, label: '驅動壓力', unit: 'psi' },
+  P300: { key: 'rpm', lo: 10, hi: 150, label: 'PCP 轉速', unit: 'rpm' },
+});
+export const driveOf = (config) => DRIVES[config.architecture === 'P300' ? 'P300' : 'R75'];
+/** Motion setting that sets the dose without touching the drive: travel speed, or gate time for a point. */
+export const motionKeyOf = (config) => (config.mode === 'point' ? 'gateDuration' : 'speed');
+
+/**
+ * Reach a target dose the way it is done on the line. knob 'drive' changes pressure / pump speed at the
+ * current travel speed (or gate time) and only moves that motion setting once the drive is at its range
+ * limit (`fallback`); knob 'motion' changes the travel speed (or gate time) at the current drive.
+ */
+export function tuneDose(config, targetMl, knob = 'drive', { iterations = 26 } = {}) {
+  const motionKey = motionKeyOf(config);
+  if (knob !== 'drive') return { ...tuneForVolume(config, targetMl, { key: motionKey, iterations }), fallback: false };
+  const drive = driveOf(config);
+  const t = tuneForVolume(config, targetMl, { key: drive.key, lo: drive.lo, hi: drive.hi, iterations });
+  if (t.reached) return { ...t, fallback: false };
+  const short = t.run.summary.deposited < targetMl;
+  const m = tuneForVolume({ ...config, [drive.key]: short ? drive.hi : drive.lo }, targetMl, { key: motionKey, iterations });
+  return { ...m, fallback: true };
+}

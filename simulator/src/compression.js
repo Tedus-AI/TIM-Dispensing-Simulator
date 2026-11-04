@@ -53,7 +53,7 @@ export function depositSources(run) {
     const v = deposits[0] * 1000;
     return v > 0 ? [{ x: c.offsetX, y: c.offsetY, v, tx: 1, ty: 0, width: 0 }] : [];
   }
-  const profile = beadProfile(deposits, run.cellLength, c.lineRatio);
+  const profile = beadProfile(deposits, run.cellLength, c.lineRatio, c.standoff, c.diameter);
   const sources = [];
   for (let i = 0; i < deposits.length; i++) {
     const v = deposits[i] * 1000;
@@ -840,7 +840,7 @@ export function estimateCompression(run, options) {
   const totalMm3 = depositedMl * 1000;
   const targetDepth = o.shape === 'circle' ? o.width : o.depth;
   const sources = depositSources(run);
-  const dot = c.mode === 'point' ? dotDimensions(depositedMl, c.dotRatio) : null;
+  const dot = c.mode === 'point' ? dotDimensions(depositedMl, c.dotRatio, c.standoff, c.diameter) : null;
 
   // Domain: heat source and deposit plus the farthest any material could travel (all of it as one disc).
   // Cells beyond the workpiece simply count as off-workpiece; the workpiece itself is not gridded.

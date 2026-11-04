@@ -29,6 +29,8 @@ export const ICONS = {
   save: icon('<path d="M5 3h11l3 3v15H5z"/><path d="M8 3v6h8V3M8 21v-7h8v7"/>'),
   spark: icon('<path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M6 18l2.5-2.5M15.5 8.5 18 6"/>'),
   pin: icon('<path d="M12 21s-6-5.3-6-11a6 6 0 1 1 12 0c0 5.7-6 11-6 11z"/><circle cx="12" cy="10" r="2"/>'),
+  list: icon('<path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/>'),
+  drop: icon('<path d="M12 3s6 6.4 6 11a6 6 0 0 1-12 0c0-4.6 6-11 6-11z"/>'),
 };
 
 export function pageTemplate(version) {
@@ -41,20 +43,36 @@ export function pageTemplate(version) {
   <div class="scenario" id="scenario" aria-label="目前情境"></div>
   <div class="top-actions">
     <span class="badge-warn" title="所有結果皆為工程假設，尚未經實機校準">工程假設 · 未校準</span>
-    <button class="ghost" id="show-scenarios" title="已存情境的比較">${ICONS.compare}<span>情境比較</span><em class="count" id="scenario-count" hidden></em></button>
-    <button class="ghost" id="show-sources" title="參數來源與假設">${ICONS.book}<span>來源</span></button>
-    <button class="ghost" id="help" title="使用說明">${ICONS.help}<span>說明</span></button>
+    <div class="tool-group" role="group" aria-label="分析工具">
+      <button class="ghost" id="open-compare" title="等膠量比較所有熱源圖樣">${ICONS.compare}<span>圖樣比較</span></button>
+      <button class="ghost" id="open-optimize" title="搜尋膠量容差內仍達標、膠量最少的設定">${ICONS.spark}<span>自動最佳化</span></button>
+      <button class="ghost" id="show-scenarios" title="已存情境的比較">${ICONS.list}<span>情境比較</span><em class="count" id="scenario-count" hidden></em></button>
+    </div>
+    <button class="ghost minor" id="show-sources" title="參數來源與假設">${ICONS.book}<span>來源</span></button>
+    <button class="ghost minor" id="help" title="使用說明">${ICONS.help}<span>說明</span></button>
     <button class="ghost icon-only" id="theme" title="切換深色／淺色">${ICONS.moon}</button>
   </div>
 </header>
 <div class="workspace">
   <aside class="panel config" aria-label="試驗配置">
+    <section class="dose" aria-label="膠量">
+      <div class="dose-head"><span class="eyebrow">${ICONS.drop}膠量</span><span class="dose-req" id="dose-req" title="需求 = 熱源面積 × 組裝間隙">需求 —</span></div>
+      <div class="dose-meter" id="dose-meter"><b id="dose-now">—</b><span id="dose-ratio">—</span><i id="dose-fill"></i><em class="tick1" title="1.0 × 需求"></em></div>
+      <div class="dose-row target">
+        <label class="dose-target"><span>目標</span><span class="input"><input type="number" id="dose-value" min="0.0001" max="10000" step="any" aria-label="目標膠量"></span><select id="dose-unit" aria-label="目標膠量單位"><option value="factor">× 需求</option><option value="ml">mL</option><option value="g">g</option></select></label>
+        <span class="dose-eq" id="dose-eq"></span>
+      </div>
+      <div class="dose-row">
+        <select id="dose-knob" aria-label="膠量調整方式"></select>
+        <button class="primary" id="dose-apply">套用</button>
+      </div>
+    </section>
     <nav class="tabs" role="tablist">
-      <button role="tab" data-tab="equipment" class="active"><b>1</b>設備</button>
-      <button role="tab" data-tab="heat"><b>2</b>熱源</button>
+      <button role="tab" data-tab="part" class="active"><b>1</b>熱源工件</button>
+      <button role="tab" data-tab="equipment"><b>2</b>膠材設備</button>
       <button role="tab" data-tab="path"><b>3</b>路徑</button>
       <button role="tab" data-tab="ending"><b>4</b>收尾</button>
-      <button role="tab" data-tab="workpiece"><b>5</b>工件</button>
+      <button role="tab" data-tab="press"><b>5</b>壓合</button>
     </nav>
     <div class="tab-body" id="tab-body"></div>
     <footer class="config-foot"><button id="defaults" class="text-button">恢復此情境預設</button><span>v${version}</span></footer>

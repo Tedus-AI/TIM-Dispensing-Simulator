@@ -1,5 +1,5 @@
 import { estimateCompression } from './compression.js';
-import { tuneForVolume } from './tuning.js';
+import { tuneDose, driveOf, motionKeyOf } from './tuning.js';
 import { planDispensePath } from './path-planning.js';
 
 /*
@@ -27,7 +27,7 @@ import { planDispensePath } from './path-planning.js';
  */
 
 export const GOAL_DEFAULTS = Object.freeze({ coverage: 95, overflow: 3 });
-export const OPTIMIZE_DEFAULTS = Object.freeze({ tolerance: 0.1, knob: 'flow', nozzle: 'fixed', cycleLimit: null, dose: [0.8, 2.5] });
+export const OPTIMIZE_DEFAULTS = Object.freeze({ tolerance: 0.1, knob: 'drive', nozzle: 'fixed', cycleLimit: null, dose: [0.8, 2.5] });
 
 // Common dispensing needle inner diameters, mm (approximate catalogue values) and the 1/8" bore of the
 // Laird Tputty guideline.
@@ -67,7 +67,8 @@ export function beadMatch(run) {
     state,
     beadHeight: run.summary.maxHeight,
     standoff: c.standoff,
-    drags: run.summary.maxHeight > c.standoff,
+    drags: run.summary.maxHeight > c.standoff + 1e-9, // nozzle buried in the material
+    flattened: Boolean(run.summary.flattened),
   };
 }
 
@@ -109,6 +110,8 @@ const round = (v, step) => Math.round(v / step) * step;
 const unique = (values) => [...new Set(values.map((v) => Number(v.toFixed(3))))].sort((a, b) => a - b);
 
 export function searchSpace(config, heat) {
+  // A line or a single dot has no pattern geometry to vary: only its dose is searched.
+  if (config.mode !== 'pattern') return { spacings: [null], insets: [null], pitched: false, geometry: false };
   const p = config.pathSettings;
   const short = Math.min(heat.width, heat.shape === 'circle' ? heat.width : heat.depth);
   const pitched = p.pattern === 'serpentine' || p.pattern === 'spiral';
@@ -116,21 +119,21 @@ export function searchSpace(config, heat) {
     ? unique([short / 12, short / 9, short / 6, short / 4, p.spacing].map((v) => round(v, 0.5)).filter((v) => v >= 1.5 && v <= short / 2.5))
     : [p.spacing];
   const insets = unique([1, 2.5, 4, short / 5, p.edgeInset].map((v) => round(v, 0.5)).filter((v) => v >= 0 && v < short / 2 - 1));
-  return { spacings: spacings.length ? spacings : [p.spacing], insets: insets.length ? insets : [p.edgeInset], pitched };
+  return { spacings: spacings.length ? spacings : [p.spacing], insets: insets.length ? insets : [p.edgeInset], pitched, geometry: true };
 }
 
-/** The setting that sets the dose: drive pressure / pump speed at fixed travel speed, or travel speed. */
-export function doseKnob(config, knob = 'flow') {
-  if (knob === 'speed') return { key: 'speed', lo: 1, hi: 800, label: '移動速度', unit: 'mm/s' };
-  if (config.architecture === 'P300') return { key: 'rpm', lo: 10, hi: 150, label: 'PCP 轉速', unit: 'rpm' };
-  return { key: 'pressure', lo: 10, hi: 100, label: '驅動壓力', unit: 'psi' };
+/** The setting that sets the dose: the drive (pressure / pump speed), or travel speed / gate time. */
+export function doseKnob(config, knob = 'drive') {
+  if (knob === 'drive' || knob === 'flow') return { id: 'drive', ...driveOf(config) };
+  return config.mode === 'point'
+    ? { id: 'motion', key: 'gateDuration', label: '開膠時間', unit: 's' }
+    : { id: 'motion', key: 'speed', label: '移動速度', unit: 'mm/s' };
 }
 
 export function optimizeSettings(config, heat, options = {}) {
   const o = { ...OPTIMIZE_DEFAULTS, goals: GOAL_DEFAULTS, searchCell: 0.75, keep: 4, verify: 3, bisections: 4, ...options };
   const { goals, dose } = o;
   const tol = o.tolerance;
-  if (config.mode !== 'pattern') throw new Error('自動最佳化目前只支援「依熱源」圖樣');
   if (!(dose[0] > 0 && dose[1] > dose[0])) throw new Error('膠量範圍需為 0 < 下限 < 上限');
   if (!(tol >= 0 && tol < 0.5)) throw new Error('膠量容差需介於 0 與 50%');
   const area = heat.shape === 'circle' ? (Math.PI * heat.width ** 2) / 4 : heat.width * heat.depth;
@@ -144,7 +147,7 @@ export function optimizeSettings(config, heat, options = {}) {
   const geometries = space.spacings.flatMap((spacing) =>
     space.insets.map((edgeInset) => {
       let diameter = config.diameter;
-      if (o.nozzle === 'match') {
+      if (o.nozzle === 'match' && space.geometry) {
         const length = planDispensePath({ ...config.pathSettings, spacing, edgeInset }).length;
         diameter = nearestNeedle(Math.sqrt((4 * ((required * 1000 * screenDose) / length)) / Math.PI)).id;
       }
@@ -158,34 +161,27 @@ export function optimizeSettings(config, heat, options = {}) {
     done++;
     o.onProgress?.(Math.min(1, done / budget), label);
   };
-  const describeGeometry = (g) => `${space.pitched ? `間距 ${g.spacing} mm、` : ''}內縮 ${g.edgeInset} mm${o.nozzle === 'match' ? `、針嘴 ${needleLabel(g.diameter)}` : ''}`;
+  const describeGeometry = (g) =>
+    space.geometry ? `${space.pitched ? `間距 ${g.spacing} mm、` : ''}內縮 ${g.edgeInset} mm${o.nozzle === 'match' ? `、針嘴 ${needleLabel(g.diameter)}` : ''}` : config.mode === 'point' ? '單點膠量' : '直線膠量';
 
-  // Dose through the drive first; when the drive is at its limit, move the travel speed, as on the line.
-  const tuneDose = (c, target) => {
-    if (knob.key === 'speed') return tuneForVolume(c, target, { key: 'speed', iterations: 16 });
-    const t = tuneForVolume(c, target, { key: knob.key, lo: knob.lo, hi: knob.hi, iterations: 16 });
-    if (t.reached) return t;
-    const short = t.run.summary.deposited < target;
-    const s = tuneForVolume({ ...c, [knob.key]: short ? knob.hi : knob.lo }, target, { key: 'speed', iterations: 16 });
-    return { ...s, speedChanged: true };
-  };
   const cache = new Map();
   const evaluate = (g, f, h) => {
     const key = `${g.spacing}|${g.edgeInset}|${g.diameter}|${f.toFixed(5)}|${h.cellSize}`;
     if (cache.has(key)) return cache.get(key);
-    const c = { ...config, diameter: g.diameter, pathSettings: { ...config.pathSettings, spacing: g.spacing, edgeInset: g.edgeInset } };
+    const c = space.geometry ? { ...config, diameter: g.diameter, pathSettings: { ...config.pathSettings, spacing: g.spacing, edgeInset: g.edgeInset } } : { ...config, diameter: g.diameter };
     let result = null;
     try {
-      const tuned = tuneDose(c, required * f);
+      // Dose through the drive first; at the drive's limit the travel speed (gate time) moves instead.
+      const tuned = tuneDose(c, required * f, knob.id, { iterations: 16 });
       const squeeze = estimateCompression(tuned.run, h);
       const cycleOk = !(o.cycleLimit > 0) || tuned.run.ending.motionEnd <= o.cycleLimit;
       result = {
         ...g,
         factor: f,
         knobValue: tuned.config[knob.key],
-        settings: { speed: tuned.config.speed, pressure: tuned.config.pressure, rpm: tuned.config.rpm, diameter: tuned.config.diameter },
+        settings: { speed: tuned.config.speed, gateDuration: tuned.config.gateDuration, pressure: tuned.config.pressure, rpm: tuned.config.rpm, diameter: tuned.config.diameter },
         reached: tuned.reached,
-        speedChanged: Boolean(tuned.speedChanged),
+        fallback: Boolean(tuned.fallback),
         cycleOk,
         bead: beadMatch(tuned.run),
         ...metricsOf(tuned.run, squeeze),
@@ -302,7 +298,8 @@ export function optimizeSettings(config, heat, options = {}) {
     goals,
     tolerance: tol,
     knob,
-    nozzle: o.nozzle,
+    motion: { key: motionKeyOf(config), label: config.mode === 'point' ? '開膠時間' : '移動速度', unit: config.mode === 'point' ? 's' : 'mm/s' },
+    nozzle: space.geometry ? o.nozzle : 'fixed',
     cycleLimit: o.cycleLimit,
     required,
     dose,
