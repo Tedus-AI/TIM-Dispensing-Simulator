@@ -85,6 +85,7 @@ const S = {
   optimize: null,
   optOptions: { ...OPTIMIZE_DEFAULTS, ...(readJson('tim-opt') || {}) },
   optCal: null,
+  optSpeed: readJson('tim-opt-speed') || { ratio: 1, runs: 0 },
 };
 
 function readJson(key) {
@@ -1408,9 +1409,21 @@ function requestCalibration() {
       if ($('#optimize-dialog').open && !S.optimize?.running) renderOptimize();
     });
 }
-function estimateFor(level) {
+function estimateFor(level, { raw = false } = {}) {
   const cal = S.optCal?.key === calibrationKey() ? S.optCal.cal : null;
-  return cal ? estimateSeconds(planSearch(searchConfig(), S.heat, { ...S.optOptions, level }), cal, POOL_SIZE) : null;
+  if (!cal) return null;
+  const seconds = estimateSeconds(planSearch(searchConfig(), S.heat, { ...S.optOptions, level }), cal, POOL_SIZE);
+  return raw ? seconds : seconds * S.optSpeed.ratio;
+}
+// Learn this computer's speed from finished searches: blend measured ÷ predicted into the correction.
+function learnSpeed(predicted, elapsed) {
+  // Short runs are mostly worker start-up and would over-correct longer searches.
+  if (!(predicted > 3 && elapsed >= 20)) return;
+  const r = elapsed / predicted;
+  const old = S.optSpeed;
+  const ratio = old.runs ? Math.exp(0.5 * Math.log(old.ratio) + 0.5 * Math.log(r)) : r;
+  S.optSpeed = { ratio: Math.min(6, Math.max(0.25, ratio)), runs: old.runs + 1 };
+  store.set('tim-opt-speed', JSON.stringify(S.optSpeed));
 }
 function levelPlanText(plan) {
   const grid = `網格 ${plan.searchCell} mm 篩選與找窗口，${plan.verifyCell} mm 複核`;
@@ -1522,7 +1535,15 @@ function renderOptimize() {
   const windowCell = (x) =>
     x.screenedOnly ? '<small class="muted">只篩選</small>' : `${x.fCov === null ? '—' : fmt(x.fCov, 2)}–${x.fOvf === null ? '—' : fmt(x.fOvf, 2)}×${x.margin !== null ? `<br><small>±${fmt(x.margin * 100, 0)}%</small>` : ''}`;
   const pair = (nominal, worst, digits) => `${fmt(nominal, digits)}${worst !== undefined ? `<br><small>±${tolPct}%：${fmt(worst, digits)}</small>` : ''}`;
-  const rowVerdict = (x) => (x.pass ? '<span class="ok-badge">達標</span>' : x.coarsePass ? '<span class="no-badge">粗網格達標・未複核</span>' : verdict(x.worst || x));
+  // Green only for a result checked on the final grid across the tolerance band; a single passing point
+  // (screening, or the nominal dose of a window narrower than the tolerance) is not a pass.
+  const rowVerdict = (x) => {
+    if (x.pass) return '<span class="ok-badge">達標</span>';
+    if (x.coarsePass) return '<span class="no-badge">粗網格達標・未複核</span>';
+    if (!judge(x.worst || x, S.goals).pass) return verdict(x.worst || x);
+    const why = x.screenedOnly ? '篩選點達標・未完成' : !x.reached || !x.cycleOk ? '設備或週期限制' : x.verified ? `容差內未全部達標` : `窗口不足 ±${tolPct}%`;
+    return `<span class="no-badge">${why}</span>`;
+  };
   const searched = geometry
     ? `${pitched ? '路徑間距、' : ''}邊界內縮；每組幾何找出達標的膠量窗口${opt.nozzle === 'match' ? '；針嘴依間距配對標準規格' : ''}`
     : `膠量窗口（${base.mode === 'point' ? '單點' : '直線'}沒有圖樣幾何可調，只搜尋膠量）`;
@@ -1548,7 +1569,7 @@ function renderOptimize() {
     ).join('')}</div>
     ${o.running ? '' : `<button class="primary" id="opt-run">${ICONS.spark}<span>${r ? '重新搜尋' : '開始搜尋'}</span></button>`}
   </div>
-  <p class="muted small-note">${esc(level.name)}：${levelPlanText(plan)}；${POOL_SIZE} 個執行緒並行。時間依這台電腦試算一次後估計，實際會隨夾氣多寡與膠量差 ±50%。</p>
+  <p class="muted small-note">${esc(level.name)}：${levelPlanText(plan)}；${POOL_SIZE} 個執行緒並行。時間依這台電腦試算一次後估計${S.optSpeed.runs ? `，並已依前 ${S.optSpeed.runs} 次搜尋的實際時間校正` : '；第一次搜尋完成後會依實際時間自動校正'}，實際仍會隨夾氣多寡與膠量差 ±30–50%。</p>
   ${
     o.running
       ? `<div class="opt-run"><div class="progress"><i style="width:${(o.progress || 0) * 100}%"></i></div><div class="opt-run-row"><span id="opt-status">${esc(o.label || '準備中…')}</span><span id="opt-time" class="mono">${optTimeText(o)}</span><button class="stop-btn" id="opt-cancel">${ICONS.stop}<span>停止搜尋</span></button></div><p class="muted small-note">停止後會保留已完成的部分結果；標示「未複核」的列尚未以細網格在容差內確認。</p></div>`
@@ -1561,7 +1582,7 @@ function renderOptimize() {
     r
       ? `${
           best
-            ? `<div class="opt-best ${best.pass ? 'pass' : 'fail'}"><b>${best.pass ? '建議設定' : best.coarsePass ? '粗網格達標、尚未複核' : '最接近的取捨'}</b><span>${geoText(best)}${doseText(best)} → 標稱 ${fmt(best.depositedMl, 3)} mL（${fmt(best.depositedMl * o.config.density, 3)} g，${fmt(best.volumeRatio, 2)}×）</span><span>${
+            ? `<div class="opt-best ${best.pass ? 'pass' : 'fail'}"><b>${best.pass ? '建議設定' : best.coarsePass ? '粗網格達標、尚未複核' : best.screenedOnly ? '目前領先（只完成篩選，尚未找窗口與複核）' : '最接近的取捨'}</b><span>${geoText(best)}${doseText(best)} → 標稱 ${fmt(best.depositedMl, 3)} mL（${fmt(best.depositedMl * o.config.density, 3)} g，${fmt(best.volumeRatio, 2)}×）</span><span>${
                 best.worst ? `膠量 ±${tolPct}% 內（${r.band} 點）：覆蓋 ≥ ${fmt(best.worst.coveredPercent, 1)}%、溢膠 ≤ ${fmt(best.worst.squeezeOutMm, 1)} mm` : `標稱：覆蓋 ${fmt(best.coveredPercent, 1)}%、溢膠 ${fmt(best.squeezeOutMm, 1)} mm`
               }；週期 ${fmt(best.cycle, 1)} s${best.bead.speedRatio !== null || best.bead.drags ? `；${base.mode === 'point' ? '膠點' : '膠條'} ${beadCell(best.bead)}` : ''}${best.bead.state !== 'ok' && best.bead.state !== 'n/a' ? `（匹配內徑約 ${fmt(best.bead.matchedId, 2)} mm）` : ''}</span>${
                 best.fallback ? `<span class="warn">${r.knob.label}已到範圍極限，改以${motion.label}達到膠量（${fmt(o.config[motion.key], motion.digits)} → ${mv(best)}）。</span>` : ''
@@ -1633,7 +1654,7 @@ async function runOptimize() {
   const pattern = { ...S.pattern };
   const level = levelOf(opt.level).level;
   const pool = createPool(POOL_SIZE);
-  const state = { running: true, progress: 0, label: '準備中…', startedAt: performance.now(), estimate: estimateFor(level), pool, partial: null };
+  const state = { running: true, progress: 0, label: '準備中…', startedAt: performance.now(), estimate: estimateFor(level), raw: estimateFor(level, { raw: true }), pool, partial: null };
   S.optimize = state;
   renderOptimize();
   const timer = setInterval(updateOptRunning, 1000);
@@ -1654,6 +1675,7 @@ async function runOptimize() {
       onPartial: (partial) => (state.partial = partial),
     });
     S.optimize = { result, ...meta() };
+    learnSpeed(state.raw, S.optimize.elapsed);
   } catch (e) {
     const stopped = e.message === '已取消';
     S.optimize = stopped && state.partial ? { result: state.partial, stopped: true, ...meta() } : { error: stopped ? '已停止搜尋；還沒有完成任何一組，沒有結果可顯示。' : e.message };

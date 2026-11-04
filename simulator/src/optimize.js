@@ -223,17 +223,21 @@ export function planSearch(config, heat, options = {}) {
 
 /**
  * Wall time (s) of a plan with `workers` evaluations in parallel: screening and the final check run fully
- * in parallel; each dose window is two bisection chains whose steps must follow one another.
+ * in parallel; each dose window is two bisection chains whose steps must follow one another. Each extra
+ * worker counts as 0.6 of one (shared cores, hyper-threads, memory bandwidth); the page then corrects the
+ * estimate with the measured time of earlier searches on the same computer.
  */
 export function estimateSeconds(plan, cal, workers = 1) {
-  const w = Math.max(1, workers);
+  const w = 1 + 0.6 * (Math.max(1, workers) - 1);
   const coarse = (cal.tune + squeezeMs(cal, plan.searchCell)) / 1000;
   const fine = (cal.tune + squeezeMs(cal, plan.verifyCell)) / 1000;
   const rounds = (n) => Math.ceil(n / w);
   const screen = rounds(plan.screen) * coarse;
   const windows = (rounds(2 * plan.keep) * (1 + plan.bisections) + rounds(plan.keep)) * coarse;
   const check = rounds(plan.fine) * fine;
-  return (screen + windows + check) * (w > 1 ? 1.15 : 1);
+  // Fresh workers load the modules and run their first evaluations before the engine has warmed up.
+  const startup = 2 + 2 * coarse;
+  return startup + screen + windows + check;
 }
 
 /**
