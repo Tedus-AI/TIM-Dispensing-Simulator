@@ -1,9 +1,8 @@
-import { simulate } from './engine.js';
 import { estimateCompression } from './compression.js';
 import { tuneDose } from './tuning.js';
 import { evaluateTask, calibrateTask } from './optimize.js';
 
-// Squeeze estimates, dose tuning, pattern comparisons and optimiser evaluations run here (the optimiser
+// Squeeze estimates, dose tuning and optimiser evaluations run here (the optimiser
 // spreads its evaluations over a pool of these workers) so the 3D view stays responsive.
 const slim = (run) => ({
   config: run.config,
@@ -26,54 +25,6 @@ self.onmessage = (event) => {
       const transfer = [];
       for (const f of result.grid.frames) transfer.push(f.coverage.buffer, f.trapped.buffer);
       self.postMessage({ id, ok: true, result }, transfer);
-      return;
-    }
-    if (type === 'compare') {
-      const { config, heat, patterns, factor, matchVolume, knob = 'drive' } = payload;
-      const required = ((heat.shape === 'circle' ? (Math.PI * heat.width ** 2) / 4 : heat.width * heat.depth) * heat.gap) / 1000;
-      const rows = [];
-      patterns.forEach((pattern, k) => {
-        self.postMessage({ id, progress: k / patterns.length, label: pattern });
-        const c = { ...config, mode: 'pattern', pathSettings: { ...config.pathSettings, pattern } };
-        try {
-          let run;
-          let tuned = c;
-          let reached = true;
-          let fallback = false;
-          if (matchVolume) {
-            // Same dose for every pattern, set the way the dose bar sets it (drive first, or travel speed).
-            const t = tuneDose(c, required * factor, knob);
-            run = t.run;
-            tuned = t.config;
-            reached = t.reached;
-            fallback = t.fallback;
-          } else run = simulate(c);
-          const r = compress(run, heat, 0).summary;
-          rows.push({
-            pattern,
-            ok: true,
-            reached,
-            fallback,
-            speed: tuned.speed,
-            pressure: tuned.pressure,
-            rpm: tuned.rpm,
-            pathLength: run.pathLength,
-            cycle: run.ending.motionEnd,
-            deposited: run.summary.deposited,
-            volumeRatio: r.volumeRatio,
-            coveredPercent: r.coveredPercent,
-            voidCount: r.voidCount,
-            voidAreaMm2: r.voidAreaMm2,
-            squeezeOutMm: r.squeezeOutMm,
-            rise: r.thermal.rise,
-            resistance: r.thermal.resistance,
-            corners: run.motion?.corners ?? 0,
-          });
-        } catch (error) {
-          rows.push({ pattern, ok: false, error: error.message });
-        }
-      });
-      self.postMessage({ id, ok: true, result: { rows, required, factor, matchVolume } });
       return;
     }
     if (type === 'tune') {

@@ -2,7 +2,8 @@ import * as THREE from 'three';
 import { MATERIALS } from './materials.js';
 
 // Inspection visualisation of the squeeze estimate, not a mechanical glass/fixture model.
-// World mm, Z up. The film top sits at the plate's lower face; trapped-air cells are drawn in red.
+// World mm, Z up. The film top sits at the plate's lower face; trapped-air cells are drawn in a colour the
+// page chooses (one of four, so it can differ from the material colour).
 
 // Perceptually ordered ramp for "when did the front arrive" (early = deep blue, late = warm yellow).
 const RAMP = [
@@ -24,7 +25,7 @@ export function rampColor(t) {
   return RAMP.at(-1)[1];
 }
 
-export function createCompressionScene(config, settings, result, { plateMargin = 6 } = {}) {
+export function createCompressionScene(config, settings, result, { plateMargin = 6, voidColor = 0xff2d55 } = {}) {
   const group = new THREE.Group();
   group.name = 'estimated compression inspection';
   const materials = [];
@@ -114,7 +115,7 @@ export function createCompressionScene(config, settings, result, { plateMargin =
   group.add(film);
 
   // Trapped-air cells.
-  const voidMesh = new THREE.Mesh(new THREE.BufferGeometry(), own(new THREE.MeshBasicMaterial({ color: 0xff2d55, transparent: true, opacity: 0.85, side: THREE.DoubleSide, depthWrite: false })));
+  const voidMesh = new THREE.Mesh(new THREE.BufferGeometry(), own(new THREE.MeshBasicMaterial({ color: voidColor, transparent: true, opacity: 0.88, side: THREE.DoubleSide, depthWrite: false })));
   voidMesh.name = 'trapped air';
   voidMesh.position.z = z + 0.01;
   voidMesh.renderOrder = 4;
@@ -245,6 +246,9 @@ export function createCompressionScene(config, settings, result, { plateMargin =
       return current;
     },
     setFrame,
+    setVoidColor(color) {
+      voidMesh.material.color.set(color);
+    },
     setColorMode(mode) {
       colorMode = mode;
       setFrame(current);

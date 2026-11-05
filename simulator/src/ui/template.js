@@ -43,9 +43,8 @@ export function pageTemplate(version) {
   </div>
   <div class="scenario" id="scenario" aria-label="目前情境"></div>
   <div class="top-actions">
-    <span class="badge-warn" title="所有結果皆為工程假設，尚未經實機校準">工程假設 · 未校準</span>
+    <span class="badge-warn" tabindex="0" data-tip="所有結果皆為工程假設、未經實機校準（23 °C 參考條件），供方案相對比較，不能作為量產配方或驗收依據；請以透明板或首件驗證。">工程假設 · 未校準</span>
     <div class="tool-group" role="group" aria-label="分析工具">
-      <button class="ghost" id="open-compare" title="等膠量比較所有熱源圖樣">${ICONS.compare}<span>圖樣比較</span></button>
       <button class="ghost" id="open-optimize" title="搜尋膠量容差內仍達標、膠量最少的設定">${ICONS.spark}<span>自動最佳化</span></button>
       <button class="ghost" id="show-scenarios" title="已存情境的比較">${ICONS.list}<span>情境比較</span><em class="count" id="scenario-count" hidden></em></button>
     </div>
@@ -57,7 +56,7 @@ export function pageTemplate(version) {
 <div class="workspace">
   <aside class="panel config" aria-label="試驗配置">
     <section class="dose" aria-label="膠量">
-      <div class="dose-head"><span class="eyebrow">${ICONS.drop}膠量</span><span class="dose-req" id="dose-req" title="需求 = 熱源面積 × 組裝間隙">需求 —</span></div>
+      <div class="dose-head"><span class="eyebrow">${ICONS.drop}膠量<span class="tip" tabindex="0" role="img" aria-label="說明" data-tip="需求＝熱源面積 × 組裝間隙。目標可用 × 需求、mL 或 g；按「套用」後依調整方式反推：線與圖樣預設調壓力（P300 調轉速），到極限才改速度；單點預設調開膠時間。">?</span></span><span class="dose-req" id="dose-req">需求 —</span></div>
       <div class="dose-meter" id="dose-meter"><b id="dose-now">—</b><span id="dose-ratio">—</span><i id="dose-fill"></i><em class="tick1" title="1.0 × 需求"></em></div>
       <div class="dose-row target">
         <label class="dose-target"><span>目標</span><span class="input"><input type="number" id="dose-value" min="0.0001" max="10000" step="any" aria-label="目標膠量"></span><select id="dose-unit" aria-label="目標膠量單位"><option value="factor">× 需求</option><option value="ml">mL</option><option value="g">g</option></select></label>
@@ -112,12 +111,12 @@ export function pageTemplate(version) {
         <input type="range" id="press-scrub" min="0" max="23" step="1" value="23" aria-label="壓合進程">
         <span id="press-gap">間隙 0.50 mm</span>
         <div class="seg small" role="group" aria-label="壓合著色"><button data-press-color="material" class="active">膠色</button><button data-press-color="front">前緣時序</button></div>
+        <div class="void-colors" role="group" aria-label="夾氣顏色"><span>夾氣</span><button data-void-color="#ff2d55" style="--c:#ff2d55" aria-label="夾氣顏色：洋紅" data-tip="洋紅"></button><button data-void-color="#2563eb" style="--c:#2563eb" aria-label="夾氣顏色：藍" data-tip="藍"></button><button data-void-color="#facc15" style="--c:#facc15" aria-label="夾氣顏色：黃" data-tip="黃"></button><button data-void-color="#111827" style="--c:#111827" aria-label="夾氣顏色：黑" data-tip="黑"></button></div>
         <button class="tool" id="press-exit" title="回到點膠">${ICONS.close}<span>回到點膠</span></button>
       </div>
       <div class="stage-foot">
-        <span id="camera-hint">拖曳平移 · 滾輪縮放 · Home 重設</span>
+        <span class="tip stage-tip" id="stage-tip" tabindex="0" role="img" aria-label="操作說明" data-tip="拖曳平移 · 滾輪縮放 · Home 重設">?</span>
         <span class="scale"><i id="scale-line"></i><span id="scale-label">X 軸 10 mm</span></span>
-        <span class="note" id="geometry-note">mm 真實比例 · 機構為工程示意</span>
       </div>
     </section>
     <section class="dock card" aria-label="時間軸">
@@ -142,9 +141,9 @@ export function pageTemplate(version) {
   </aside>
 </div>
 <dialog id="sources-dialog" class="dialog wide"><div class="dialog-head"><h2>參數來源與假設</h2><button data-close class="ghost">${ICONS.close}</button></div><p class="muted">「v1.0 更新」為本次查證後替換或新增的值；研究原檔 v0.3 不變。所有項目目前均未經實機驗證。</p><div class="table-scroll"><table><thead><tr><th>參數</th><th>值</th><th>類型</th><th>依據與出處</th></tr></thead><tbody id="source-rows"></tbody></table></div></dialog>
-<dialog id="compare-dialog" class="dialog wide"><div class="dialog-head"><h2>熱源圖樣比較</h2><button data-close class="ghost">${ICONS.close}</button></div><div id="compare-body"></div></dialog>
 <dialog id="scenarios-dialog" class="dialog wide"><div class="dialog-head"><h2>情境比較</h2><button data-close class="ghost">${ICONS.close}</button></div><div id="scenarios-body"></div></dialog>
-<dialog id="optimize-dialog" class="dialog wide"><div class="dialog-head"><h2>自動最佳化（數值搜尋）</h2><button data-close class="ghost">${ICONS.close}</button></div><div id="optimize-body"></div></dialog>
+<dialog id="optimize-dialog" class="dialog wide resizable"><div class="dialog-head"><h2>自動最佳化（數值搜尋）<span class="tip" tabindex="0" role="img" aria-label="說明" data-tip="在目前條件下搜尋「膠量在 ±容差內變動仍達標、標稱膠量最少」的設定。這是模擬器上的數值搜尋，結果與模型同樣未經實機校準。視窗可拖曳右下角調整大小。">?</span></h2><button data-close class="ghost">${ICONS.close}</button></div><div id="optimize-body"></div></dialog>
 <dialog id="help-dialog" class="dialog"><div class="dialog-head"><h2>使用說明</h2><button data-close class="ghost">${ICONS.close}</button></div><div id="help-body"></div></dialog>
-<div id="toast" role="status"></div>`;
+<div id="toast" role="status"></div>
+<div id="tipbox" popover="manual" role="tooltip"></div>`;
 }
