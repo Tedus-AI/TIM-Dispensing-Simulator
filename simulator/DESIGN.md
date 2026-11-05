@@ -1,5 +1,26 @@
 # 點膠研究室 · 機構與實作契約
 
+## v1.7（2026-11-05）
+
+- 說明元件：
+  - `tip(text)` 產生帶 `data-tip` 的小圓圈問號；任何元素加 `data-tip` 也會有說明。
+  - 只有一個 `#tipbox`（`popover="manual"`），在 top layer 顯示，所以不會被對話框或捲動區裁掉，也能顯示在 modal 對話框上方。
+  - 觸發方式：pointerover／focusin 顯示，pointerout／focusout／scroll 隱藏；位置在目標下方，靠近視窗底部時放上方。
+  - 不支援 popover 的瀏覽器退回 `title`。
+- `num`／`select` 的 hint、`group` 的 note、`kpi` 的說明都改成「?」；分頁開頭段落併入對應欄位或群組。
+- 最佳化視窗：
+  - `.dialog.resizable`（CSS `resize: both`），預設 1440 × 920 px；
+  - 使用者從右下角拖曳後，大小記在 `tim-opt-size`；
+  - 結果表合併幾何欄，判定用短標籤加 `data-tip`。
+- 複核結果帶 `bandPoints`（每個膠量點的覆蓋、溢膠、夾氣），供說明列出最差點。
+- `beadMatch.speedRatio`＝內孔截面 ÷ 實際膠條截面（`deposited / pathLength`），等於平均移動速度 ÷ 出膠速度；另回傳 `averageSpeed`。
+- `beadDeviation`：離 0.7–1.5 的對數距離，埋針加 1。膠量相差 1% 內時先比它（差 > 0.2）再比週期。
+- 移除圖樣比較（介面、`compare` 背景工作、匯出欄位）。
+- 夾氣顏色：
+  - `createCompressionScene(..., { voidColor })` 與 `setVoidColor`；
+  - `DispenseScene.setVoidColor` 記住顏色，下次壓合沿用；
+  - 選擇存在 `tim-void-color`，未選時 Tputty 用藍、Tgrease 用洋紅。
+
 ## v1.6（2026-11-04）
 
 - `searchSpace(config, heat, n, vars, knob)` 產生幾何清單：

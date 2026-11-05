@@ -49,30 +49,44 @@ export const NEEDLES = Object.freeze([
 export const nearestNeedle = (d) => NEEDLES.reduce((a, b) => (Math.abs(Math.log(b.id / d)) < Math.abs(Math.log(a.id / d)) ? b : a));
 export const needleLabel = (d) => NEEDLES.find((n) => Math.abs(n.id - d) < 1e-6)?.label ?? `Ø${d}`;
 
-// Travel speed ÷ paste exit speed. Near 1 the paste is laid as a rope about the nozzle's size; well above
-// it the bead is drawn thin (it can neck or break), well below it the paste piles up and folds air in.
-// The band is an engineering assumption.
+// Stretch ratio = average travel speed ÷ paste exit speed = nozzle bore area ÷ bead cross-section. Near 1
+// the paste is laid as a rope about the nozzle's size; well above it the bead is drawn thin (it can neck or
+// break), well below it the paste piles up and folds air in. The band is an engineering assumption.
 export const MATCH_BAND = Object.freeze([0.7, 1.5]);
 
-/** How well the nozzle suits the bead it lays: bead cross-section, matched bore, speed ratio, height. */
+/**
+ * How well the nozzle suits the bead it lays: bead cross-section, matched bore, stretch ratio, height. The
+ * ratio comes from the bead actually laid (deposit per mm of path), so acceleration and corners that keep
+ * the nozzle below its set speed are included; the set speed alone overstates the stretch on short segments.
+ */
 export function beadMatch(run) {
   const c = run.config;
   const length = run.pathLength || 0;
   const beadArea = length > 0 ? (run.summary.deposited * 1000) / length : 0;
-  const exitSpeed = (run.Q * 1000) / ((Math.PI * c.diameter ** 2) / 4);
-  const speedRatio = exitSpeed > 0 && c.mode !== 'point' ? c.speed / exitSpeed : null;
+  const boreArea = (Math.PI * c.diameter ** 2) / 4;
+  const exitSpeed = (run.Q * 1000) / boreArea;
+  const speedRatio = c.mode !== 'point' && beadArea > 0 ? boreArea / beadArea : null;
   const state = speedRatio === null ? 'n/a' : speedRatio > MATCH_BAND[1] ? 'stretched' : speedRatio < MATCH_BAND[0] ? 'piled' : 'ok';
   return {
     beadArea,
     matchedId: Math.sqrt((4 * beadArea) / Math.PI),
     exitSpeed,
     speedRatio,
+    averageSpeed: speedRatio === null ? null : speedRatio * exitSpeed,
     state,
     beadHeight: run.summary.maxHeight,
     standoff: c.standoff,
     drags: run.summary.maxHeight > c.standoff + 1e-9, // nozzle buried in the material
     flattened: Boolean(run.summary.flattened),
   };
+}
+
+/** How far a bead is from the good band, in log units (0 inside it); a buried nozzle adds 1. */
+export function beadDeviation(b) {
+  if (!b) return 0;
+  const r = b.speedRatio;
+  const off = r > 0 ? Math.abs(Math.log(r / Math.min(MATCH_BAND[1], Math.max(MATCH_BAND[0], r)))) : 0;
+  return off + (b.drags ? 1 : 0);
 }
 
 export function judge(m, goals = GOAL_DEFAULTS) {
@@ -485,11 +499,11 @@ export async function optimizeSettings(config, heat, options = {}) {
     const pb = b.robust && feasible(b);
     if (pa !== pb) return pa ? -1 : 1;
     if (pa) {
-      // Within 1 % of material, prefer a well-laid bead, then the shorter cycle, then the wider window.
+      // Within 1 % of material, prefer the better-laid bead (less stretched or piled, nozzle not buried),
+      // then the shorter cycle, then the wider window.
       if (Math.abs(a.depositedMl - b.depositedMl) > 0.01 * Math.max(a.depositedMl, b.depositedMl)) return a.depositedMl - b.depositedMl;
-      const beadA = a.bead.state !== 'stretched' && a.bead.state !== 'piled' && !a.bead.drags;
-      const beadB = b.bead.state !== 'stretched' && b.bead.state !== 'piled' && !b.bead.drags;
-      if (beadA !== beadB) return beadA ? -1 : 1;
+      const bead = beadDeviation(a.bead) - beadDeviation(b.bead);
+      if (Math.abs(bead) > 0.2) return bead;
       return a.cycle - b.cycle || (b.margin ?? 0) - (a.margin ?? 0);
     }
     return compareRanked(a, b, goals);
@@ -620,7 +634,9 @@ export async function optimizeSettings(config, heat, options = {}) {
       voidAreaMm2: Math.max(...band.map((r) => r.voidAreaMm2)),
     };
     const ok = band.length === bandFactors.length && band.every((r) => r.reached) && worst.coveredPercent >= goals.coverage && worst.squeezeOutMm <= goals.overflow;
-    return { ...c, ...nominal, fCov: c.fCov, fOvf: c.fOvf, margin: c.margin, fCovAtMin: c.fCovAtMin, worst, verified: true, robust: ok };
+    // Every dose of the check, for the page to show where a goal was missed.
+    const bandPoints = band.map((r) => ({ shift: r.factor / c.factor - 1, factor: r.factor, depositedMl: r.depositedMl, coveredPercent: r.coveredPercent, squeezeOutMm: r.squeezeOutMm, voidAreaMm2: r.voidAreaMm2, reached: r.reached }));
+    return { ...c, ...nominal, fCov: c.fCov, fOvf: c.fOvf, margin: c.margin, fCovAtMin: c.fCovAtMin, worst, bandPoints, verified: true, robust: ok };
   };
   for (;;) {
     candidates.sort(order);

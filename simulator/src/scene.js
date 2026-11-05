@@ -1025,7 +1025,7 @@ export class DispenseScene {
   // ── Compression view ──
   showCompression(result, settings, options = {}) {
     this.clearCompression();
-    this.compression = createCompressionScene(this.config, settings, result, options);
+    this.compression = createCompressionScene(this.config, settings, result, { voidColor: this.voidColor ?? 0xff2d55, ...options });
     this.scene.add(this.compression.group);
     this.tool.visible = false;
     this.depositMeshes[0].visible = false;
@@ -1038,6 +1038,12 @@ export class DispenseScene {
 
   setCompressionFrame(index) {
     this.compression?.setFrame(index);
+    this.render();
+  }
+
+  setVoidColor(color) {
+    this.voidColor = color;
+    this.compression?.setVoidColor(color);
     this.render();
   }
 
