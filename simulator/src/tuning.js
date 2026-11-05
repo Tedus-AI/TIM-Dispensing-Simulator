@@ -1,8 +1,8 @@
-import { simulate } from './engine.js';
+import { simulate, runTiming } from './engine.js';
 
 // Deposited volume falls with travel speed and rises with gate time, drive pressure and pump speed.
 const RISING = new Set(['gateDuration', 'pressure', 'rpm']);
-const BOUNDS = { speed: [1, 800], gateDuration: [0.001, 10], pressure: [10, 100], rpm: [10, 150] };
+export const BOUNDS = Object.freeze({ speed: [1, 800], gateDuration: [0.001, 10], pressure: [10, 100], rpm: [10, 150] });
 
 /**
  * Find the value of one setting whose deposited volume matches a target: travel speed (default for
@@ -11,8 +11,9 @@ const BOUNDS = { speed: [1, 800], gateDuration: [0.001, 10], pressure: [10, 100]
  * Volume is monotonic in each setting and close to a power law, so the search works on
  * F = ln(volume ÷ target) against ln(setting): a secant step (starting from the current setting with
  * slope 1, i.e. volume ∝ setting) inside the bracket found so far, bisection whenever the step would
- * leave the bracket and every fourth step. It stops at 0.1 % (typically 3–6 simulations instead of 26).
- * Values are clamped to the exact range ends. `reached` is false when the target lies outside the range;
+ * leave the bracket and every fourth step. It stops at 0.1 % (typically 3–6 probes instead of 26).
+ * Each probe uses the run's closed-form deposit (runTiming, equal to a full simulation's) and only the
+ * chosen setting is simulated. Values are clamped to the exact range ends. `reached` is false when the target lies outside the range;
  * the closest setting is then returned, and where the volume has stopped changing toward the range end
  * (e.g. acceleration-limited travel speed) the least extreme setting with that volume (`refineLimit`).
  */
@@ -29,16 +30,17 @@ export function tuneForVolume(config, targetMl, { iterations = 26, key, lo, hi, 
   const valueAt = (x) => (x <= xa ? vLo : x >= xb ? vHi : Math.min(vHi, Math.max(vLo, Math.exp(x))));
   const probe = (x) => {
     const value = valueAt(x);
-    let run = null;
+    let timing = null;
     try {
-      run = simulate({ ...config, [k]: value });
+      timing = runTiming({ ...config, [k]: value });
+      if (!timing.fits) timing = null; // e.g. a very slow path exceeds the 180 s run limit: too much material for speed
     } catch {
-      run = null; // e.g. a very slow path exceeds the 180 s run limit: too much material for speed
+      timing = null;
     }
     simulations++;
-    const volume = run ? run.summary.deposited : null;
-    if (run && (!best || Math.abs(volume - targetMl) < Math.abs(best.volume - targetMl) - 1e-12)) best = { run, value, volume };
-    const h = run ? (volume > 0 ? Math.log(volume / targetMl) : -Infinity) : rising ? -Infinity : Infinity;
+    const volume = timing ? timing.deposited : null;
+    if (timing && (!best || Math.abs(volume - targetMl) < Math.abs(best.volume - targetMl) - 1e-12)) best = { value, volume };
+    const h = timing ? (volume > 0 ? Math.log(volume / targetMl) : -Infinity) : rising ? -Infinity : Infinity;
     const pt = { x, value, volume, F: rising ? h : -h }; // F rises with x
     probes.push(pt);
     return pt;
@@ -131,5 +133,8 @@ export function tuneDose(config, targetMl, knob = 'drive', { iterations = 26 } =
   if (t.reached) return { ...t, fallback: false };
   const short = t.run.summary.deposited < targetMl;
   const m = tuneForVolume({ ...config, [drive.key]: short ? drive.hi : drive.lo }, targetMl, { key: motionKey, iterations });
-  return { ...m, fallback: true, simulations: t.simulations + m.simulations };
+  // Both settings at a range end: the dose is out of reach (e.g. too small a nozzle for the material).
+  const v = m.config[motionKey];
+  const motionAtLimit = !m.reached && (v <= BOUNDS[motionKey][0] + 1e-9 || v >= BOUNDS[motionKey][1] - 1e-9);
+  return { ...m, fallback: true, motionAtLimit, simulations: t.simulations + m.simulations };
 }

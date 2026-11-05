@@ -3,7 +3,7 @@ import { motionProfile, timeAtDistance, planPolylineMotion } from './motion.js';
 import { withUpdates } from './parameters.js';
 
 export { motionProfile, timeAtDistance };
-export const VERSION = '1.7.0';
+export const VERSION = '1.8.0';
 export const LABEL = '工程假設／未經實機校準';
 export const BEAD_SIDES = 32;
 
@@ -383,9 +383,10 @@ function buildMotion(c, path, pathLength) {
   return motionProfile(pathLength, c.speed, c.acceleration);
 }
 
-export function simulate(input) {
-  const c = { ...motionDefaults(), ...cornerDefaults(), endMotion: 'legacy', shutoffDistance: 0, ...structuredClone(input) };
-  validate(c);
+export const RUN_LIMIT = 180; // s: the longest run the simulator steps through
+
+// Path, motion, timing and flow of one run, shared by simulate() and runTiming().
+function planRun(c) {
   const Q = steadyFlow(c);
   const pcp = c.architecture === 'P300';
   const available = c.fill - c.residual;
@@ -406,7 +407,59 @@ export function simulate(input) {
   const reverseResponseEnd = reverseConfigured ? reverseCommandEnd + c.delay : null;
   const trajectory = endingTrajectory(path ? { ...c, mode: 'line', lineLength: pathLength } : c, movementEnd, tailEnd);
   const duration = Math.max(tailEnd, trajectory.end, reverseResponseEnd ?? 0);
-  if (duration > 180) throw new Error('試驗超過 180 秒，請縮短路徑或提高速度');
+  const reverseRate = (c.displacement * c.reverseRpm * c.efficiency) / 60;
+  // Material out of the nozzle by time t: the closed form the time stepping samples.
+  const outputAt = (t) => {
+    const raw = pcp
+      ? pcpResponse(t, Q, meterGate, c.delay, c.tauOn, reverseRate, c.reverseDuration)
+      : pulse(t, Q, gate, c.delay, c.tauOn, c.tauOff);
+    return { raw, output: pcp ? raw.volume : Math.min(available, raw.volume) };
+  };
+  return { Q, pcp, available, path, pathLength, moving, motion, effectiveShutoffDistance, gate, meterGate, movementEnd, tailEnd, reverseConfigured, reverseCommandEnd, reverseResponseEnd, reverseRate, trajectory, duration, outputAt };
+}
+
+/**
+ * A run's timing and final deposit without stepping through it: path length, dispense time, cycle (end of
+ * the motion), total duration and the volume left on the part, from the same closed forms simulate()
+ * samples (equal to its summary.deposited). Cheap enough to probe many settings, e.g. to tune a dose or to
+ * size a nozzle. `fits` is false for a run longer than the simulation limit.
+ */
+export function runTiming(input) {
+  const c = { ...motionDefaults(), ...cornerDefaults(), endMotion: 'legacy', shutoffDistance: 0, ...input };
+  validate(c);
+  const p = planRun(c);
+  const final = p.outputAt(p.duration).output;
+  const deposited = c.endMotion === 'legacy' ? final : Math.min(final, p.outputAt(p.trajectory.start).output);
+  return { Q: p.Q, pathLength: p.pathLength, gate: p.meterGate, movementEnd: p.movementEnd, cycle: p.trajectory.end, duration: p.duration, deposited, fits: p.duration <= RUN_LIMIT };
+}
+
+/**
+ * Fit the flow law to one measured steady output (grams over seconds at the current drive and nozzle):
+ * R75 grease → equivalent viscosity, R75 putty → reference rate, P300 → volumetric efficiency. Returns the
+ * setting to change; `ratio` is measured ÷ model flow.
+ */
+export function calibrateFlow(config, grams, seconds) {
+  if (!(grams > 0) || !(seconds > 0)) throw new Error('請輸入大於 0 的重量與時間');
+  const model = steadyFlow(config);
+  if (!(model > 0)) throw new Error('目前設定的出膠量為 0，無法校正');
+  const measured = grams / config.density / seconds; // mL/s
+  const ratio = measured / model;
+  const fit =
+    config.architecture === 'P300'
+      ? { key: 'efficiency', value: config.efficiency * ratio }
+      : config.material === 'putty'
+        ? { key: 'referenceRate', value: config.referenceRate * ratio }
+        : { key: 'viscosity', value: config.viscosity / ratio };
+  const [lo, hi] = RANGES[fit.key];
+  return { ...fit, ratio, measured, model, inRange: fit.value >= lo && fit.value <= hi, range: [lo, hi] };
+}
+
+export function simulate(input) {
+  const c = { ...motionDefaults(), ...cornerDefaults(), endMotion: 'legacy', shutoffDistance: 0, ...structuredClone(input) };
+  validate(c);
+  const plan = planRun(c);
+  const { Q, pcp, available, path, pathLength, moving, motion, effectiveShutoffDistance, gate, meterGate, movementEnd, reverseConfigured, reverseCommandEnd, reverseResponseEnd, reverseRate, trajectory, duration, tailEnd } = plan;
+  if (duration > RUN_LIMIT) throw new Error('試驗超過 180 秒，請縮短路徑或提高速度');
   const fixed =
     ((Math.PI * c.diameter ** 2) / 4) * (c.nozzleLength / 1000) +
     (pcp ? ((Math.PI * c.hoseId ** 2) / 4) * (c.hoseLength / 1000) + c.deadVolume : 0);
@@ -427,12 +480,8 @@ export function simulate(input) {
   const frames = [];
   let previousOut = 0;
   let nextFrame = 0;
-  const reverseRate = (c.displacement * c.reverseRpm * c.efficiency) / 60;
   const evaluate = (t) => {
-    const raw = pcp
-      ? pcpResponse(t, Q, meterGate, c.delay, c.tauOn, reverseRate, c.reverseDuration)
-      : pulse(t, Q, gate, c.delay, c.tauOn, c.tauOff);
-    const output = pcp ? raw.volume : Math.min(available, raw.volume);
+    const { raw, output } = plan.outputAt(t);
     const metered = pcp ? Q * Math.min(t, meterGate) : output;
     const recovered = raw.recovered || 0;
     const pending = pcp ? Math.max(0, metered - output - recovered) : 0;

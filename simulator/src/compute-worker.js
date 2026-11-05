@@ -1,6 +1,6 @@
 import { estimateCompression } from './compression.js';
 import { tuneDose } from './tuning.js';
-import { evaluateTask, calibrateTask } from './optimize.js';
+import { evaluateTask, calibrateTask, chooseProcess, NEEDLES } from './optimize.js';
 
 // Squeeze estimates, dose tuning and optimiser evaluations run here (the optimiser
 // spreads its evaluations over a pool of these workers) so the 3D view stays responsive.
@@ -29,7 +29,16 @@ self.onmessage = (event) => {
     }
     if (type === 'tune') {
       const t = tuneDose(payload.config, payload.target, payload.knob);
-      self.postMessage({ id, ok: true, result: { config: t.config, key: t.key, reached: t.reached, fallback: t.fallback, deposited: t.run.summary.deposited } });
+      // Short of the target with the drive and motion at their limits: the finest coarser needle that lays it
+      // at the current speed (gate time) within the drive range.
+      let suggest = null;
+      if (!t.reached && t.run.summary.deposited < payload.target) {
+        const c = payload.config;
+        const needles = NEEDLES.map((n) => n.id).filter((d) => d > c.diameter + 1e-9);
+        const p = needles.length ? chooseProcess(c, { needles, nominalMl: payload.target, lowMl: 0, needMl: payload.target, knob: payload.knob === 'drive' ? 'drive' : 'motion' }) : null;
+        if (p?.fits && p.ok) suggest = { diameter: p.diameter };
+      }
+      self.postMessage({ id, ok: true, result: { config: t.config, key: t.key, reached: t.reached, fallback: t.fallback, deposited: t.run.summary.deposited, suggest } });
       return;
     }
     if (type === 'evaluate') {

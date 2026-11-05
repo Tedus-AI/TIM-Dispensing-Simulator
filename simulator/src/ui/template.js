@@ -4,9 +4,10 @@ export const PATTERN_ICONS = {
   n: '<path d="M5 19V5l14 14V5"/>',
   serpentine: '<path d="M4 5h15a2 2 0 0 1 0 4H5a2 2 0 0 0 0 4h14a2 2 0 0 1 0 4H4"/>',
   spiral: '<path d="M4 4h16v16H6V7h11v10H9v-7h5v4"/>',
+  star: '<path d="M4 4l16 16M20 4L4 20M12 4v16M4 12h16"/>',
   perimeter: '<rect x="4" y="4" width="16" height="16" rx="1"/>',
 };
-export const PATTERN_NAMES = { line: '中心線', n: 'N 形', serpentine: '蛇形', spiral: '螺旋', perimeter: '外框' };
+export const PATTERN_NAMES = { line: '中心線', n: 'N 形', serpentine: '蛇形', spiral: '螺旋', star: '米字形', perimeter: '外框' };
 
 const icon = (d, size = 16) =>
   `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;

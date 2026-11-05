@@ -9,7 +9,7 @@ export function planDispensePath(input) {
   for(const k of ['width','depth','offsetX','offsetY','spacing','edgeInset'])
     if(!Number.isFinite(o[k])) throw new Error(`${k} 必須是有限數值`);
   if(!['rectangle','circle'].includes(o.shape)) throw new Error('熱源形狀不支援');
-  if(!['point','line','n','serpentine','spiral','perimeter'].includes(o.pattern)) throw new Error('點膠路徑不支援');
+  if(!['point','line','n','serpentine','spiral','perimeter','star'].includes(o.pattern)) throw new Error('點膠路徑不支援');
   if(!['auto','round','square'].includes(o.spiralShape))throw new Error('螺旋形狀不支援');
   if(!['outside-in','inside-out'].includes(o.spiralDirection))throw new Error('螺旋方向不支援');
   const depth=o.shape==='circle'?o.width:o.depth;
@@ -42,6 +42,15 @@ export function planDispensePath(input) {
       const x=o.shape==='circle'?Math.sqrt(Math.max(0,a*a-y*y)):a;
       if(row%2===0){add(-x,y);add(x,y);}else{add(x,y);add(-x,y);}
     }
+  }else if(o.pattern==='star'){
+    // 米字形: eight spokes from the centre to the corners and side middles (a circle: every 45°), each laid
+    // out and back so the star is one continuous stroke that starts and ends at the centre. Every spoke is
+    // therefore laid twice, and the nozzle stops at each tip.
+    const tips=o.shape==='circle'
+      ?Array.from({length:8},(_,k)=>[a*Math.cos(k*Math.PI/4),a*Math.sin(k*Math.PI/4)])
+      :[[a,0],[a,b],[0,b],[-a,b],[-a,0],[-a,-b],[0,-b],[a,-b]];
+    add(0,0);
+    for(const [x,y] of tips){add(x,y);add(0,0);}
   }else if(o.pattern==='perimeter'){
     if(o.shape==='rectangle'){
       add(-a,-b);add(a,-b);add(a,b);add(-a,b);add(-a,-b);
