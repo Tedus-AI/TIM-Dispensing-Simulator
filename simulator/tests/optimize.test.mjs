@@ -75,7 +75,7 @@ test('robust search: the nominal dose keeps the tolerance inside the window and 
   const config = { ...fromRegistry(registry, 'grease'), mode: 'pattern', speed: 10, pathSettings: { ...heat, pattern: 'n', spacing: 5, edgeInset: 2 } };
   const goal = { coverage: 80, overflow: 6 };
   const progress = [];
-  const r = await optimizeSettings(config, heat, { goals: goal, tolerance: 0.1, searchCell: 1, keep: 2, verify: 1, bisections: 3, onProgress: (p) => progress.push(p) });
+  const r = await optimizeSettings(config, heat, { goals: goal, tolerance: 0.1, nozzle: 'fixed', vars: { speed: { search: false } }, searchCell: 1, keep: 2, verify: 1, bisections: 3, onProgress: (p) => progress.push(p) });
   assert.ok(r.evaluations > 4 && progress.length === r.evaluations + 1 && progress.at(-1) === 1 && r.complete);
   assert.ok(progress.slice(0, -1).every((p, i, a) => p < 1 && (i === 0 || p >= a[i - 1])), 'progress rises and only reaches 1 at the end');
   assert.equal(r.knob.key, 'pressure');
@@ -85,7 +85,9 @@ test('robust search: the nominal dose keeps the tolerance inside the window and 
   assert.ok(best.verified && best.worst.coveredPercent >= goal.coverage && best.worst.squeezeOutMm <= goal.overflow);
   assert.ok(best.fCov !== null && best.factor * 0.9 >= best.fCov - 1e-9 && best.factor * 1.1 <= best.fOvf + 1e-9);
   if (best.reached && !best.fallback) assert.equal(best.settings.speed, 10, 'pressure sets the dose, travel speed stays');
-  for (const c of r.candidates.filter((x) => x.pass)) assert.ok(c.verified && c.depositedMl >= best.depositedMl * 0.99 - 1e-12);
+  // Passing results rank by material; within 3 % the more practical process may come first.
+  const { MATERIAL_TIE } = await import('../src/optimize.js');
+  for (const c of r.candidates.filter((x) => x.pass)) assert.ok(c.verified && c.depositedMl >= best.depositedMl * (1 - MATERIAL_TIE) - 1e-12);
 });
 
 test('dose knob: drive first, motion only at the drive limit, or motion directly', async () => {
@@ -118,7 +120,7 @@ test('a single dot or a line is optimised by dose alone', async () => {
   const r = await optimizeSettings(dot, heat, { goals: goal, knob: 'motion', tolerance: 0.1, searchCell: 1, verify: 1, bisections: 3 });
   assert.equal(r.candidates.length, 1);
   assert.equal(r.knob.key, 'gateDuration');
-  assert.equal(r.nozzle, 'fixed');
+  assert.equal(r.nozzle, 'auto', 'v1.8 default: the nozzle is chosen with the process');
   const best = r.candidates[0];
   assert.ok(best.verified && best.settings.gateDuration > 0);
   assert.ok(best.pass === (best.worst.coveredPercent >= goal.coverage && best.worst.squeezeOutMm <= goal.overflow && best.reached && best.cycleOk));
@@ -226,40 +228,40 @@ test('dose tuning: secant search reaches 0.1 % in a few simulations, range ends 
   assert.ok(!t.reached && t.config.speed < 300 && Math.abs(t.run.summary.deposited / floor - 1) < 3e-3, `${t.config.speed}`);
 });
 
-test('search variables: path types, spiral start and travel speed, each fixed or searched', async () => {
-  const { SEARCH_PATTERNS, speedCount, planSearch } = await import('../src/optimize.js');
+test('search variables: path type, pitch, inset and spiral start are the geometry; travel speed is a choice per geometry', async () => {
+  const { SEARCH_PATTERNS, SPEED_GRID, planSearch } = await import('../src/optimize.js');
   const heat = { shape: 'rectangle', width: 30, depth: 30, offsetX: 0, offsetY: 0, gap: 0.5, cellSize: 0.5, power: 10, ...PRESS_DEFAULTS };
   const config = { ...fromRegistry(registry, 'grease'), mode: 'pattern', speed: 20, pathSettings: { ...heat, pattern: 'serpentine', spacing: 5, edgeInset: 2, spiralShape: 'auto', spiralDirection: 'outside-in' } };
-  // Defaults: as before v1.6, only pitch and inset of the current pattern.
+  // Defaults: pitch and inset of the current pattern; travel speed is searched but adds no geometry.
   const plain = searchSpace(config, heat, 5);
   assert.deepEqual(plain.types, ['serpentine']);
-  assert.ok(plain.geometries.every((g) => g.type === 'serpentine' && g.speed === 20 && g.spiralDirection === 'outside-in'));
+  assert.ok(plain.geometries.every((g) => g.type === 'serpentine' && g.speed === undefined && g.spiralDirection === 'outside-in'));
   assert.equal(plain.geometries.length, plain.spacings.length * plain.insets.length);
-  // All four path types, spiral start and speed searched.
+  assert.ok(plain.speeds.length > 1 && plain.speeds.length <= SPEED_GRID + 1 && plain.speeds.includes(20), plain.speeds.join());
+  // Every path type and spiral start searched; a user speed range gives the choices (no current value added).
   const vars = { pattern: { search: true, options: SEARCH_PATTERNS }, spiralDirection: { search: true }, speed: { search: true, min: 10, max: 40 } };
   const s = searchSpace(config, heat, 5, vars, 'drive');
   const count = (t) => s.geometries.filter((g) => g.type === t).length;
-  const speeds = new Set(s.geometries.filter((g) => g.mode !== 'point').map((g) => g.speed));
-  assert.equal(speeds.size, speedCount(5));
-  assert.ok([...speeds].every((v) => v >= 10 && v <= 40) && speeds.has(10) && speeds.has(40), [...speeds].join());
+  assert.ok(s.speeds.length > 1 && s.speeds.length <= SPEED_GRID && s.speeds[0] === 10 && s.speeds.at(-1) === 40, s.speeds.join());
   assert.equal(count('point'), 1);
-  assert.equal(count('line'), s.insets.length * speeds.size);
-  assert.equal(count('serpentine'), s.spacings.length * s.insets.length * speeds.size);
+  assert.equal(count('line'), s.insets.length);
+  assert.equal(count('star'), s.insets.length);
+  assert.equal(count('serpentine'), s.spacings.length * s.insets.length);
   assert.equal(count('spiral'), 2 * count('serpentine'));
   assert.ok(s.varies.pattern && s.varies.spiralDirection && s.varies.speed);
-  assert.ok(s.geometries.filter((g) => g.type === 'line' || g.type === 'point').every((g) => g.spacing == null));
+  assert.ok(s.geometries.filter((g) => ['line', 'star', 'point'].includes(g.type)).every((g) => g.spacing == null));
   assert.equal(new Set(s.geometries.map((g) => g.key)).size, s.geometries.length, 'unique keys');
   // Travel speed cannot be searched while it is the dose knob.
   const locked = searchSpace(config, heat, 5, vars, 'motion');
-  assert.ok(locked.speedLocked && !locked.varies.speed && locked.geometries.every((g) => g.mode === 'point' || g.speed === 20));
+  assert.ok(locked.speedLocked && !locked.varies.speed && locked.speeds.length === 1 && locked.speeds[0] === 20);
   // Fixed variables keep the current setting; a user range replaces the automatic one (no current value added).
   const fixed = searchSpace(config, heat, 5, { spacing: { search: false }, inset: { search: true, min: 3, max: 5 } });
   assert.deepEqual(fixed.spacings, [5]);
   assert.ok(fixed.insets.every((v) => v >= 3 && v <= 5) && !fixed.insets.includes(2));
-  // The plan counts every geometry and gives each extra path type its own dose window.
+  // The plan counts every geometry (speed adds none) and gives each extra path type its own dose window.
   const plan = planSearch(config, heat, { level: 2, vars, knob: 'drive' });
   assert.equal(plan.geometries, s.geometries.length);
-  assert.equal(plan.keep, 4 + 3);
+  assert.equal(plan.keep, 4 + (SEARCH_PATTERNS.length - 1));
 });
 
 test('a search across path types gives every type a dose window; a dot uses its own dose knob', async () => {

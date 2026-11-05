@@ -1,5 +1,30 @@
 # 點膠研究室 · 機構與實作契約
 
+## v1.8（2026-11-05）
+
+- `engine.js`：
+  - `planRun(c)` 把路徑、運動、時間與出膠閉式解從 `simulate` 抽出，`simulate` 與新的 `runTiming` 共用；
+  - `runTiming(config)` 不逐步模擬，回傳最終沉積（＝`simulate(...).summary.deposited`）、週期、總時間、`fits`（≤ `RUN_LIMIT` 180 s）；
+  - `calibrateFlow(config, grams, seconds)`：R75 grease → `viscosity ÷ ratio`，R75 putty → `referenceRate × ratio`，P300 → `efficiency × ratio`，附 `inRange`。
+- `tuning.js`：`tuneForVolume` 的試探改用 `runTiming`，只有最後的設定做 `simulate`；`BOUNDS` 匯出；`tuneDose` 在改速度後仍到極限時回傳 `motionAtLimit`。
+- `path-planning.js`：`star`（米字形）：中心→8 個尖端（矩形：四角與四邊中點；圓形：每 45°）各來回一次，起訖在中心。
+- `optimize.js`：
+  - `searchSpace` 的幾何不再含速度；速度搜尋時回傳 `speeds`（範圍內 12 個，自動範圍另含目前速度）；
+  - `autoRanges.speed`＝[max(1, min(s0/4, L/60)), min(800, max(2·s0, L/5))]，L＝目前路徑長；
+  - `chooseProcess(config, { speeds, needles, nominalMl, lowMl, needMl, knob, cycleRef })`：每個速度一次 `runTiming`，針嘴出膠量依 `steadyFlow` 比例換算；條件 `capTop ≥ needMl` 且 `capLow ≤ lowMl`（drive knob）；成本＝`beadDeviation`＋max(0, ln(cycle/cycleRef))；沒有符合者先取到得了上限的，再取出最多的；
+  - 搜尋前每組幾何呼叫一次 `chooseProcess`：`needFactor`＝上篩選膠量 ×(1+tol)，`lowFactor`＝下篩選膠量 ×(1−tol)；整組都超過 180 s 的略過（`sizing.tooSlow`），出不了膠的計入 `sizing.limited`；
+  - 快取鍵含速度與針嘴（`gid`）；
+  - `processCost`＝膠條＋週期＋（`headroom === false` 時 0.5）；排序：達標者膠量差 > 3%（`MATERIAL_TIE`）先比膠量，否則比成本（差 > 0.15），再比週期、餘裕；篩選估計膠量差 ≤ 2% 時先比成本；
+  - 窗口結果加 `capFactor`（未達到的評估中實際鋪出的最大倍數）、`supportedTol`＝(fOvf − fCov)/(fOvf + fCov)；複核點加 `laid`、`capped`、`fallback`，候選加 `headroom`；
+  - `OPTIMIZE_DEFAULTS.nozzle`＝`'auto'`（`'match'` 視為 `'auto'`），`VARS_DEFAULT.speed.search`＝true。
+- `compute-worker.js`：`tune` 到不了目標時用 `chooseProcess` 找較粗的針嘴，回傳 `suggest`。
+- `main.js`：
+  - `migrateOptOptions`：舊版存的最佳化設定沒有 `version: 18` 時，針嘴與速度兩項改用新預設；
+  - 設備上限文字：`capWhy`（針嘴、壓力上限、速度）、窗口欄「設備上限」、最接近的取捨、膠量點 `laidNote`、`moved` 的「速度已到下限」；
+  - 設備頁「用實測出膠量校正」群組與 `cal-apply`；
+  - `renderTab` 只在同一分頁重繪時保留群組展開狀態與捲動位置；
+  - 圖樣切換失敗時退回並重繪；`.patterns` 改 6 欄。
+
 ## v1.7（2026-11-05）
 
 - 說明元件：

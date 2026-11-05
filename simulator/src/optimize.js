@@ -1,26 +1,34 @@
 import { estimateCompression } from './compression.js';
-import { tuneDose, driveOf, motionKeyOf } from './tuning.js';
+import { runTiming, steadyFlow } from './engine.js';
+import { tuneDose, driveOf, BOUNDS } from './tuning.js';
 import { planDispensePath } from './path-planning.js';
 
 /*
  * Goal-based ranking and a robust settings search for one dispensing path.
  *
- * Goal: reach a coverage target with overflow under a limit, using as little material as possible.
- * A single result "passes" when both limits hold; passing results rank by least material, the rest by
- * how far they miss (5 % coverage short counts like 1 mm too much overflow).
+ * Goal: reach a coverage target with overflow under a limit at every dose within the dispenser's drift
+ * (the tolerance), using as little material as possible. Near-equal material (within 3 %) goes to the more
+ * practical process. A single result "passes" when both limits hold; the rest rank by how far they miss
+ * (5 % coverage short counts like 1 mm too much overflow).
  *
  * The search mirrors how a dispensing process is set up on a new part:
- *  - pattern type, heat source, gap, material, acceleration, standoff and press conditions stay fixed;
- *  - for a heat-source pattern it varies the edge inset and, for serpentine and spiral, the pitch; a line
- *    or a dot has no pattern geometry and only its dose is searched;
+ *  - heat source, gap, material, acceleration, standoff and press conditions stay fixed;
+ *  - path type (serpentine, spiral, star, centre line, dot), pitch, edge inset and spiral start are the
+ *    geometry, each fixed or searched; a line or a dot has no pattern geometry;
  *  - for each geometry it finds the dose window: the least dose reaching the coverage target and the
- *    most dose keeping overflow under the limit. The nominal dose must keep both within a dose
- *    tolerance (default ±10 %, the usual drift of a time-pressure dispenser), so a setting is chosen
- *    for its margin, not for one lucky point;
- *  - dose is set through drive pressure (R75) or pump speed (P300) at the current travel speed (gate time),
- *    and only at the drive's range limit through the motion; or through the motion alone;
- *  - the nozzle is either kept or matched to the bead per pitch from standard needle sizes (a bead-quality
- *    check: travel speed vs paste exit speed).
+ *    most dose keeping overflow under the limit. The nominal dose must keep both within the tolerance
+ *    (default ±10 %, the usual drift of a time-pressure dispenser), so a setting is chosen for its margin,
+ *    not for one lucky point;
+ *  - dose is set through drive pressure (R75) or pump speed (P300) at the travel speed (gate time), and
+ *    only at the drive's range end through the motion; or through the motion alone;
+ *  - travel speed (when searched) and nozzle (when 'auto') are the process, not the geometry: the squeeze
+ *    result depends on the path and hardly on them, so each geometry gets its process in closed form — the
+ *    combination that lays the whole dose band with the drive alone, with the bead closest to the nozzle
+ *    size and the cycle near the reference (chooseProcess) — and every evaluation runs that process;
+ *  - a geometry whose run exceeds the simulation limit (180 s) at every speed is left out up front;
+ *  - among passing results of near-equal material the more practical process ranks first: bead close to
+ *    the nozzle size, cycle within the cycle limit (30 s when none is set), drive with room to correct a
+ *    drifting dose.
  * Stages: (1) every geometry is screened on the search grid at two doses and ranked by its estimated dose
  * window; (2) the best few get their window by bisection from the bracket the screening already gives;
  * (3) the leaders are re-run on the final grid at 3 or 5 doses across the tolerance band, and the next one
@@ -30,7 +38,14 @@ import { planDispensePath } from './path-planning.js';
  */
 
 export const GOAL_DEFAULTS = Object.freeze({ coverage: 95, overflow: 3 });
-export const OPTIMIZE_DEFAULTS = Object.freeze({ tolerance: 0.1, knob: 'drive', nozzle: 'fixed', cycleLimit: null, dose: [0.8, 2.5], level: 2 });
+export const OPTIMIZE_DEFAULTS = Object.freeze({ tolerance: 0.1, knob: 'drive', nozzle: 'auto', cycleLimit: null, dose: [0.8, 2.5], level: 2 });
+// Nozzle choice: keep the current one, or size one per geometry ('match' is the v1.7 name of 'auto').
+export const NOZZLE_MODES = Object.freeze(['fixed', 'auto']);
+export const nozzleMode = (v) => (v === 'auto' || v === 'match' ? 'auto' : 'fixed');
+// Cycle used to weigh slow processes when no cycle limit is set (s), and the material share within which
+// passing results are compared on their process instead.
+export const CYCLE_REFERENCE = 30;
+export const MATERIAL_TIE = 0.03;
 
 // Common dispensing needle inner diameters, mm (approximate catalogue values) and the 1/8" bore of the
 // Laird Tputty guideline.
@@ -87,6 +102,16 @@ export function beadDeviation(b) {
   const r = b.speedRatio;
   const off = r > 0 ? Math.abs(Math.log(r / Math.min(MATCH_BAND[1], Math.max(MATCH_BAND[0], r)))) : 0;
   return off + (b.drags ? 1 : 0);
+}
+
+/**
+ * How practical a process is, in log units (0 is ideal): the bead's distance from the good band, how far the
+ * cycle exceeds the reference (the cycle limit, else 30 s), and 0.5 when the drive had to leave the dose band
+ * to the travel speed (pressure or pump speed at its range end, so a drifting dose cannot be corrected).
+ */
+export function processCost(c, cycleRef = CYCLE_REFERENCE) {
+  const cycle = c.cycle > 0 ? Math.max(0, Math.log(c.cycle / cycleRef)) : 0;
+  return beadDeviation(c.bead) + cycle + (c.headroom === false ? 0.5 : 0);
 }
 
 export function judge(m, goals = GOAL_DEFAULTS) {
@@ -146,21 +171,23 @@ function resolve(heat, options) {
   const base = options.level != null ? levelOf(options.level) : { ...SEARCH_LEVELS[1], level: null, searchCell: Math.max(heat.cellSize, 0.75), verifyCell: heat.cellSize };
   const o = { ...OPTIMIZE_DEFAULTS, goals: GOAL_DEFAULTS, ...base, ...options };
   o.searchCell = Math.max(o.searchCell, o.verifyCell);
+  o.nozzle = nozzleMode(o.nozzle);
   return o;
 }
 
 // Path types the search can switch between, and the labels used in progress messages and tables.
-export const SEARCH_PATTERNS = Object.freeze(['serpentine', 'spiral', 'point', 'line']);
-export const TYPE_LABEL = Object.freeze({ serpentine: '蛇形', spiral: '螺旋', line: '中心線', n: 'N 形', perimeter: '外框', point: '單點', straight: '直線' });
+export const SEARCH_PATTERNS = Object.freeze(['serpentine', 'spiral', 'star', 'point', 'line']);
+export const TYPE_LABEL = Object.freeze({ serpentine: '蛇形', spiral: '螺旋', star: '米字形', line: '中心線', n: 'N 形', perimeter: '外框', point: '單點', straight: '直線' });
 export const DIRECTION_LABEL = Object.freeze({ 'outside-in': '外向內', 'inside-out': '中心向外' });
 const PITCHED = new Set(['serpentine', 'spiral']);
-// Default search variables: pitch and inset searched (as before v1.6), everything else fixed at the current setting.
+// Default search variables: pitch and inset searched, travel speed chosen per geometry (free: no extra
+// squeeze), pattern type and spiral start fixed at the current setting.
 export const VARS_DEFAULT = Object.freeze({
   pattern: { search: false, options: [...SEARCH_PATTERNS] },
   spacing: { search: true, min: null, max: null },
   inset: { search: true, min: null, max: null },
   spiralDirection: { search: false },
-  speed: { search: false, min: null, max: null },
+  speed: { search: true, min: null, max: null },
 });
 const typeOf = (config) => (config.mode === 'pattern' ? config.pathSettings?.pattern : config.mode === 'point' ? 'point' : 'straight');
 const shortSide = (heat) => Math.min(heat.width, heat.shape === 'circle' ? heat.width : heat.depth);
@@ -168,26 +195,42 @@ const shortSide = (heat) => Math.min(heat.width, heat.shape === 'circle' ? heat.
 export function basePathSettings(config, heat) {
   return config.pathSettings ?? { shape: heat.shape, width: heat.width, depth: heat.depth, offsetX: heat.offsetX ?? 0, offsetY: heat.offsetY ?? 0, pattern: 'serpentine', spacing: Math.max(1.5, round(shortSide(heat) / 6, 0.5)), edgeInset: 2, spiralShape: 'auto', spiralDirection: 'outside-in' };
 }
-/** Automatic ranges (shown in the page; a user range replaces them). */
+/** Length of the current path (mm), or of the default heat-source pattern for a dot. */
+export function currentPathLength(config, heat) {
+  try {
+    if (config.mode === 'line') return config.lineLength;
+    return planDispensePath(config.mode === 'pattern' ? config.pathSettings : basePathSettings(config, heat)).length;
+  } catch {
+    return 100;
+  }
+}
+/**
+ * Automatic ranges (shown in the page; a user range replaces them). Travel speed spans ¼–2 × the current
+ * speed and, on the current path, dispensing times of about 5–60 s, so a speed that an earlier dose fit
+ * pushed to its limit (e.g. 1 mm/s behind too fine a nozzle) does not trap the search.
+ */
 export function autoRanges(config, heat) {
   const short = shortSide(heat);
   const s0 = Number(config.speed) > 0 ? config.speed : 20;
+  const length = currentPathLength(config, heat);
   return {
     spacing: [Math.max(1.5, short / 12), Math.max(Math.max(1.5, short / 12), short / 4)],
     inset: [1, Math.max(4, short / 5)],
-    speed: [Math.max(1, s0 / 4), Math.min(800, s0 * 2)],
+    speed: [Math.max(1, Math.min(s0 / 4, length / 60)), Math.min(800, Math.max(s0 * 2, length / 5))],
   };
 }
 const niceSpeed = (v) => (v < 10 ? round(v, 0.5) : v < 100 ? round(v, 1) : round(v, 5));
-export const speedCount = (n) => Math.max(3, Math.round(n / 2));
+// Travel speeds each geometry chooses from when speed is searched (closed form, so a fine grid is cheap).
+export const SPEED_GRID = 12;
 
 /**
- * Geometry candidates. Each geometry is one path type with its own values: pitch for serpentine and spiral,
- * edge inset for every heat-source pattern, start direction for a spiral, travel speed for a moving path
- * (not when travel speed is the dose knob). A variable that is not searched keeps the current setting.
- * Searched ranges are automatic (pitch short/12–short/4 geometric, inset 1 mm–max(4 mm, short/5), speed
- * ¼–2 × current, each plus the current value) unless a range is given; n candidates per range (speed
- * max(3, n/2)), rounded to 0.5 mm (0.25 mm below a 20 mm source).
+ * Geometry candidates, and the travel speeds to choose from. Each geometry is one path type with its own
+ * values: pitch for serpentine and spiral, edge inset for every heat-source pattern, start direction for a
+ * spiral. A variable that is not searched keeps the current setting. Searched ranges are automatic (pitch
+ * short/12–short/4 geometric, inset 1 mm–max(4 mm, short/5), each plus the current value) unless a range is
+ * given; n candidates per range, rounded to 0.5 mm (0.25 mm below a 20 mm source). Travel speed is not part
+ * of a geometry: when it is searched every geometry takes its own speed from `speeds` (12 steps over the
+ * range, see chooseProcess), which adds no squeeze; it cannot be searched while it is the dose knob.
  */
 export function searchSpace(config, heat, n = 5, vars = null, knob = 'drive') {
   const v = { ...VARS_DEFAULT, ...(vars || {}) };
@@ -212,7 +255,7 @@ export function searchSpace(config, heat, n = 5, vars = null, knob = 'drive') {
   const insets = v.inset.search ? ranged(v.inset, auto.inset, false, n, p.edgeInset, (x) => x >= 0 && x < short / 2 - (v.inset.max != null ? 0 : 1), (x) => round(x, step)) : [p.edgeInset];
   const directions = v.spiralDirection.search ? ['outside-in', 'inside-out'] : [p.spiralDirection || 'outside-in'];
   const speedSearch = v.speed.search && knob !== 'motion';
-  const speeds = speedSearch ? ranged(v.speed, auto.speed, true, speedCount(n), config.speed, (x) => x >= 1 && x <= 800, niceSpeed) : [config.speed];
+  const speeds = speedSearch ? ranged(v.speed, auto.speed, true, SPEED_GRID, config.speed, (x) => x >= 1 && x <= 800, niceSpeed) : [config.speed];
   const sp = spacings.length ? spacings : [p.spacing];
   const ins = insets.length ? insets : [p.edgeInset];
   const geometries = [];
@@ -221,16 +264,14 @@ export function searchSpace(config, heat, n = 5, vars = null, knob = 'drive') {
       geometries.push({ type, mode: 'point', key: 'point' });
       continue;
     }
-    for (const speed of speeds) {
-      if (type === 'straight') {
-        geometries.push({ type, mode: 'line', speed, key: `straight|${speed}` });
-        continue;
-      }
-      for (const spacing of PITCHED.has(type) ? sp : [null])
-        for (const edgeInset of ins)
-          for (const spiralDirection of type === 'spiral' ? directions : [p.spiralDirection || 'outside-in'])
-            geometries.push({ type, mode: 'pattern', pattern: type, spacing, edgeInset, spiralDirection, speed, key: [type, spacing, edgeInset, spiralDirection, speed].join('|') });
+    if (type === 'straight') {
+      geometries.push({ type, mode: 'line', key: 'straight' });
+      continue;
     }
+    for (const spacing of PITCHED.has(type) ? sp : [null])
+      for (const edgeInset of ins)
+        for (const spiralDirection of type === 'spiral' ? directions : [p.spiralDirection || 'outside-in'])
+          geometries.push({ type, mode: 'pattern', pattern: type, spacing, edgeInset, spiralDirection, key: [type, spacing, edgeInset, spiralDirection].join('|') });
   }
   const patternTypes = types.filter((t) => t !== 'point' && t !== 'straight');
   const pitched = types.some((t) => PITCHED.has(t));
@@ -241,6 +282,7 @@ export function searchSpace(config, heat, n = 5, vars = null, knob = 'drive') {
     insets: patternTypes.length ? ins : [null],
     pitched,
     geometry: patternTypes.length > 0,
+    speeds,
     varies: {
       pattern: types.length > 1,
       spacing: pitched && sp.length > 1,
@@ -250,6 +292,49 @@ export function searchSpace(config, heat, n = 5, vars = null, knob = 'drive') {
     },
     speedLocked: v.speed.search && knob === 'motion',
   };
+}
+
+/**
+ * Process for one geometry: the travel speed (from `speeds`) and nozzle (from `needles`) that can lay the
+ * whole dose band [lowMl, needMl] by the drive alone — the drive knob between the bottom and top of its range,
+ * the motion knob at the current drive — with the lowest process cost at the nominal dose (bead closest to
+ * the nozzle size, cycle near the reference), then the shorter cycle, then the finer nozzle. Closed-form runs
+ * only (deposit scales with the flow at fixed timing, so one run per speed covers every nozzle). Without a
+ * combination that lays the band it takes one that reaches the top (`headroom` false), else the one laying
+ * the most (`ok` false). `fits` is false when the path runs past the simulation limit at every speed.
+ */
+export function chooseProcess(config, { speeds = [config.speed], needles = [config.diameter], nominalMl, lowMl, needMl, knob = 'drive', cycleRef = CYCLE_REFERENCE }) {
+  const drive = driveOf(config);
+  const moving = config.mode !== 'point';
+  const options = [];
+  for (const speed of moving ? speeds : [null]) {
+    let c = speed == null ? config : { ...config, speed };
+    // A dot whose dose is set by its gate time can open the gate up to the end of that range.
+    if (!moving && knob !== 'drive') c = { ...c, gateDuration: BOUNDS.gateDuration[1] };
+    const top = knob === 'drive' ? { ...c, [drive.key]: drive.hi } : c;
+    let timing;
+    try {
+      timing = runTiming({ ...top, diameter: needles[0] });
+    } catch {
+      continue;
+    }
+    if (!timing.fits) continue;
+    const q0 = steadyFlow({ ...top, diameter: needles[0] });
+    if (!(q0 > 0)) continue;
+    for (const d of needles) {
+      const capTop = (timing.deposited * steadyFlow({ ...top, diameter: d })) / q0;
+      const capLow = knob === 'drive' ? (timing.deposited * steadyFlow({ ...c, [drive.key]: drive.lo, diameter: d })) / q0 : 0;
+      const ratio = moving && nominalMl > 0 ? (Math.PI * d * d) / 4 / ((nominalMl * 1000) / timing.pathLength) : null;
+      const cost = beadDeviation({ speedRatio: ratio }) + Math.max(0, Math.log(timing.cycle / cycleRef));
+      options.push({ speed, diameter: d, capTop, capLow, cycle: timing.cycle, ratio, cost, reach: capTop >= needMl * (1 - 1e-9), band: capTop >= needMl * (1 - 1e-9) && capLow <= lowMl });
+    }
+  }
+  if (!options.length) return { fits: false };
+  const pick = (list) => [...list].sort((a, b) => (Math.abs(a.cost - b.cost) > 0.05 ? a.cost - b.cost : a.cycle - b.cycle || a.diameter - b.diameter))[0];
+  const inBand = options.filter((x) => x.band);
+  const reach = options.filter((x) => x.reach);
+  const chosen = inBand.length ? pick(inBand) : reach.length ? pick(reach) : [...options].sort((a, b) => b.capTop - a.capTop)[0];
+  return { fits: true, ok: chosen.reach, headroom: chosen.band, ...chosen };
 }
 
 /** The setting that sets the dose: the drive (pressure / pump speed), or travel speed / gate time. */
@@ -269,6 +354,7 @@ export function evaluateTask({ config, heat, target, knob }) {
     settings: { speed: c.speed, gateDuration: c.gateDuration, pressure: c.pressure, rpm: c.rpm, diameter: c.diameter },
     reached: tuned.reached,
     fallback: Boolean(tuned.fallback),
+    motionAtLimit: Boolean(tuned.motionAtLimit),
     bead: beadMatch(tuned.run),
     ...metricsOf(tuned.run, squeeze),
   };
@@ -388,9 +474,14 @@ export function estimateWindow(points, goals, tol) {
   const nominal = fCov !== null ? fCov / (1 - tol) : null;
   return { feasible: nominal !== null && fOvf !== null && nominal * (1 + tol) <= fOvf, nominal, deficit, tie: [-p.coveredPercent, q.squeezeOutMm] };
 }
+// Estimated windows within 2 % of material compare on the process (bead, cycle) first.
 const screenOrder = (a, b) => {
   if (a.est.feasible !== b.est.feasible) return a.est.feasible ? -1 : 1;
   const d = a.est.feasible ? a.est.nominal - b.est.nominal : a.est.deficit - b.est.deficit;
+  if (a.est.feasible && Math.abs(d) <= 0.02 * Math.max(a.est.nominal, b.est.nominal)) {
+    const c = (a.cost ?? 0) - (b.cost ?? 0);
+    if (Math.abs(c) > 0.15) return c;
+  }
   if (Math.abs(d) > 1e-9) return d;
   return a.est.tie[0] - b.est.tie[0] || a.est.tie[1] - b.est.tie[1] || a.index - b.index;
 };
@@ -405,6 +496,7 @@ export async function optimizeSettings(config, heat, options = {}) {
   const o = resolve(heat, options);
   const { goals, dose } = o;
   const tol = o.tolerance;
+  const cycleRef = o.cycleLimit > 0 ? o.cycleLimit : CYCLE_REFERENCE;
   if (!(dose[0] > 0 && dose[1] > dose[0])) throw new Error('膠量範圍需為 0 < 下限 < 上限');
   if (!(tol >= 0 && tol < 0.5)) throw new Error('膠量容差需介於 0 與 50%');
   const area = heat.shape === 'circle' ? (Math.PI * heat.width ** 2) / 4 : heat.width * heat.depth;
@@ -429,32 +521,11 @@ export async function optimizeSettings(config, heat, options = {}) {
       }
     });
   const screenDoses = screeningDoses(goals, tol, dose, plan.screenDoses);
-  // Nozzle matching sizes the bead at the dose the search is likely to end near.
+  // The process is sized at the dose the search is likely to end near.
   const mid = Math.min(dose[1], Math.max(dose[0], screenDoses[0] / (1 - tol)));
   const bandFactors = o.band >= 5 ? [-1, -0.5, 0, 0.5, 1] : [-1, 0, 1];
 
   const pathOf = (g) => ({ ...basePath, pattern: g.pattern, spacing: g.spacing ?? basePath.spacing, edgeInset: g.edgeInset, spiralDirection: g.spiralDirection });
-  const geometries = space.geometries.map((g) => {
-    let diameter = config.diameter;
-    if (o.nozzle === 'match' && g.mode === 'pattern') {
-      const length = planDispensePath(pathOf(g)).length;
-      diameter = nearestNeedle(Math.sqrt((4 * ((required * 1000 * mid) / length)) / Math.PI)).id;
-    }
-    return { ...g, diameter };
-  });
-  const describeGeometry = (g) => {
-    if (!space.geometry && !space.varies.pattern) return `${g.mode === 'point' ? '單點膠量' : '直線膠量'}${space.varies.speed ? `、${g.speed} mm/s` : ''}`;
-    return [
-      space.varies.pattern || g.mode !== 'pattern' ? TYPE_LABEL[g.type] : '',
-      space.varies.spacing && g.spacing != null ? `間距 ${g.spacing} mm` : '',
-      g.mode === 'pattern' ? `內縮 ${g.edgeInset} mm` : '',
-      space.varies.spiralDirection && g.type === 'spiral' ? DIRECTION_LABEL[g.spiralDirection] : '',
-      space.varies.speed && g.mode !== 'point' ? `${g.speed} mm/s` : '',
-      o.nozzle === 'match' && g.mode === 'pattern' ? `針嘴 ${needleLabel(g.diameter)}` : '',
-    ]
-      .filter(Boolean)
-      .join('、');
-  };
   // A dot that replaces another path type sits at the heat-source centre; a dot that is the current path
   // keeps its place.
   const configFor = (g) => {
@@ -468,6 +539,38 @@ export async function optimizeSettings(config, heat, options = {}) {
     }
     return c;
   };
+  // Process of each geometry (travel speed, nozzle) for the dose band the search works in: from the lower
+  // screening dose minus the tolerance to the upper one plus it, sized at the dose it is likely to end near.
+  const needFactor = Math.min(dose[1], screenDoses.at(-1) * (1 + tol));
+  const lowFactor = Math.max(dose[0], screenDoses[0] * (1 - tol));
+  const sizing = { needFactor, lowFactor, limited: 0, noHeadroom: 0, tooSlow: 0 };
+  const needles = o.nozzle === 'auto' ? NEEDLES.map((x) => x.id) : [config.diameter];
+  const geometries = [];
+  for (const g of space.geometries) {
+    const p = chooseProcess(configFor({ ...g, diameter: config.diameter }), { speeds: space.speeds, needles, nominalMl: required * mid, lowMl: required * lowFactor, needMl: required * needFactor, knob: knobOf(g.mode).id, cycleRef });
+    // A run past the simulation limit cannot be evaluated at any dose: leave it out and say so.
+    if (!p.fits) {
+      sizing.tooSlow++;
+      continue;
+    }
+    if (!p.ok) sizing.limited++;
+    else if (!p.headroom) sizing.noHeadroom++;
+    geometries.push({ ...g, ...(g.mode === 'point' ? {} : { speed: p.speed }), diameter: p.diameter, processOk: p.ok });
+  }
+  if (!geometries.length) throw new Error(`所有組合走完路徑都超過 180 s 的模擬上限：請提高移動速度範圍（目前路徑約 ${Math.round(currentPathLength(config, heat))} mm）`);
+  const describeGeometry = (g) => {
+    if (!space.geometry && !space.varies.pattern) return `${g.mode === 'point' ? '單點膠量' : '直線膠量'}${space.varies.speed ? `、${g.speed} mm/s` : ''}`;
+    return [
+      space.varies.pattern || g.mode !== 'pattern' ? TYPE_LABEL[g.type] : '',
+      space.varies.spacing && g.spacing != null ? `間距 ${g.spacing} mm` : '',
+      g.mode === 'pattern' ? `內縮 ${g.edgeInset} mm` : '',
+      space.varies.spiralDirection && g.type === 'spiral' ? DIRECTION_LABEL[g.spiralDirection] : '',
+      space.varies.speed && g.mode !== 'point' ? `${g.speed} mm/s` : '',
+      o.nozzle === 'auto' ? `針嘴 ${needleLabel(g.diameter)}` : '',
+    ]
+      .filter(Boolean)
+      .join('、');
+  };
 
   // Progress counts an evaluation on the final grid as costlier than one on the search grid.
   const costRatio = o.costRatio ?? (o.searchCell / o.verifyCell) ** 3;
@@ -475,8 +578,10 @@ export async function optimizeSettings(config, heat, options = {}) {
   let done = 0;
   let evaluations = 0;
   const cache = new Map();
+  // One geometry with its process: the evaluation cache and every lookup use this id.
+  const gid = (g) => `${g.key}|${g.speed ?? ''}|${g.diameter}`;
   const evaluate = (g, f, h, stage) => {
-    const key = `${g.key}|${g.diameter}|${f.toFixed(5)}|${h.cellSize}`;
+    const key = `${gid(g)}|${f.toFixed(5)}|${h.cellSize}`;
     if (!cache.has(key)) {
       const k = knobOf(g.mode);
       cache.set(
@@ -491,7 +596,7 @@ export async function optimizeSettings(config, heat, options = {}) {
     }
     return cache.get(key);
   };
-  const geoOf = (c) => geometries.find((g) => g.key === c.key && g.diameter === c.diameter);
+  const geoOf = (c) => geometries.find((g) => gid(g) === gid(c));
 
   const feasible = (r) => r.reached && r.cycleOk;
   const order = (a, b) => {
@@ -499,11 +604,11 @@ export async function optimizeSettings(config, heat, options = {}) {
     const pb = b.robust && feasible(b);
     if (pa !== pb) return pa ? -1 : 1;
     if (pa) {
-      // Within 1 % of material, prefer the better-laid bead (less stretched or piled, nozzle not buried),
-      // then the shorter cycle, then the wider window.
-      if (Math.abs(a.depositedMl - b.depositedMl) > 0.01 * Math.max(a.depositedMl, b.depositedMl)) return a.depositedMl - b.depositedMl;
-      const bead = beadDeviation(a.bead) - beadDeviation(b.bead);
-      if (Math.abs(bead) > 0.2) return bead;
+      // Within 3 % of material, prefer the more practical process (bead near the nozzle size, cycle near the
+      // reference, drive with room to correct a drifting dose), then the shorter cycle, then the wider window.
+      if (Math.abs(a.depositedMl - b.depositedMl) > MATERIAL_TIE * Math.max(a.depositedMl, b.depositedMl)) return a.depositedMl - b.depositedMl;
+      const cost = processCost(a, cycleRef) - processCost(b, cycleRef);
+      if (Math.abs(cost) > 0.15) return cost;
       return a.cycle - b.cycle || (b.margin ?? 0) - (a.margin ?? 0);
     }
     return compareRanked(a, b, goals);
@@ -515,7 +620,7 @@ export async function optimizeSettings(config, heat, options = {}) {
       const j = judge(c.worst || c, goals);
       return { ...c, ...j, pass: isPass(c), coarsePass: !c.verified && Boolean(c.robust) && feasible(c) };
     });
-    return { goals, tolerance: tol, knob, motion, types: space.types, nozzle: space.geometry ? o.nozzle : 'fixed', cycleLimit: o.cycleLimit, required, dose, space, plan, level: o.level, searchCell: o.searchCell, verifyCell: o.verifyCell, band: bandFactors.length, evaluations, candidates: list, best: list[0], complete };
+    return { goals, tolerance: tol, knob, motion, types: space.types, nozzle: o.nozzle, sizing, cycleLimit: o.cycleLimit, cycleRef, required, dose, space, plan, level: o.level, searchCell: o.searchCell, verifyCell: o.verifyCell, band: bandFactors.length, evaluations, candidates: list, best: list[0], complete };
   };
   const screenedRow = (s) => ({ ...rank(s.pts, goals)[0], fCov: null, fOvf: null, margin: null, robust: false, screenedOnly: true });
 
@@ -525,7 +630,7 @@ export async function optimizeSettings(config, heat, options = {}) {
     await Promise.all(
       geometries.map(async (g, index) => {
         const pts = (await Promise.all(screenDoses.map((f) => evaluate(g, f, coarse, '篩選')))).filter(Boolean);
-        const s = pts.length ? { g, index, pts, est: estimateWindow(pts, goals, tol) } : null;
+        const s = pts.length ? { g, index, pts, est: estimateWindow(pts, goals, tol), cost: processCost(pts.at(-1), cycleRef) } : null;
         if (s) {
           soFar.push(s);
           o.onPartial?.(assemble([], [...soFar].sort(screenOrder).map(screenedRow), false));
@@ -600,14 +705,21 @@ export async function optimizeSettings(config, heat, options = {}) {
       nominal = fCov / (1 - tol);
       if (nominal * (1 + tol) > fOvf) nominal = Math.sqrt(fCov * fOvf);
     } else {
-      const prefix = `${g.key}|${g.diameter}|`;
+      const prefix = `${gid(g)}|`;
       const tried = (await Promise.all([...cache.entries()].filter(([k]) => k.startsWith(prefix) && k.endsWith(`|${coarse.cellSize}`)).map(([, p]) => p))).filter(Boolean);
       nominal = rank(tried, goals)[0]?.factor ?? dose[1];
     }
     nominal = Math.min(dose[1], Math.max(dose[0], nominal));
     const margin = windowed ? Math.min(1 - fCov / nominal, fOvf / nominal - 1) : null;
     const r = await at(nominal);
-    return r ? { ...r, fCov, fOvf, margin, fCovAtMin: Boolean(cov.atMin), robust: margin !== null && margin >= tol - 1e-9 } : null;
+    // The most the equipment laid where it fell short of a dose (null when every dose was reached), and the
+    // largest dose tolerance the window would carry.
+    const own = `${gid(g)}|`;
+    const all = (await Promise.all([...cache.entries()].filter(([k]) => k.startsWith(own)).map(([, p]) => p))).filter(Boolean);
+    const short = all.filter((x) => !x.reached && x.depositedMl < required * x.factor);
+    const capFactor = short.length ? Math.max(...short.map((x) => x.depositedMl / required)) : null;
+    const supportedTol = windowed ? (fOvf - fCov) / (fOvf + fCov) : null;
+    return r ? { ...r, fCov, fOvf, margin, supportedTol, capFactor, fCovAtMin: Boolean(cov.atMin), robust: margin !== null && margin >= tol - 1e-9 } : null;
   };
   const windowed = [];
   await Promise.all(
@@ -619,7 +731,7 @@ export async function optimizeSettings(config, heat, options = {}) {
     ),
   );
   // Deterministic order regardless of which worker finished first.
-  let candidates = kept.map((s) => windowed.find((c) => c.key === s.g.key && c.diameter === s.g.diameter)).filter(Boolean);
+  let candidates = kept.map((s) => windowed.find((c) => gid(c) === gid(s.g))).filter(Boolean);
 
   // 3. Re-run the leaders on the final grid across the tolerance band, until the top ones are all checked:
   //    a leader that fails moves down and the next one is checked, so the recommendation is never unchecked.
@@ -634,9 +746,12 @@ export async function optimizeSettings(config, heat, options = {}) {
       voidAreaMm2: Math.max(...band.map((r) => r.voidAreaMm2)),
     };
     const ok = band.length === bandFactors.length && band.every((r) => r.reached) && worst.coveredPercent >= goals.coverage && worst.squeezeOutMm <= goals.overflow;
-    // Every dose of the check, for the page to show where a goal was missed.
-    const bandPoints = band.map((r) => ({ shift: r.factor / c.factor - 1, factor: r.factor, depositedMl: r.depositedMl, coveredPercent: r.coveredPercent, squeezeOutMm: r.squeezeOutMm, voidAreaMm2: r.voidAreaMm2, reached: r.reached }));
-    return { ...c, ...nominal, fCov: c.fCov, fOvf: c.fOvf, margin: c.margin, fCovAtMin: c.fCovAtMin, worst, bandPoints, verified: true, robust: ok };
+    // Every dose of the check, for the page to show where a goal was missed and which doses the equipment
+    // could not lay (capped) or only by leaving the drive (fallback to the travel speed or gate time).
+    const bandPoints = band.map((r) => ({ shift: r.factor / c.factor - 1, factor: r.factor, laid: r.depositedMl / required, depositedMl: r.depositedMl, coveredPercent: r.coveredPercent, squeezeOutMm: r.squeezeOutMm, voidAreaMm2: r.voidAreaMm2, reached: r.reached, capped: !r.reached && r.depositedMl < required * r.factor, fallback: Boolean(r.fallback) }));
+    const capped = bandPoints.filter((p) => p.capped);
+    const capFactor = capped.length ? Math.max(...capped.map((p) => p.laid)) : c.capFactor;
+    return { ...c, ...nominal, fCov: c.fCov, fOvf: c.fOvf, margin: c.margin, supportedTol: c.supportedTol, fCovAtMin: c.fCovAtMin, worst, bandPoints, capFactor, headroom: band.every((r) => !r.fallback), verified: true, robust: ok };
   };
   for (;;) {
     candidates.sort(order);
