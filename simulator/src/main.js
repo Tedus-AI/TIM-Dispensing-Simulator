@@ -6,7 +6,7 @@ import { MATERIALS } from './materials.js';
 import { DispenseScene, VIEW_LABELS } from './scene.js';
 import { HARDWARE_REFERENCES } from './hardware-reference.js';
 import { estimateCompression, squeezeRheology, PRESS_DEFAULTS } from './compression.js';
-import { GOAL_DEFAULTS, OPTIMIZE_DEFAULTS, SEARCH_LEVELS, SEARCH_PATTERNS, VARS_DEFAULT, TYPE_LABEL, DIRECTION_LABEL, CYCLE_REFERENCE, levelOf, planSearch, searchSpace, autoRanges, currentPathLength, nozzleMode, estimateSeconds, screeningDoses, optimizeSettings, judge, rank, metricsOf, beadMatch, needleLabel } from './optimize.js';
+import { GOAL_DEFAULTS, OPTIMIZE_DEFAULTS, SEARCH_LEVELS, SEARCH_PATTERNS, VARS_DEFAULT, TYPE_LABEL, DIRECTION_LABEL, CYCLE_REFERENCE, NOZZLE_PRESETS, levelOf, planSearch, searchSpace, autoRanges, currentPathLength, nozzleMode, nearestNeedle, gaugeTable, estimateSeconds, screeningDoses, optimizeSettings, judge, rank, metricsOf, beadMatch, needleLabel } from './optimize.js';
 import { tuneDose, driveOf } from './tuning.js';
 import { pageTemplate, ICONS, PATTERN_ICONS, PATTERN_NAMES } from './ui/template.js';
 import { drawChart, moveCursor, CHARTS } from './ui/chart.js';
@@ -304,6 +304,16 @@ function num({ bind, label, value, unit = '', min, max, tag, hint, disabled, ste
 function select({ bind, id, label, value, options, hint }) {
   return `<label class="field"><span class="lbl">${label}${tip(hint)}</span><select ${bind ? `data-bind="${bind}"` : ''} ${id ? `id="${id}"` : ''}>${options.map(([v, t]) => `<option value="${v}" ${String(v) === String(value) ? 'selected' : ''}>${t}</option>`).join('')}</select></label>`;
 }
+// The gauge closest to a bore, only when the bore is within the gauge range (else empty).
+const gaugeNear = (d) => (d >= 0.2 && d <= 4.3 ? nearestNeedle(d).label : '');
+// Needle size: a standard gauge (or the 1/8" guideline nozzle) from the list, or any bore typed in.
+function nozzleFields(c, isPcp) {
+  const preset = NOZZLE_PRESETS.find((n) => Math.abs(n.id - c.diameter) < 1e-6);
+  const options = NOZZLE_PRESETS.map((n) => [String(n.id), n.label === '1/8"' ? `1/8 吋（${n.id} mm，Laird 指南用嘴）` : `${n.label}（${n.id.toFixed(2)} mm）`]);
+  options.push(['custom', preset ? '自訂內徑' : `自訂（最接近 ${nearestNeedle(c.diameter).label}）`]);
+  const table = `常見點膠針頭內徑（mm），號數越大越細：\n${gaugeTable()}\n1/8 吋 3.175（Laird 指南用嘴）\n14–25G 為 Nordson EFD 一般針頭型錄值，其餘為標準壁厚不鏽鋼針管；不同廠牌、薄壁針頭略有差異，請以手上針頭的型錄為準。${isPcp ? '\nP300 的出膠量不受針嘴影響，只影響持膠量、膠條與外觀。' : ''}`;
+  return `<div class="pair">${select({ id: 'sel-nozzle', label: '針頭規格', value: preset ? String(preset.id) : 'custom', options, hint: '選標準針頭會自動填入右邊的內徑；也可以直接在右邊輸入任何內徑。' })}${num({ bind: 'c.diameter', label: '虛擬針嘴內徑', value: c.diameter, unit: 'mm', min: 0.2, max: 8, tag: 'geo', hint: table })}</div>`;
+}
 const group = (title, body, { open = true, note } = {}) =>
   `<details class="group" ${open ? 'open' : ''}><summary><span>${title}${tip(note)}</span></summary><div class="group-body">${body}</div></details>`;
 
@@ -332,7 +342,7 @@ function renderEquipment() {
     (isPcp
       ? num({ bind: 'c.rpm', label: '計量軸轉速', value: c.rpm, unit: 'rpm', min: 0, max: 300, tag: 'ai' }) + num({ bind: 'c.efficiency', label: '容積效率', value: c.efficiency, unit: '', min: 0, max: 1, tag: 'ai' })
       : `<div class="with-btn">${num({ bind: 'c.pressure', label: '驅動表壓', value: S.pressureUnit === 'bar' ? c.pressure * BAR : c.pressure, unit: S.pressureUnit, min: 0, max: S.pressureUnit === 'bar' ? 6.89475729 : 100, tag: 'ai', hint: '控制器上限 100 psi（Performus X100 額定）' })}<button class="chip-btn" id="pressure-unit">${S.pressureUnit === 'psi' ? 'bar' : 'psi'}</button></div>`) +
-      num({ bind: 'c.diameter', label: '虛擬針嘴內徑', value: c.diameter, unit: 'mm', min: 0.2, max: 8, tag: 'geo', hint: isPcp ? '只影響持膠量與外觀' : '0.125 in = 3.175 mm（指南曲線用嘴）' }) +
+      nozzleFields(c, isPcp) +
       num({ bind: 'c.nozzleLength', label: '等效直管長', value: c.nozzleLength, unit: 'mm', min: 1, max: 100, tag: 'ai', hint: isPcp ? '只影響持膠量' : '流量基準長度，非針嘴總長' }),
   )}
   ${group(
@@ -545,6 +555,10 @@ $('#tab-body').addEventListener('change', (e) => {
   const el = e.target;
   if (el.id === 'sel-material' || el.id === 'sel-arch') return switchProfile($('#sel-material').value, $('#sel-arch').value);
   if (el.id === 'workpiece-file') return importWorkpiece(el);
+  if (el.id === 'sel-nozzle') {
+    if (el.value === 'custom') return $('[data-bind="c.diameter"]')?.focus();
+    return tryRecompute({ ...S.config, diameter: Number(el.value) });
+  }
   const bind = el.dataset.bind;
   if (!bind) return;
   const [scope, key] = bind.split('.');
@@ -709,7 +723,7 @@ function doseMessage(t, before, target) {
   const result = `沉積 ${fmt(S.run.summary.deposited, 3)} mL（目標 ${fmt(target, 3)}）`;
   if (!t.reached && !(t.deposited > 1e-9)) return `這組設定不會有膠沉積到工件${before.mode !== 'point' && before.shutoffDistance > 0 ? `（提前關膠 ${before.shutoffDistance} mm 是否 ≥ 路徑長？）` : ''}，請先檢查路徑與收尾設定`;
   if (!t.reached && t.suggest)
-    return `已達設備限制（${needleLabel(before.diameter)}），最接近 ${result}。改用 ${needleLabel(t.suggest.diameter)} 針嘴（設備頁「虛擬針嘴內徑」${t.suggest.diameter} mm）在目前速度就能達到；也可用自動最佳化一起選針嘴與速度`;
+    return `已達設備限制（${needleLabel(before.diameter)}），最接近 ${result}。改用 ${needleLabel(t.suggest.diameter)} 針頭（設備頁「針頭規格」選 ${needleLabel(t.suggest.diameter)}，內徑 ${t.suggest.diameter} mm）在目前速度就能達到；也可用自動最佳化一起選針嘴與速度`;
   if (!t.reached) return `已達設備限制，最接近 ${result}；請換針嘴、圖樣或調整目標`;
   if (t.key === drive.key) return `已將${drive.label}調為 ${dv(t.config)}（${motion.label}不變），${result}`;
   if (t.fallback) {
@@ -846,7 +860,7 @@ function beadTipText(b, nozzle) {
     `拉細倍率 ×${fmt(r, 1)}＝針嘴平均移動速度 ÷ 膠從針嘴流出的速度＝針嘴內孔截面 ÷ 膠條截面。`,
     '約 ×1 時，膠像一條和針嘴差不多粗的繩子放到面上；0.7–1.5 為 AI 初估的良好範圍。',
     r > 1.5 ? `大於 1.5 是「被拉細」：膠條截面只有內孔的 1/${fmt(r, 1)}，被拉成細線，容易斷線或粗細不均。` : r < 0.7 ? '小於 0.7 是「堆疊」：膠出得比針嘴走得快，會堆疊、捲折、包住空氣。' : '',
-    `匹配內徑約 ${fmt(b.matchedId, 2)} mm（目前 ${fmt(nozzle, 2)} mm）。平均移動速度約 ${fmt(b.averageSpeed, 0)} mm/s；轉角與加速度會讓它低於設定速度。`,
+    `匹配內徑約 ${fmt(b.matchedId, 2)} mm${gaugeNear(b.matchedId) ? `，最接近 ${gaugeNear(b.matchedId)}` : '，不在常見針頭範圍內'}（目前 ${needleLabel(nozzle)}，${fmt(nozzle, 2)} mm）。平均移動速度約 ${fmt(b.averageSpeed, 0)} mm/s；轉角與加速度會讓它低於設定速度。`,
   ]
     .filter(Boolean)
     .join('\n');
@@ -857,7 +871,7 @@ function beadKpi(run) {
   if (b.speedRatio === null) return '';
   const bad = b.state !== 'ok';
   const what = b.state === 'stretched' ? '被拉細' : b.state === 'piled' ? '堆疊' : '良好';
-  return `<div class="kpi wide ${bad ? 'warn' : ''}"><span>針嘴與膠條${tip(beadTipText(b, run.config.diameter))}</span><b>×${fmt(b.speedRatio, 2)}<small>${what}</small></b><em>匹配內徑約 ${fmt(b.matchedId, 2)} mm（目前 ${fmt(run.config.diameter, 2)}）</em></div>`;
+  return `<div class="kpi wide ${bad ? 'warn' : ''}"><span>針嘴與膠條${tip(beadTipText(b, run.config.diameter))}</span><b>×${fmt(b.speedRatio, 2)}<small>${what}</small></b><em>匹配內徑約 ${fmt(b.matchedId, 2)} mm${gaugeNear(b.matchedId) ? ` ≈ ${gaugeNear(b.matchedId)}` : ''}（目前 ${needleLabel(run.config.diameter)}）</em></div>`;
 }
 
 // Bead (dot) shape against the nozzle height: free, pressed flat to the standoff, or burying the nozzle.
@@ -1652,7 +1666,7 @@ function varsTable(running, level) {
     ],
     [
       '針嘴',
-      '自動：每組幾何從標準針嘴（22G 0.41 mm 到 1/8" 3.175 mm）中，和移動速度一起選一支：在壓力（轉速）範圍內鋪得出整個膠量範圍，膠條又最接近針嘴大小（G 數越大越細）。固定：每組都用目前針嘴。',
+      '自動：每組幾何從整數 G 數的標準針頭（25G 0.25 mm 到 8G 3.43 mm，對照表在設備頁「虛擬針嘴內徑」的 ?）中，和移動速度一起選一支：在壓力（轉速）範圍內鋪得出整個膠量範圍，膠條又最接近針嘴大小（G 數越大越細）。固定：每組都用目前針嘴。',
       `<td colspan="2"><select data-opt="nozzle" ${off}><option value="auto" ${nozzleMode(S.optOptions.nozzle) === 'auto' ? 'selected' : ''}>自動（與速度一起選）</option><option value="fixed" ${nozzleMode(S.optOptions.nozzle) === 'fixed' ? 'selected' : ''}>固定目前 ${esc(needleLabel(S.config.diameter))}</option></select></td>`,
       '—',
     ],
@@ -2149,7 +2163,7 @@ function renderSources() {
 $('#help-body').innerHTML = `
 <ol class="steps">
   <li><b>① 熱源工件</b>：輸入元件接觸面的形狀、尺寸、位置、組裝間隙（墊片高度）與功耗；它們決定膠量需求（熱源面積 × 間隙）與「依熱源」路徑。點膠平板的尺寸與 STL／GLB 匯入收在同頁的「工件」群組。</li>
-  <li><b>② 膠材設備</b>：選膠材（Tputty 910／Tgrease 2500）與架構（R75 氣壓／P300 PCP），設定壓力或轉速、針嘴內徑與響應參數。針嘴常以 G 數稱呼（數字越大越細）：22G 0.41、20G 0.61、18G 0.84、16G 1.19、15G 1.36、14G 1.54 mm。「用實測出膠量校正」：原地連續出膠一段時間後秤重，輸入重量與時間，模型的出膠量就會對齊實測。</li>
+  <li><b>② 膠材設備</b>：選膠材（Tputty 910／Tgrease 2500）與架構（R75 氣壓／P300 PCP），設定壓力或轉速、針嘴內徑與響應參數。針頭以 G 數（規格號數，整數，數字越大越細）稱呼：可在「針頭規格」直接選，會自動填入內徑；也可自行輸入內徑，旁邊的 ? 有 G 數對照表。「用實測出膠量校正」：原地連續出膠一段時間後秤重，輸入重量與時間，模型的出膠量就會對齊實測。</li>
   <li><b>③ 路徑</b>：依熱源選中心線／N／蛇形／螺旋／米字形／外框，或直線、單點（米字形：從中心往四角與四邊各畫一條再回中心，空氣較易往外排）；設定速度、加速度與針嘴離面高度。針嘴低於膠的自然高度時，膠被壓成針距高度並變寬（膠量不變）；過低會埋針。</li>
   <li><b>④ 收尾</b>：提前關膠、停留、抬針與回退、PCP 反轉。</li>
   <li><b>⑤ 壓合</b>：透明板的壓合力、下降速度、夾氣處理（可壓縮／剛性牆／全排出）、黏度、降伏應力、靜置時間與估算網格。</li>
