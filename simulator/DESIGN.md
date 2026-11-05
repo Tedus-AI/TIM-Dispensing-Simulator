@@ -1,5 +1,10 @@
 # 點膠研究室 · 機構與實作契約
 
+## v1.8.1（2026-11-05）
+
+- `optimize.js`：`GAUGES`（整數 G 數與內徑：14–25G 為 Nordson EFD 一般針頭值，其餘為標準壁厚針管）；`NEEDLES`＝自動選擇的候選，只含整數 G 數；`NOZZLE_PRESETS`＝設備頁選單（加 1/8 吋）；`needleLabel` 依選單命名；`gaugeTable()` 產生對照表文字。
+- `main.js`：`nozzleFields` 在「驅動與針嘴」放「針頭規格」選單（`#sel-nozzle`，選了即 `tryRecompute` 新內徑；「自訂」聚焦內徑欄並顯示最接近的 G 數）與內徑欄（hint＝對照表）；結果卡與膠條說明的匹配內徑附最接近的 G 數（0.2–4.3 mm 以外不標）；膠量列建議改說「針頭規格選 xxG」。
+
 ## v1.8（2026-11-05）
 
 - `engine.js`：

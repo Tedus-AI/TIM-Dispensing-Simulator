@@ -66,7 +66,7 @@ test('bead match: matched bore from the bead cross-section, speed ratio against 
   const [s100, s200] = [beadMatch(spiral(100)), beadMatch(spiral(200))];
   assert.ok(Math.abs(s200.speedRatio / s100.speedRatio - 1) < 0.1, `${s100.speedRatio} ${s200.speedRatio}`);
   assert.equal(b.state, b.speedRatio > MATCH_BAND[1] ? 'stretched' : b.speedRatio < MATCH_BAND[0] ? 'piled' : 'ok');
-  assert.equal(nearestNeedle(2.2).id, 2.0);
+  assert.equal(nearestNeedle(2.2).label, '12G');
   assert.equal(nearestNeedle(0.55).label, '21G');
 });
 

@@ -128,3 +128,17 @@ test('thin gap, viscous grease: the auto process lays the dose band where a fixe
   assert.ok(!f.pass && f.capFactor > 1 && f.capFactor < fixed.sizing.needFactor, `${f.capFactor}`);
   assert.ok(f.bandPoints.some((p) => p.capped && p.laid < p.factor * 0.97));
 });
+
+test('needle sizes: whole gauges for the automatic choice, the 1/8" guideline nozzle only as a preset', async () => {
+  const { GAUGES, NOZZLE_PRESETS, needleLabel, gaugeTable } = await import('../src/optimize.js');
+  assert.ok(GAUGES.every((g) => Number.isInteger(g.gauge)));
+  for (let i = 1; i < GAUGES.length; i++) assert.ok(GAUGES[i].gauge > GAUGES[i - 1].gauge && GAUGES[i].id < GAUGES[i - 1].id, 'a larger gauge is a finer bore');
+  assert.equal(NEEDLES.length, GAUGES.length);
+  assert.ok(NEEDLES.every((n) => /^\d+G$/.test(n.label)));
+  assert.ok(!NEEDLES.some((n) => n.id === 3.175) && NOZZLE_PRESETS.some((n) => n.id === 3.175));
+  assert.deepEqual([needleLabel(1.54), needleLabel(0.84), needleLabel(3.175), needleLabel(0.7)], ['14G', '18G', '1/8"', 'Ø0.7']);
+  assert.ok(gaugeTable().includes('14G 1.54') && gaugeTable().split('\n').length === Math.ceil(GAUGES.length / 4));
+  // The process choice of the thin-gap case lands on a whole gauge.
+  const p = chooseProcess(thin(), { nominalMl: required * 1.16, lowMl: required * 0.94, needMl: required * 1.405, speeds: searchSpace(thin(), thinHeat).speeds, needles: NEEDLES.map((n) => n.id) });
+  assert.ok(p.ok && NEEDLES.some((n) => n.id === p.diameter) && /^\d+G$/.test(needleLabel(p.diameter)), needleLabel(p.diameter));
+});

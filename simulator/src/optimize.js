@@ -47,22 +47,38 @@ export const nozzleMode = (v) => (v === 'auto' || v === 'match' ? 'auto' : 'fixe
 export const CYCLE_REFERENCE = 30;
 export const MATERIAL_TIE = 0.03;
 
-// Common dispensing needle inner diameters, mm (approximate catalogue values) and the 1/8" bore of the
-// Laird Tputty guideline.
-export const NEEDLES = Object.freeze([
-  { id: 0.41, label: '22G' },
-  { id: 0.51, label: '21G' },
-  { id: 0.61, label: '20G' },
-  { id: 0.84, label: '18G' },
-  { id: 1.19, label: '16G' },
-  { id: 1.36, label: '15G' },
-  { id: 1.54, label: '14G' },
-  { id: 2.0, label: 'Ø2.0' },
-  { id: 2.5, label: 'Ø2.5' },
-  { id: 3.175, label: '1/8"' },
+// Dispensing needle bores by gauge (mm). Gauges are whole numbers; 14–25G are Nordson EFD general-purpose
+// catalogue values, the others regular-wall stainless tubing. Makers and thin-wall tips differ a little.
+export const GAUGES = Object.freeze([
+  { gauge: 8, id: 3.43 },
+  { gauge: 10, id: 2.69 },
+  { gauge: 11, id: 2.39 },
+  { gauge: 12, id: 2.16 },
+  { gauge: 13, id: 1.8 },
+  { gauge: 14, id: 1.54 },
+  { gauge: 15, id: 1.36 },
+  { gauge: 16, id: 1.19 },
+  { gauge: 17, id: 1.07 },
+  { gauge: 18, id: 0.84 },
+  { gauge: 19, id: 0.69 },
+  { gauge: 20, id: 0.61 },
+  { gauge: 21, id: 0.51 },
+  { gauge: 22, id: 0.41 },
+  { gauge: 23, id: 0.33 },
+  { gauge: 25, id: 0.25 },
 ]);
+// Needles the automatic choice tries: whole gauges only, finest first.
+export const NEEDLES = Object.freeze(GAUGES.map((g) => ({ id: g.id, label: `${g.gauge}G` })).sort((a, b) => a.id - b.id));
+// Sizes offered in the equipment tab: the gauges and the 1/8" bore of the Laird Tputty guideline nozzle.
+export const NOZZLE_PRESETS = Object.freeze([{ id: 3.175, label: '1/8"' }, ...[...NEEDLES].reverse()]);
 export const nearestNeedle = (d) => NEEDLES.reduce((a, b) => (Math.abs(Math.log(b.id / d)) < Math.abs(Math.log(a.id / d)) ? b : a));
-export const needleLabel = (d) => NEEDLES.find((n) => Math.abs(n.id - d) < 1e-6)?.label ?? `Ø${d}`;
+export const needleLabel = (d) => NOZZLE_PRESETS.find((n) => Math.abs(n.id - d) < 1e-6)?.label ?? `Ø${d}`;
+/** Gauge-to-bore table as text, for a hover note. */
+export const gaugeTable = () => {
+  const rows = [];
+  for (let i = 0; i < GAUGES.length; i += 4) rows.push(GAUGES.slice(i, i + 4).map((g) => `${g.gauge}G ${g.id.toFixed(2)}`).join('　'));
+  return rows.join('\n');
+};
 
 // Stretch ratio = average travel speed ÷ paste exit speed = nozzle bore area ÷ bead cross-section. Near 1
 // the paste is laid as a rope about the nozzle's size; well above it the bead is drawn thin (it can neck or
