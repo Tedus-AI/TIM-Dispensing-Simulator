@@ -142,3 +142,24 @@ test('needle sizes: whole gauges for the automatic choice, the 1/8" guideline no
   const p = chooseProcess(thin(), { nominalMl: required * 1.16, lowMl: required * 0.94, needMl: required * 1.405, speeds: searchSpace(thin(), thinHeat).speeds, needles: NEEDLES.map((n) => n.id) });
   assert.ok(p.ok && NEEDLES.some((n) => n.id === p.diameter) && /^\d+G$/.test(needleLabel(p.diameter)), needleLabel(p.diameter));
 });
+
+test('stacked glue: passes that come back over themselves add up, and the nozzle meets a pile above the standoff', async () => {
+  const { stackedBead } = await import('../src/stacking.js');
+  const { beadMatch } = await import('../src/optimize.js');
+  const { tuneDose } = await import('../src/tuning.js');
+  // One straight pass: the stack is the bead itself.
+  const line = tuneDose({ ...thin(), mode: 'line', lineLength: 20, diameter: 1.54, speed: 11, offsetX: 0, offsetY: 0 }, 0.01, 'drive').run;
+  const one = stackedBead(line);
+  assert.ok(!one.overlap && !one.contact && Math.abs(one.maxHeight / one.single - 1) < 0.15, JSON.stringify(one));
+  // The star lays every spoke twice and passes its centre nine times: a pile at the centre above the 2 mm standoff.
+  const starCase = { ...thin({ pattern: 'star', edgeInset: 3.5 }), diameter: 1.54, speed: 11 };
+  const star = tuneDose(starCase, required * 1.1, 'drive').run;
+  const s = stackedBead(star);
+  assert.ok(s.overlap && s.contact && s.where === 'centre' && s.maxHeight > 1.5 * star.config.standoff, JSON.stringify(s));
+  const b = beadMatch(star);
+  assert.ok(b.drags && b.stack.contact && !b.buried && processCost({ bead: b, cycle: 10 }) >= 1);
+  // A higher standoff clears the pile; a serpentine does not come back over itself enough to reach the nozzle.
+  assert.equal(stackedBead(tuneDose({ ...starCase, standoff: 6 }, required * 1.1, 'drive').run).contact, false);
+  const serp = tuneDose({ ...thin({ pattern: 'serpentine', spacing: 5, edgeInset: 2 }), diameter: 1.36, speed: 6 }, required * 1.1, 'drive').run;
+  assert.ok(!stackedBead(serp).contact && !beadMatch(serp).drags);
+});

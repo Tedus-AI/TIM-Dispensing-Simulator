@@ -1,5 +1,18 @@
 # 點膠研究室 · 機構與實作契約
 
+## v1.8.2（2026-11-05）
+
+- `stacking.js`：`stackedBead(run)`（依 run 快取）：
+  - 每個沉積來源（`depositSources`）以自己的半橢圓截面，雙線性分配到細網格（至少 6 格跨一般膠條、≤ 0.1 mm、≤ 50 萬格），各趟相加；
+  - 回傳最高點的高度、位置與所在（`centre`／`vertex`／`path`），以及 `single`（單趟最高）、`overlap`（> 1.15 × 單趟）、`contact`（overlap 且 > 1.05 × 針距）；
+  - 單點不疊。
+- `beadMatch`：加 `buried`（單趟高於針距）、`stack`；`drags`＝`buried` 或 `stack.contact`，所以 `beadDeviation` 與 `processCost` 會把疊膠碰針當埋針加 1。
+- 排序改為可遞移的鍵：
+  - 達標者依膠量分段 `bandOf(膠量, 最少膠量, 3%)`，再依 `costStep`（成本每 0.15 一段）、週期、餘裕；
+  - 篩選依標稱膠量分段（2%）、成本段、標稱；
+  - 原本「兩兩相差 3% 以內比成本」不可遞移，排序結果會依比較順序而變。
+- `main.js`：`shapeKpi(s, c, run)` 顯示疊高（碰針時 `疊高 x mm > 針距`，警示色）；碰針說明 `stackText` 放在提醒清單最前面；最佳化膠條欄加「疊膠碰針」。
+
 ## v1.8.1（2026-11-05）
 
 - `optimize.js`：`GAUGES`（整數 G 數與內徑：14–25G 為 Nordson EFD 一般針頭值，其餘為標準壁厚針管）；`NEEDLES`＝自動選擇的候選，只含整數 G 數；`NOZZLE_PRESETS`＝設備頁選單（加 1/8 吋）；`needleLabel` 依選單命名；`gaugeTable()` 產生對照表文字。
