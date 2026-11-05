@@ -6,7 +6,7 @@ import { MATERIALS } from './materials.js';
 import { DispenseScene, VIEW_LABELS } from './scene.js';
 import { HARDWARE_REFERENCES } from './hardware-reference.js';
 import { estimateCompression, squeezeRheology, PRESS_DEFAULTS } from './compression.js';
-import { GOAL_DEFAULTS, OPTIMIZE_DEFAULTS, SEARCH_LEVELS, levelOf, planSearch, estimateSeconds, screeningDoses, optimizeSettings, judge, rank, metricsOf, beadMatch, needleLabel } from './optimize.js';
+import { GOAL_DEFAULTS, OPTIMIZE_DEFAULTS, SEARCH_LEVELS, SEARCH_PATTERNS, VARS_DEFAULT, TYPE_LABEL, DIRECTION_LABEL, levelOf, planSearch, searchSpace, autoRanges, estimateSeconds, screeningDoses, optimizeSettings, judge, rank, metricsOf, beadMatch, needleLabel } from './optimize.js';
 import { tuneDose, driveOf } from './tuning.js';
 import { pageTemplate, ICONS, PATTERN_ICONS, PATTERN_NAMES } from './ui/template.js';
 import { drawChart, moveCursor, CHARTS } from './ui/chart.js';
@@ -1377,7 +1377,8 @@ function beadCell(b) {
   const note = [b.state === 'ok' ? '' : `${BEAD_TEXT[b.state]} ×${fmt(b.speedRatio, 1)}`, b.drags ? '針嘴埋入' : ''].filter(Boolean).join('・');
   return `<span class="${warn ? 'warn' : ''}" title="移動速度 ÷ 針嘴出膠速度 = ${fmt(b.speedRatio, 2)}；匹配內徑約 ${fmt(b.matchedId, 2)} mm">${warn ? note : `良好 ×${fmt(b.speedRatio, 1)}`}</span>`;
 }
-const searchConfig = () => (S.config.mode === 'pattern' ? { ...S.config, pathSettings: pathSettings() } : { ...S.config });
+// The search may switch path types, so it always gets the heat-source path settings.
+const searchConfig = () => ({ ...S.config, pathSettings: pathSettings() });
 const clockText = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 function durationText(s) {
   if (!Number.isFinite(s)) return '—';
@@ -1401,6 +1402,11 @@ function requestCalibration() {
   compute('calibrate', { config, heat: { ...S.heat }, target, knob: knobFor(config.mode) })
     .then((cal) => {
       if (S.optCal?.key !== key) return;
+      // Timed while a search kept every core busy: too slow to trust; time it again afterwards.
+      if (S.optimize?.running) {
+        S.optCal = null;
+        return;
+      }
       S.optCal = { key, cal };
       if ($('#optimize-dialog').open && !S.optimize?.running) renderOptimize();
     })
@@ -1412,7 +1418,7 @@ function requestCalibration() {
 function estimateFor(level, { raw = false } = {}) {
   const cal = S.optCal?.key === calibrationKey() ? S.optCal.cal : null;
   if (!cal) return null;
-  const seconds = estimateSeconds(planSearch(searchConfig(), S.heat, { ...S.optOptions, level }), cal, POOL_SIZE);
+  const seconds = estimateSeconds(planSearch(searchConfig(), S.heat, optSearchOptions(level)), cal, POOL_SIZE);
   return raw ? seconds : seconds * S.optSpeed.ratio;
 }
 // Learn this computer's speed from finished searches: blend measured ÷ predicted into the correction.
@@ -1508,30 +1514,136 @@ function updateOptRunning() {
   const tm = $('#opt-time');
   if (tm) tm.textContent = optTimeText(o);
 }
+// Search variables: each one fixed at the current setting or searched (range or options).
+const optVars = () => {
+  const v = S.optOptions.vars || {};
+  return Object.fromEntries(Object.entries(VARS_DEFAULT).map(([k, d]) => [k, { ...d, ...(v[k] || {}) }]));
+};
+const optSearchOptions = (level) => ({ ...S.optOptions, level, knob: S.dose.knob, pointKnob: S.dose.pointKnob, vars: optVars() });
+const currentTypeLabel = () => (S.config.mode === 'pattern' ? PATTERN_NAMES[S.pattern.pattern] : S.config.mode === 'point' ? '單點' : '直線');
+const typeCounts = (space) =>
+  space.types.map((t) => `${TYPE_LABEL[t]} ${space.geometries.filter((g) => g.type === t).length}`).join('、');
+const valueList = (values, unit) => (values.length > 6 ? `${values.slice(0, 3).join('、')} … ${values.at(-1)} ${unit}（${values.length} 個）` : `${values.join('、')} ${unit}`);
+function varsTable(running, level) {
+  const v = optVars();
+  const space = searchSpace(searchConfig(), S.heat, level.candidates, v, S.dose.knob);
+  const auto = autoRanges(searchConfig(), S.heat);
+  const types = space.types;
+  const moving = types.some((t) => t !== 'point');
+  const pitched = types.some((t) => t === 'serpentine' || t === 'spiral');
+  const anyPattern = types.some((t) => t !== 'point' && t !== 'straight');
+  const toggle = (k, fixedText, on) =>
+    `<div class="seg small var-toggle" role="group"><button type="button" data-var="${k}" data-search="0" class="${on ? '' : 'active'}" ${running ? 'disabled' : ''}>固定 ${esc(fixedText)}</button><button type="button" data-var="${k}" data-search="1" class="${on ? 'active' : ''}" ${running ? 'disabled' : ''}>搜尋</button></div>`;
+  const range = (k, [lo, hi], unit, digits) =>
+    `<span class="var-range"><input type="number" data-var="${k}" data-bound="min" value="${v[k].min ?? ''}" placeholder="${fmt(lo, digits)}" step="any" min="0" ${running ? 'disabled' : ''}> – <input type="number" data-var="${k}" data-bound="max" value="${v[k].max ?? ''}" placeholder="${fmt(hi, digits)}" step="any" min="0" ${running ? 'disabled' : ''}> ${unit}${v[k].min == null && v[k].max == null ? '<small class="muted">（自動）</small>' : ''}</span>`;
+  const na = (text) => `<td colspan="2" class="muted var-na">${text}</td>`;
+  const speeds = [...new Set(space.geometries.filter((g) => g.mode !== 'point').map((g) => g.speed))].sort((a, b) => a - b);
+  const rows = [
+    [
+      '圖樣種類',
+      `<td>${toggle('pattern', currentTypeLabel(), v.pattern.search)}</td><td>${
+        v.pattern.search
+          ? SEARCH_PATTERNS.map((t) => `<label class="chk"><input type="checkbox" data-var="pattern" data-option="${t}" ${v.pattern.options.includes(t) ? 'checked' : ''} ${running ? 'disabled' : ''}>${TYPE_LABEL[t]}</label>`).join('')
+          : '<small class="muted">只用目前的路徑</small>'
+      }</td>`,
+      types.length,
+    ],
+    [
+      '路徑間距',
+      pitched ? `<td>${toggle('spacing', `${S.pattern.spacing} mm`, v.spacing.search)}</td><td>${v.spacing.search ? `${range('spacing', auto.spacing, 'mm', 1)}<small>${valueList(space.spacings, 'mm')}</small>` : '<small class="muted">只用於蛇形、螺旋</small>'}</td>` : na('目前的圖樣沒有間距（只用於蛇形、螺旋）'),
+      pitched ? space.spacings.length : '—',
+    ],
+    [
+      '邊界內縮',
+      anyPattern ? `<td>${toggle('inset', `${S.pattern.edgeInset} mm`, v.inset.search)}</td><td>${v.inset.search ? `${range('inset', auto.inset, 'mm', 1)}<small>${valueList(space.insets, 'mm')}</small>` : '<small class="muted">依熱源的圖樣共用</small>'}</td>` : na('單點、直線沒有邊界內縮'),
+      anyPattern ? space.insets.length : '—',
+    ],
+    [
+      '螺旋起點',
+      types.includes('spiral') ? `<td>${toggle('spiralDirection', DIRECTION_LABEL[S.pattern.spiralDirection] || '外向內', v.spiralDirection.search)}</td><td><small>${v.spiralDirection.search ? '外向內、中心向外' : '只用於螺旋'}</small></td>` : na('只用於螺旋（圖樣種類需包含螺旋）'),
+      types.includes('spiral') ? (v.spiralDirection.search ? 2 : 1) : '—',
+    ],
+    [
+      '移動速度',
+      !moving
+        ? na('單點沒有移動速度')
+        : space.speedLocked || S.dose.knob === 'motion'
+          ? `<td colspan="2" class="var-na"><small class="warn">膠量調整選了「調移動速度」，速度用來調膠量，不能同時搜尋；要搜尋速度請改成「調壓力」。</small></td>`
+          : `<td>${toggle('speed', `${fmt(S.config.speed, 1)} mm/s`, v.speed.search)}</td><td>${v.speed.search ? `${range('speed', auto.speed, 'mm/s', 1)}<small>${valueList(speeds, 'mm/s')}；膠量仍由壓力調，壓力到上限才降速</small>${S.optOptions.cycleLimit > 0 ? '' : '<small class="warn">建議設定「週期上限」：不設時，排序只看膠量，可能為了省幾 % 的膠選很慢的速度。</small>'}` : '<small class="muted">膠量由壓力調整</small>'}</td>`,
+      moving && !space.speedLocked && S.dose.knob !== 'motion' ? speeds.length : '—',
+    ],
+    [
+      '針嘴',
+      anyPattern
+        ? `<td colspan="2"><select data-opt="nozzle" ${running ? 'disabled' : ''}><option value="fixed" ${S.optOptions.nozzle === 'fixed' ? 'selected' : ''}>固定目前 ${esc(needleLabel(S.config.diameter))}</option><option value="match" ${S.optOptions.nozzle === 'match' ? 'selected' : ''}>依每組幾何的膠條配對標準針嘴</option></select></td>`
+        : na('單點、直線用目前針嘴'),
+      '—',
+    ],
+    [
+      '膠量',
+      `<td><small>一定搜尋</small></td><td><span class="var-range"><input type="number" data-opt="dose0" value="${S.optOptions.dose[0]}" min="0.05" max="5" step="any" ${running ? 'disabled' : ''}> – <input type="number" data-opt="dose1" value="${S.optOptions.dose[1]}" min="0.1" max="6" step="any" ${running ? 'disabled' : ''}> × 間隙體積</span><small>每組幾何找出容差內都達標的膠量窗口</small></td>`,
+      '窗口',
+    ],
+  ];
+  const total = space.geometries.length;
+  const heavy = total > 400;
+  return {
+    total,
+    space,
+    html: `<div class="table-scroll"><table class="vars"><thead><tr><th>變數</th><th>固定／搜尋</th><th>範圍或選項</th><th>候選</th></tr></thead><tbody>${rows
+      .map(([name, cells, n]) => `<tr><th scope="row">${name}</th>${cells}<td class="mono">${n}</td></tr>`)
+      .join('')}</tbody></table></div>
+    <p class="small-note ${heavy ? 'warn' : 'muted'}">合計 ${total} 組幾何${space.types.length > 1 ? `（${typeCounts(space)}）` : ''}${heavy ? `：組合很多，時間會變長；可減少搜尋變數、縮小範圍或降低精細度${total > 3000 ? '。超過 3,000 組無法開始' : ''}` : ''}。每多搜尋一個變數，主要增加第一階段的篩選次數；找窗口與複核只處理前幾名${space.types.length > 1 ? '，另外每種圖樣的最佳組都會找窗口，方便比較' : ''}。</p>`,
+  };
+}
+
 function renderOptimize() {
   if (!S.optimize?.running) requestCalibration();
   const o = S.optimize || {};
   const opt = S.optOptions;
   const c = S.config;
   const r = o.result;
-  // Before a run the dialog describes the current path; afterwards the path that was searched.
-  const base = r ? o.config : c;
-  const geometry = r ? r.space.geometry : c.mode === 'pattern';
-  const pitched = r ? r.space.pitched : geometry && PITCHED.includes(S.pattern.pattern);
-  const motion = motionOf(base.mode);
+  const running = Boolean(o.running);
   const body = $('#optimize-body');
   const rows = r ? r.candidates.slice(0, 12) : [];
   const best = rows[0];
   const anyPass = rows.some((x) => x.pass);
   const tolPct = Math.round(opt.tolerance * 100);
   const level = levelOf(opt.level);
-  const plan = planSearch(searchConfig(), S.heat, { ...opt, level: level.level });
-  const mv = (x) => `${fmt(x.settings[motion.key], motion.digits)} ${motion.unit}`;
-  const moved = (x) => (motion.key === 'speed' ? (x.settings.speed < o.config.speed ? '已降速' : '已提速') : '已改開膠時間');
-  const knobCell = (x) =>
-    r.knob.id === 'drive' ? `${fmt(x.knobValue, 0)} ${r.knob.unit}<br><small>${mv(x)}${x.fallback ? `<span class="warn">（${moved(x)}）</span>` : ''}</small>` : mv(x);
-  const doseText = (x) => `${r.knob.id === 'drive' ? `${r.knob.label} ${fmt(x.knobValue, 0)} ${r.knob.unit}、` : ''}${motion.label} ${mv(x)}`;
-  const geoText = (x) => (geometry ? `${pitched ? `間距 ${x.spacing} mm、` : ''}內縮 ${x.edgeInset} mm、針嘴 ${esc(needleLabel(x.diameter))}、` : '');
+  const plan = planSearch(searchConfig(), S.heat, optSearchOptions(level.level));
+  const vt = varsTable(running, level);
+  const space = r?.space;
+  const showType = Boolean(space?.varies.pattern);
+  const showSpacing = Boolean(space?.pitched);
+  const showInset = Boolean(space?.geometry);
+  const showDir = Boolean(space?.varies.spiralDirection && !space.varies.pattern);
+  const showSpeed = Boolean(space?.varies.speed);
+  const knobOfRow = (x) => x.knobInfo || r.knob;
+  const motionOfRow = (x) => motionOf(x.mode || o.config.mode);
+  const mv = (x) => {
+    const m = motionOfRow(x);
+    return `${fmt(x.settings[m.key], m.digits)} ${m.unit}`;
+  };
+  const moved = (x) => (motionOfRow(x).key === 'speed' ? (x.settings.speed < (x.speed ?? o.config.speed) ? '已降速' : '已提速') : '已改開膠時間');
+  const knobCell = (x) => {
+    const k = knobOfRow(x);
+    return k.id === 'drive' ? `${fmt(x.knobValue, 0)} ${k.unit}<br><small>${mv(x)}${x.fallback ? `<span class="warn">（${moved(x)}）</span>` : ''}</small>` : mv(x);
+  };
+  const doseText = (x) => {
+    const k = knobOfRow(x);
+    return `${k.id === 'drive' ? `${k.label} ${fmt(x.knobValue, 0)} ${k.unit}、` : ''}${motionOfRow(x).label} ${mv(x)}`;
+  };
+  const typeText = (x) => `${TYPE_LABEL[x.type] || ''}${x.type === 'spiral' && (space?.varies.spiralDirection || x.spiralDirection === 'inside-out') ? `（${DIRECTION_LABEL[x.spiralDirection]}）` : ''}`;
+  const geoText = (x) =>
+    [
+      showType || x.mode !== o.config.mode ? typeText(x) : x.type === 'spiral' && space?.varies.spiralDirection ? `螺旋起點 ${DIRECTION_LABEL[x.spiralDirection]}` : '',
+      x.spacing != null && showSpacing ? `間距 ${x.spacing} mm` : '',
+      x.mode === 'pattern' ? `內縮 ${x.edgeInset} mm` : '',
+      x.mode === 'pattern' ? `針嘴 ${esc(needleLabel(x.diameter))}` : '',
+    ]
+      .filter(Boolean)
+      .map((t) => `${t}、`)
+      .join('');
   const windowCell = (x) =>
     x.screenedOnly ? '<small class="muted">只篩選</small>' : `${x.fCov === null ? '—' : fmt(x.fCov, 2)}–${x.fOvf === null ? '—' : fmt(x.fOvf, 2)}×${x.margin !== null ? `<br><small>±${fmt(x.margin * 100, 0)}%</small>` : ''}`;
   const pair = (nominal, worst, digits) => `${fmt(nominal, digits)}${worst !== undefined ? `<br><small>±${tolPct}%：${fmt(worst, digits)}</small>` : ''}`;
@@ -1544,38 +1656,46 @@ function renderOptimize() {
     const why = x.screenedOnly ? '篩選點達標・未完成' : !x.reached || !x.cycleOk ? '設備或週期限制' : x.verified ? `容差內未全部達標` : `窗口不足 ±${tolPct}%`;
     return `<span class="no-badge">${why}</span>`;
   };
-  const searched = geometry
-    ? `${pitched ? '路徑間距、' : ''}邊界內縮；每組幾何找出達標的膠量窗口${opt.nozzle === 'match' ? '；針嘴依間距配對標準規格' : ''}`
-    : `膠量窗口（${base.mode === 'point' ? '單點' : '直線'}沒有圖樣幾何可調，只搜尋膠量）`;
-  const fixed = `${esc(pathText(base, r ? o.pattern : S.pattern))}、熱源 ${S.heat.shape === 'circle' ? `Ø${S.heat.width}` : `${S.heat.width} × ${S.heat.depth}`} mm、間隙 ${S.heat.gap} mm、${esc(MATERIALS[c.material].name)}、${base.mode === 'point' ? '' : `加速度 ${c.acceleration} mm/s²、`}針距 ${c.standoff} mm、收尾設定、壓合 ${S.heat.pressKgf} kgf／${AIR_MODE_SHORT[S.heat.airMode]}`;
+  const knobHeader = () => {
+    const ks = new Set(rows.map((x) => `${knobOfRow(x).key}|${motionOfRow(x).key}`));
+    if (ks.size > 1) return '膠量設定<br><small>壓力或轉速／速度或開膠時間</small>';
+    const k = knobOfRow(rows[0]);
+    const m = motionOfRow(rows[0]);
+    return k.id === 'drive' ? `${k.label}<br><small>${k.unit}／${m.label}</small>` : `${m.label}<br><small>${m.unit}</small>`;
+  };
+  const geometryWord = (x) => (x.mode === 'point' ? '膠點' : '膠條');
+  const fixedText = `熱源 ${S.heat.shape === 'circle' ? `Ø${S.heat.width}` : `${S.heat.width} × ${S.heat.depth}`} mm、間隙 ${S.heat.gap} mm、${esc(MATERIALS[c.material].name)}、加速度 ${c.acceleration} mm/s²、針距 ${c.standoff} mm、收尾設定、壓合 ${S.heat.pressKgf} kgf／${AIR_MODE_SHORT[S.heat.airMode]}${S.pattern.spiralShape !== 'auto' ? `、螺旋形狀 ${S.pattern.spiralShape === 'round' ? '圓形' : '方形'}` : ''}`;
   const estimateLabel = (l) => (S.optCal?.pending ? '估算中…' : S.optCal?.error ? '無法估算' : durationText(estimateFor(l.level)));
+  const kinds = vt.space.types;
+  const knobSelect = (kind) =>
+    `<label>膠量調整${kinds.includes('point') && kinds.some((t) => t !== 'point') ? (kind === 'point' ? '（單點）' : '（線／圖樣）') : ''} <select data-opt="knob" data-kind="${kind}" ${running ? 'disabled' : ''}>${knobChoices(kind === 'point' ? 'point' : 'pattern')
+      .map(([v, t]) => `<option value="${v}" ${v === (kind === 'point' ? S.dose.pointKnob : S.dose.knob) ? 'selected' : ''}>${t}</option>`)
+      .join('')}</select></label>`;
   body.innerHTML = `
   <p class="lead">在目前條件下搜尋「膠量在 ±${tolPct}% 變動內仍達標，且標稱膠量最少」的設定。這是模擬器上的數值搜尋，結果與模型同樣未經實機校準。</p>
-  <div class="opt-scope"><div><b>固定</b><span>${fixed}</span></div><div><b>搜尋</b><span>${searched}</span></div></div>
+  <div class="opt-scope"><div><b>固定</b><span>${fixedText}</span></div><div><b>搜尋</b><span>下表選為「搜尋」的變數，以及每組幾何的膠量窗口</span></div></div>
   ${goalControls()}
   <div class="goal-controls">
-    <label>膠量容差 ± <input type="number" data-opt="tolerance" value="${tolPct}" min="0" max="40" step="1"> %</label>
-    <label>膠量調整 <select data-opt="knob">${knobChoices(c.mode)
-      .map(([v, t]) => `<option value="${v}" ${v === knobFor(c.mode) ? 'selected' : ''}>${t}</option>`)
-      .join('')}</select></label>
-    ${c.mode === 'pattern' ? `<label>針嘴 <select data-opt="nozzle"><option value="fixed" ${opt.nozzle === 'fixed' ? 'selected' : ''}>固定目前 ${esc(needleLabel(c.diameter))}</option><option value="match" ${opt.nozzle === 'match' ? 'selected' : ''}>依間距配對標準針嘴</option></select></label>` : ''}
-    <label>週期上限 <input type="number" data-opt="cycleLimit" value="${opt.cycleLimit ?? ''}" min="1" max="600" step="any" placeholder="不限"> s</label>
-    <label>膠量範圍 <input type="number" data-opt="dose0" value="${opt.dose[0]}" min="0.05" max="5" step="any"> – <input type="number" data-opt="dose1" value="${opt.dose[1]}" min="0.1" max="6" step="any"> × 間隙體積</label>
+    <label>膠量容差 ± <input type="number" data-opt="tolerance" value="${tolPct}" min="0" max="40" step="1" ${running ? 'disabled' : ''}> %</label>
+    ${kinds.some((t) => t !== 'point') ? knobSelect('path') : ''}
+    ${kinds.includes('point') ? knobSelect('point') : ''}
+    <label>週期上限 <input type="number" data-opt="cycleLimit" value="${opt.cycleLimit ?? ''}" min="1" max="600" step="any" placeholder="不限" ${running ? 'disabled' : ''}> s</label>
   </div>
+  <div class="opt-vars"><span class="opt-levels-title">搜尋變數</span>${vt.html}</div>
   <div class="opt-levels">
     <span class="opt-levels-title">搜尋精細度</span>
     <div class="levels" role="radiogroup" aria-label="搜尋精細度">${SEARCH_LEVELS.map(
-      (l) => `<button type="button" role="radio" data-level="${l.level}" aria-checked="${l.level === level.level}" class="${l.level === level.level ? 'active' : ''}" ${o.running ? 'disabled' : ''}><b>${l.level}．${l.name}</b><span>${estimateLabel(l)}</span></button>`,
+      (l) => `<button type="button" role="radio" data-level="${l.level}" aria-checked="${l.level === level.level}" class="${l.level === level.level ? 'active' : ''}" ${running ? 'disabled' : ''}><b>${l.level}．${l.name}</b><span>${estimateLabel(l)}</span></button>`,
     ).join('')}</div>
-    ${o.running ? '' : `<button class="primary" id="opt-run">${ICONS.spark}<span>${r ? '重新搜尋' : '開始搜尋'}</span></button>`}
+    ${running ? '' : `<button class="primary" id="opt-run" ${vt.total > 3000 ? 'disabled' : ''}>${ICONS.spark}<span>${r ? '重新搜尋' : '開始搜尋'}</span></button>`}
   </div>
   <p class="muted small-note">${esc(level.name)}：${levelPlanText(plan)}；${POOL_SIZE} 個執行緒並行。時間依這台電腦試算一次後估計${S.optSpeed.runs ? `，並已依前 ${S.optSpeed.runs} 次搜尋的實際時間校正` : '；第一次搜尋完成後會依實際時間自動校正'}，實際仍會隨夾氣多寡與膠量差 ±30–50%。</p>
   ${
-    o.running
+    running
       ? `<div class="opt-run"><div class="progress"><i style="width:${(o.progress || 0) * 100}%"></i></div><div class="opt-run-row"><span id="opt-status">${esc(o.label || '準備中…')}</span><span id="opt-time" class="mono">${optTimeText(o)}</span><button class="stop-btn" id="opt-cancel">${ICONS.stop}<span>停止搜尋</span></button></div><p class="muted small-note">停止後會保留已完成的部分結果；標示「未複核」的列尚未以細網格在容差內確認。</p></div>`
       : ''
   }
-  <p class="muted small-note">容差代表量產時膠量的正常漂移（時間壓力式常見 ±5–10%，容積式較小）。膠量調整方式與左上「膠量列」共用。${c.mode === 'pattern' ? '針嘴內徑影響出膠量與膠條品質：以「移動速度 ÷ 針嘴出膠速度」檢查是否被拉細或堆疊（0.7–1.5 為 AI 初估的良好範圍）；膠條截面的高寬由針嘴離面高度決定。' : c.mode === 'point' ? '單點的膠量由開膠時間與壓力決定；落點與大小請同時確認針距（太低會把膠點壓扁或埋針）。' : ''}</p>
+  <p class="muted small-note">容差代表量產時膠量的正常漂移（時間壓力式常見 ±5–10%，容積式較小）。膠量調整方式與左上「膠量列」共用。針嘴內徑影響出膠量與膠條品質：以「移動速度 ÷ 針嘴出膠速度」檢查是否被拉細或堆疊（0.7–1.5 為 AI 初估的良好範圍）；膠條截面的高寬由針嘴離面高度決定。單點的落點在熱源中心（目前路徑就是單點時用目前點位）。</p>
   ${o.error ? `<p class="note warn-note">${esc(o.error)}</p>` : ''}
   ${o.stopped ? `<p class="note warn-note">已停止搜尋（${clockText(o.elapsed)}，完成 ${r.evaluations} 次試算）。以下是停止前的部分結果；標示「未複核」或「只篩選」的列尚未完成，不能當作最終建議。</p>` : ''}
   ${
@@ -1584,47 +1704,70 @@ function renderOptimize() {
           best
             ? `<div class="opt-best ${best.pass ? 'pass' : 'fail'}"><b>${best.pass ? '建議設定' : best.coarsePass ? '粗網格達標、尚未複核' : best.screenedOnly ? '目前領先（只完成篩選，尚未找窗口與複核）' : '最接近的取捨'}</b><span>${geoText(best)}${doseText(best)} → 標稱 ${fmt(best.depositedMl, 3)} mL（${fmt(best.depositedMl * o.config.density, 3)} g，${fmt(best.volumeRatio, 2)}×）</span><span>${
                 best.worst ? `膠量 ±${tolPct}% 內（${r.band} 點）：覆蓋 ≥ ${fmt(best.worst.coveredPercent, 1)}%、溢膠 ≤ ${fmt(best.worst.squeezeOutMm, 1)} mm` : `標稱：覆蓋 ${fmt(best.coveredPercent, 1)}%、溢膠 ${fmt(best.squeezeOutMm, 1)} mm`
-              }；週期 ${fmt(best.cycle, 1)} s${best.bead.speedRatio !== null || best.bead.drags ? `；${base.mode === 'point' ? '膠點' : '膠條'} ${beadCell(best.bead)}` : ''}${best.bead.state !== 'ok' && best.bead.state !== 'n/a' ? `（匹配內徑約 ${fmt(best.bead.matchedId, 2)} mm）` : ''}</span>${
-                best.fallback ? `<span class="warn">${r.knob.label}已到範圍極限，改以${motion.label}達到膠量（${fmt(o.config[motion.key], motion.digits)} → ${mv(best)}）。</span>` : ''
+              }；週期 ${fmt(best.cycle, 1)} s${best.bead.speedRatio !== null || best.bead.drags ? `；${geometryWord(best)} ${beadCell(best.bead)}` : ''}${best.bead.state !== 'ok' && best.bead.state !== 'n/a' ? `（匹配內徑約 ${fmt(best.bead.matchedId, 2)} mm）` : ''}</span>${
+                best.fallback ? `<span class="warn">${knobOfRow(best).label}已到範圍極限，改以${motionOfRow(best).label}達到膠量（${fmt(best[motionOfRow(best).key] ?? o.config[motionOfRow(best).key], motionOfRow(best).digits)} → ${mv(best)}）。</span>` : ''
               }${best.fCovAtMin ? `<span class="warn">覆蓋在膠量範圍下限 ${fmt(r.dose[0], 2)}× 就已達標，真正的最少膠量可能更低：可把膠量範圍下限調低後再搜尋。</span>` : ''}${
                 !(best.depositedMl > 1e-9)
-                  ? `<span class="warn">這組設定不會有膠沉積到工件${base.mode !== 'point' && base.shutoffDistance > 0 ? `（提前關膠 ${base.shutoffDistance} mm 是否 ≥ 路徑長？）` : ''}；請先檢查路徑與收尾設定。</span>`
+                  ? `<span class="warn">這組設定不會有膠沉積到工件${best.mode !== 'point' && o.config.shutoffDistance > 0 ? `（提前關膠 ${o.config.shutoffDistance} mm 是否 ≥ 路徑長？）` : ''}；請先檢查路徑與收尾設定。</span>`
                   : best.pass || best.coarsePass
                     ? ''
                     : best.fCov !== null && best.fOvf !== null && best.fCov > best.fOvf
-                      ? `<span class="warn">兩個目標互相衝突：覆蓋 ${S.goals.coverage}% 需要 ≥ ${fmt(best.fCov, 2)}× 膠量，但溢膠 ≤ ${S.goals.overflow} mm 只允許 ≤ ${fmt(best.fOvf, 2)}×。請放寬溢膠上限或降低覆蓋目標${geometry ? '，或換圖樣' : '，或改用依熱源圖樣'}。</span>`
+                      ? `<span class="warn">兩個目標互相衝突：覆蓋 ${S.goals.coverage}% 需要 ≥ ${fmt(best.fCov, 2)}× 膠量，但溢膠 ≤ ${S.goals.overflow} mm 只允許 ≤ ${fmt(best.fOvf, 2)}×。請放寬溢膠上限或降低覆蓋目標，或搜尋其他圖樣。</span>`
                       : best.fCov === null && !best.screenedOnly
-                        ? `<span class="warn">在膠量範圍與設備限制內都達不到覆蓋 ${S.goals.coverage}%：請提高膠量上限、降低覆蓋目標${geometry ? '或換圖樣' : '，或改用依熱源圖樣（單點／直線難以鋪滿大熱源）'}。</span>`
+                        ? `<span class="warn">在膠量範圍與設備限制內都達不到覆蓋 ${S.goals.coverage}%：請提高膠量上限、降低覆蓋目標，或搜尋其他圖樣（單點、中心線難以鋪滿大熱源）。</span>`
                         : best.fOvf === null && !best.screenedOnly
-                          ? `<span class="warn">膠量範圍下限（${fmt(r.dose[0], 2)}×）的溢膠就已超過 ${S.goals.overflow} mm：${geometry ? '請加大邊界內縮、放寬溢膠上限或降低膠量下限' : base.mode === 'line' ? '直線可能比熱源長（兩端露出熱源），請縮短直線、放寬溢膠上限或降低膠量下限' : '請確認點位在熱源中心、放寬溢膠上限或降低膠量下限'}。</span>`
+                          ? `<span class="warn">膠量範圍下限（${fmt(r.dose[0], 2)}×）的溢膠就已超過 ${S.goals.overflow} mm：${best.mode === 'pattern' ? '請加大邊界內縮、放寬溢膠上限或降低膠量下限' : best.mode === 'line' ? '直線可能比熱源長（兩端露出熱源），請縮短直線、放寬溢膠上限或降低膠量下限' : '請確認點位在熱源中心、放寬溢膠上限或降低膠量下限'}。</span>`
                           : best.screenedOnly
                             ? ''
                             : `<span class="warn">膠量窗口不足 ±${tolPct}%，或在細網格複核時沒有全部達標、設備或週期限制未達；量產漂移時可能超出目標。</span>`
               }</div>`
             : ''
         }
-      <p class="note">${esc(o.describe)}　需求 ${fmt(r.required, 3)} mL；${esc(levelOf(r.level ?? 2).name)}：試算 ${r.evaluations} 次（${fmt(r.searchCell, 2)} mm 網格篩選與找窗口，${fmt(r.verifyCell, 2)} mm 網格在 ${r.band} 個膠量複核）${o.elapsed ? `，耗時 ${clockText(o.elapsed)}` : ''}。</p>
+      <p class="note">${esc(o.describe)}　需求 ${fmt(r.required, 3)} mL；${esc(levelOf(r.level ?? 2).name)}：${r.plan?.geometries ?? '—'} 組幾何，試算 ${r.evaluations} 次（${fmt(r.searchCell, 2)} mm 網格篩選與找窗口，${fmt(r.verifyCell, 2)} mm 網格在 ${r.band} 個膠量複核）${o.elapsed ? `，耗時 ${clockText(o.elapsed)}` : ''}。</p>
       ${anyPass || o.stopped ? '' : '<p class="note warn-note">沒有設定在膠量容差內同時達到兩個目標；下表依差距排序。</p>'}
-      <div class="table-scroll"><table class="cmp opt"><thead><tr><th>#</th><th>判定</th>${pitched ? '<th>間距<br><small>mm</small></th>' : ''}${geometry ? '<th>內縮<br><small>mm</small></th><th>針嘴</th>' : ''}<th>標稱膠量<br><small>mL（×需求）</small></th><th>可行窗口<br><small>×需求</small></th><th>${r.knob.id === 'drive' ? `${r.knob.label}<br><small>${r.knob.unit}／${motion.label}</small>` : `${motion.label}<br><small>${motion.unit}</small>`}</th><th>覆蓋<br><small>%</small></th><th>溢出<br><small>mm</small></th><th>夾氣<br><small>處 / mm²</small></th><th>週期<br><small>s</small></th><th>${base.mode === 'point' ? '膠點' : '膠條'}</th><th></th></tr></thead><tbody>
+      <div class="table-scroll"><table class="cmp opt"><thead><tr><th>#</th><th>判定</th>${showType ? '<th>圖樣</th>' : ''}${showDir ? '<th>螺旋起點</th>' : ''}${showSpacing ? '<th>間距<br><small>mm</small></th>' : ''}${showInset ? '<th>內縮<br><small>mm</small></th>' : ''}${showSpeed ? '<th>設定速度<br><small>mm/s</small></th>' : ''}${showInset ? '<th>針嘴</th>' : ''}<th>標稱膠量<br><small>mL（×需求）</small></th><th>可行窗口<br><small>×需求</small></th><th>${rows.length ? knobHeader() : ''}</th><th>覆蓋<br><small>%</small></th><th>溢出<br><small>mm</small></th><th>夾氣<br><small>處 / mm²</small></th><th>週期<br><small>s</small></th><th>膠條／膠點</th><th></th></tr></thead><tbody>
       ${rows
         .map(
           (x, i) =>
-            `<tr class="${i === 0 && x.pass ? 'top' : ''}"><td>${i + 1}</td><td>${rowVerdict(x)}${!x.reached ? '<br><small class="warn">設備範圍內達不到膠量</small>' : ''}${!x.cycleOk ? '<br><small class="warn">超過週期上限</small>' : ''}</td>${pitched ? `<td>${x.spacing}</td>` : ''}${geometry ? `<td>${x.edgeInset}</td><td>${esc(needleLabel(x.diameter))}</td>` : ''}<td>${fmt(x.depositedMl, 3)} <small>(${fmt(x.volumeRatio, 2)}×)</small></td><td>${windowCell(x)}</td><td>${knobCell(x)}</td><td>${pair(x.coveredPercent, x.worst?.coveredPercent, 1)}</td><td>${pair(x.squeezeOutMm, x.worst?.squeezeOutMm, 1)}</td><td>${x.voidCount} / ${fmt(x.voidAreaMm2, 1)}</td><td class="${x.cycleOk ? '' : 'warn'}">${fmt(x.cycle, 1)}</td><td>${beadCell(x.bead)}</td><td class="row-actions"><button class="chip-btn" data-opt-apply="${i}">套用</button><button class="chip-btn" data-opt-save="${i}">存成情境</button>${x.verified ? '' : `<small class="muted">${x.screenedOnly ? '只篩選' : '粗網格'}</small>`}</td></tr>`,
+            `<tr class="${i === 0 && x.pass ? 'top' : ''}"><td>${i + 1}</td><td>${rowVerdict(x)}${!x.reached ? '<br><small class="warn">設備範圍內達不到膠量</small>' : ''}${!x.cycleOk ? '<br><small class="warn">超過週期上限</small>' : ''}</td>${showType ? `<td>${typeText(x)}</td>` : ''}${showDir ? `<td>${x.type === 'spiral' ? DIRECTION_LABEL[x.spiralDirection] : '—'}</td>` : ''}${showSpacing ? `<td>${x.spacing ?? '—'}</td>` : ''}${showInset ? `<td>${x.mode === 'pattern' ? x.edgeInset : '—'}</td>` : ''}${showSpeed ? `<td>${x.mode === 'point' ? '—' : fmt(x.speed, x.speed < 10 ? 1 : 0)}</td>` : ''}${showInset ? `<td>${x.mode === 'pattern' ? esc(needleLabel(x.diameter)) : '—'}</td>` : ''}<td>${fmt(x.depositedMl, 3)} <small>(${fmt(x.volumeRatio, 2)}×)</small></td><td>${windowCell(x)}</td><td>${knobCell(x)}</td><td>${pair(x.coveredPercent, x.worst?.coveredPercent, 1)}</td><td>${pair(x.squeezeOutMm, x.worst?.squeezeOutMm, 1)}</td><td>${x.voidCount} / ${fmt(x.voidAreaMm2, 1)}</td><td class="${x.cycleOk ? '' : 'warn'}">${fmt(x.cycle, 1)}</td><td>${beadCell(x.bead)}</td><td class="row-actions"><button class="chip-btn" data-opt-apply="${i}">套用</button><button class="chip-btn" data-opt-save="${i}">存成情境</button>${x.verified ? '' : `<small class="muted">${x.screenedOnly ? '只篩選' : '粗網格'}</small>`}</td></tr>`,
         )
         .join('')}
       </tbody></table></div>
-      <p class="note">可行窗口：左＝達到覆蓋目標的最少膠量，右＝溢膠不超過上限的最多膠量；標稱膠量取左界 ÷ (1 − 容差)，並以細網格在容差內 ${r.band} 個膠量複核，全部達標才算「達標」。套用時網格會設成該列使用的網格，按「模擬壓合」可重現表中數值；請再以透明板在 −${tolPct}%／標稱／+${tolPct}% 各試一片。</p>`
+      <p class="note">可行窗口：左＝達到覆蓋目標的最少膠量，右＝溢膠不超過上限的最多膠量；標稱膠量取左界 ÷ (1 − 容差)，並以細網格在容差內 ${r.band} 個膠量複核，全部達標才算「達標」。「設定速度」是候選的移動速度，壓力到上限時實際速度會降低（見膠量設定欄）。套用時網格會設成該列使用的網格，按「模擬壓合」可重現表中數值；請再以透明板在 −${tolPct}%／標稱／+${tolPct}% 各試一片。</p>`
       : ''
   }`;
   bindGoals(body, renderOptimize);
 }
 $('#optimize-body').addEventListener('change', (e) => {
   const el = e.target;
+  if (el.dataset.var) {
+    // Search-variable ranges and path-type options.
+    const vars = optVars();
+    const spec = { ...vars[el.dataset.var] };
+    if (el.dataset.bound) {
+      if (el.value.trim() && !(Number(el.value) >= 0)) return toast('請輸入大於 0 的數值', 'error');
+      spec[el.dataset.bound] = el.value.trim() ? Number(el.value) : null;
+      if (spec.min != null && spec.max != null && spec.min > spec.max) [spec.min, spec.max] = [spec.max, spec.min];
+    }
+    if (el.dataset.option) {
+      const set = new Set(spec.options);
+      if (el.checked) set.add(el.dataset.option);
+      else set.delete(el.dataset.option);
+      if (!set.size) {
+        toast('至少要選一種圖樣', 'error');
+        return renderOptimize();
+      }
+      spec.options = SEARCH_PATTERNS.filter((t) => set.has(t));
+    }
+    S.optOptions = { ...S.optOptions, vars: { ...vars, [el.dataset.var]: spec } };
+    store.set('tim-opt', JSON.stringify(S.optOptions));
+    return renderOptimize();
+  }
   const k = el.dataset.opt;
   if (!k) return;
   if (k === 'knob') {
     // Shared with the dose bar.
-    S.dose = { ...S.dose, [S.config.mode === 'point' ? 'pointKnob' : 'knob']: el.value };
+    S.dose = { ...S.dose, [el.dataset.kind === 'point' ? 'pointKnob' : 'knob']: el.value };
     persistDose();
     renderDose();
     requestCalibration();
@@ -1653,6 +1796,8 @@ async function runOptimize() {
   const heat = { ...S.heat };
   const pattern = { ...S.pattern };
   const level = levelOf(opt.level).level;
+  const total = planSearch(config, heat, optSearchOptions(level)).geometries;
+  if (total > 3000) return toast(`組合太多（${total} 組），請減少搜尋變數或縮小範圍`, 'error');
   const pool = createPool(POOL_SIZE);
   const state = { running: true, progress: 0, label: '準備中…', startedAt: performance.now(), estimate: estimateFor(level), raw: estimateFor(level, { raw: true }), pool, partial: null };
   S.optimize = state;
@@ -1661,10 +1806,7 @@ async function runOptimize() {
   const meta = () => ({ config, heat, pattern, describe: describe(config, heat), elapsed: (performance.now() - state.startedAt) / 1000 });
   try {
     const result = await optimizeSettings(config, heat, {
-      ...opt,
-      level,
-      knob: knobFor(config.mode),
-      nozzle: config.mode === 'pattern' ? opt.nozzle : 'fixed',
+      ...optSearchOptions(level),
       goals: { ...S.goals },
       evaluate: (task) => pool.run('evaluate', task),
       onProgress: (progress, label) => {
@@ -1686,23 +1828,48 @@ async function runOptimize() {
   if ($('#optimize-dialog').open) renderOptimize();
   else if (S.optimize.result) toast(S.optimize.stopped ? '自動最佳化已停止，部分結果在「自動最佳化」中' : '自動最佳化完成，結果在「自動最佳化」中', 'ok');
 }
+const METRIC_KEYS = ['depositedMl', 'requiredMl', 'volumeRatio', 'coveredPercent', 'squeezeOutMm', 'voidCount', 'voidAreaMm2', 'rise', 'cycle', 'pressTime', 'airMode'];
+/** Settings of one result row: its path type and geometry, the tuned drive and motion, the grid it used. */
 function candidateEntry(x) {
   const o = S.optimize;
   const r = o.result;
-  const geometry = r.space.geometry;
-  const pattern = geometry ? { ...o.pattern, spacing: x.spacing, edgeInset: x.edgeInset } : { ...o.pattern };
-  const config = { ...o.config, ...x.settings };
-  if (geometry) config.pathSettings = { ...o.config.pathSettings, spacing: x.spacing, edgeInset: x.edgeInset };
-  const { spacing, edgeInset, diameter, factor, knobValue, settings, reached, fallback, cycleOk, bead, fCov, fOvf, fCovAtMin, margin, robust, worst, verified, screenedOnly, pass, coarsePass, short, over, deficit, ...metrics } = x;
+  const mode = x.mode || o.config.mode;
+  const config = { ...o.config, ...x.settings, mode };
+  let pattern = { ...o.pattern };
+  if (mode === 'pattern') {
+    const geo = { pattern: x.pattern ?? pattern.pattern, spacing: x.spacing ?? pattern.spacing, edgeInset: x.edgeInset ?? pattern.edgeInset, spiralDirection: x.spiralDirection ?? pattern.spiralDirection };
+    pattern = { ...pattern, ...geo };
+    config.pathSettings = { ...o.config.pathSettings, ...geo };
+  } else delete config.pathSettings;
+  // A dot that replaced another path type was searched at the heat-source centre.
+  if (mode === 'point' && o.config.mode !== 'point') {
+    config.offsetX = o.heat.offsetX ?? 0;
+    config.offsetY = o.heat.offsetY ?? 0;
+  }
+  const metrics = Object.fromEntries(METRIC_KEYS.map((k) => [k, x[k]]));
   // The grid the row was computed on, so that "模擬壓合" reproduces it.
-  const heat = { ...o.heat, cellSize: verified ? r.verifyCell : r.searchCell };
-  return { config, heat, pattern, metrics, source: verified ? `自動最佳化・${levelOf(r.level ?? 2).name}（已複核）` : o.stopped ? '自動最佳化（未完成）' : '自動最佳化（粗網格）' };
+  const heat = { ...o.heat, cellSize: x.verified ? r.verifyCell : r.searchCell };
+  return { config, heat, pattern, metrics, source: x.verified ? `自動最佳化・${levelOf(r.level ?? 2).name}（已複核）` : o.stopped ? '自動最佳化（未完成）' : '自動最佳化（粗網格）' };
 }
+const rowSummary = (x) =>
+  [
+    x.mode === 'pattern' ? `${PATTERN_NAMES[x.pattern] || ''}${x.type === 'spiral' ? `（${DIRECTION_LABEL[x.spiralDirection]}）` : ''}` : x.mode === 'point' ? '單點' : '直線',
+    x.spacing != null && x.mode === 'pattern' && (x.type === 'serpentine' || x.type === 'spiral') ? `間距 ${x.spacing} mm` : '',
+    x.mode === 'pattern' ? `內縮 ${x.edgeInset} mm、針嘴 ${needleLabel(x.diameter)}` : '',
+  ]
+    .filter(Boolean)
+    .join('、');
 $('#optimize-body').addEventListener('click', (e) => {
   const el = e.target.closest('button');
   if (!el) return;
   if (el.dataset.level) {
     S.optOptions = { ...S.optOptions, level: Number(el.dataset.level) };
+    store.set('tim-opt', JSON.stringify(S.optOptions));
+    return renderOptimize();
+  }
+  if (el.dataset.var && el.dataset.search !== undefined) {
+    const vars = optVars();
+    S.optOptions = { ...S.optOptions, vars: { ...vars, [el.dataset.var]: { ...vars[el.dataset.var], search: el.dataset.search === '1' } } };
     store.set('tim-opt', JSON.stringify(S.optOptions));
     return renderOptimize();
   }
@@ -1724,8 +1891,8 @@ $('#optimize-body').addEventListener('click', (e) => {
       $('#optimize-dialog').close();
       markPressStale();
       const motion = motionOf(entry.config.mode);
-      const geo = r.space.geometry ? `${r.space.pitched ? `間距 ${x.spacing} mm、` : ''}內縮 ${x.edgeInset} mm、針嘴 ${needleLabel(x.diameter)}、` : '';
-      toast(`已套用：${geo}${r.knob.id === 'drive' ? `${r.knob.label} ${fmt(x.knobValue, 0)} ${r.knob.unit}、` : ''}${motion.label} ${fmt(x.settings[motion.key], motion.digits)} ${motion.unit}${gridChanged ? `；網格設為 ${entry.heat.cellSize} mm（與這列結果相同）` : ''}`, 'ok');
+      const k = x.knobInfo || r.knob;
+      toast(`已套用：${rowSummary(x)}、${k.id === 'drive' ? `${k.label} ${fmt(x.knobValue, 0)} ${k.unit}、` : ''}${motion.label} ${fmt(x.settings[motion.key], motion.digits)} ${motion.unit}${gridChanged ? `；網格設為 ${entry.heat.cellSize} mm（與這列結果相同）` : ''}`, 'ok');
     }
   }
 });
@@ -1864,6 +2031,7 @@ $('#help-body').innerHTML = `
   <li><b>播放</b>：空白鍵播放／暫停；拖曳時間軸或點曲線跳到該時刻；時間軸上的標記可跳到關膠、到位、抬針、退離。</li>
   <li><b>模擬壓合</b>：結果卡的「模擬壓合」顯示透明板以定力壓到墊片、膠膜擴散、氣泡（紅色）壓縮／遷移／排出與靜置後回脹；可切換「前緣時序」著色。</li>
   <li><b>上方工具列</b>：「圖樣比較」在等膠量下比較各熱源圖樣（膠量用膠量列的調整方式）；「自動最佳化」搜尋膠量 ±容差（預設 ±10%）內都達標、膠量最少的設定——依熱源圖樣會一併搜尋間距（蛇形／螺旋）、邊界內縮與針嘴，直線與單點只搜尋膠量；「情境比較」一次比較所有存下的情境。</li>
+  <li><b>搜尋變數</b>：自動最佳化的「搜尋變數」表裡，每個變數都可選「固定（用目前設定）」或「搜尋」——圖樣種類（蛇形、螺旋、單點、中心線，可勾選）、路徑間距、邊界內縮、螺旋起點（外向內／中心向外）、移動速度（膠量仍由壓力調）；範圍留空為自動，也可自己輸入。膠量一定搜尋。表下方顯示總組合數；每種圖樣的最佳組都會找膠量窗口，方便比較。搜尋速度時建議設定週期上限，否則排序只看膠量。</li>
   <li><b>最佳化精細度</b>：快速／標準／精細／極精細四級，越精細候選越多、找窗口與複核的組數越多、網格越細；選級時會依這台電腦試算一次估出時間。搜尋分散在多個執行緒並行；搜尋中可按「停止搜尋」，會保留已完成的部分結果（標示「未複核」者不能當最終建議）。只有在細網格、容差內多個膠量都達標的結果才算「達標」；套用時網格會設成該結果使用的網格。</li>
   <li><b>情境</b>：覺得不錯的參數按結果卡的「存成情境」（未壓合會自動先算），再改參數繼續試；「情境比較」依「覆蓋 ≥ 目標、溢膠 ≤ 上限、膠量最少」排序，可載入、改名、刪除、匯出 CSV／JSON。情境存在這台電腦的瀏覽器。</li>
   <li><b>針嘴與膠條</b>：同樣每 mm 膠量下，膠條的高與寬由針嘴離面高度決定；針嘴內徑決定出膠量與膠條品質。結果卡的「移動速度 ÷ 出膠速度」0.7–1.5 視為良好，偏大代表膠條被拉細，偏小代表堆疊；匹配內徑 ≈ √(4 × 每 mm 膠量 / π)。</li>

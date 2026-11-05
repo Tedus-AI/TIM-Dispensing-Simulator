@@ -216,3 +216,76 @@ test('dose tuning: secant search reaches 0.1 % in a few simulations, range ends 
   const t = tuneForVolume(pcp, floor * 0.3);
   assert.ok(!t.reached && t.config.speed < 300 && Math.abs(t.run.summary.deposited / floor - 1) < 3e-3, `${t.config.speed}`);
 });
+
+test('search variables: path types, spiral start and travel speed, each fixed or searched', async () => {
+  const { SEARCH_PATTERNS, speedCount, planSearch } = await import('../src/optimize.js');
+  const heat = { shape: 'rectangle', width: 30, depth: 30, offsetX: 0, offsetY: 0, gap: 0.5, cellSize: 0.5, power: 10, ...PRESS_DEFAULTS };
+  const config = { ...fromRegistry(registry, 'grease'), mode: 'pattern', speed: 20, pathSettings: { ...heat, pattern: 'serpentine', spacing: 5, edgeInset: 2, spiralShape: 'auto', spiralDirection: 'outside-in' } };
+  // Defaults: as before v1.6, only pitch and inset of the current pattern.
+  const plain = searchSpace(config, heat, 5);
+  assert.deepEqual(plain.types, ['serpentine']);
+  assert.ok(plain.geometries.every((g) => g.type === 'serpentine' && g.speed === 20 && g.spiralDirection === 'outside-in'));
+  assert.equal(plain.geometries.length, plain.spacings.length * plain.insets.length);
+  // All four path types, spiral start and speed searched.
+  const vars = { pattern: { search: true, options: SEARCH_PATTERNS }, spiralDirection: { search: true }, speed: { search: true, min: 10, max: 40 } };
+  const s = searchSpace(config, heat, 5, vars, 'drive');
+  const count = (t) => s.geometries.filter((g) => g.type === t).length;
+  const speeds = new Set(s.geometries.filter((g) => g.mode !== 'point').map((g) => g.speed));
+  assert.equal(speeds.size, speedCount(5));
+  assert.ok([...speeds].every((v) => v >= 10 && v <= 40) && speeds.has(10) && speeds.has(40), [...speeds].join());
+  assert.equal(count('point'), 1);
+  assert.equal(count('line'), s.insets.length * speeds.size);
+  assert.equal(count('serpentine'), s.spacings.length * s.insets.length * speeds.size);
+  assert.equal(count('spiral'), 2 * count('serpentine'));
+  assert.ok(s.varies.pattern && s.varies.spiralDirection && s.varies.speed);
+  assert.ok(s.geometries.filter((g) => g.type === 'line' || g.type === 'point').every((g) => g.spacing == null));
+  assert.equal(new Set(s.geometries.map((g) => g.key)).size, s.geometries.length, 'unique keys');
+  // Travel speed cannot be searched while it is the dose knob.
+  const locked = searchSpace(config, heat, 5, vars, 'motion');
+  assert.ok(locked.speedLocked && !locked.varies.speed && locked.geometries.every((g) => g.mode === 'point' || g.speed === 20));
+  // Fixed variables keep the current setting; a user range replaces the automatic one (no current value added).
+  const fixed = searchSpace(config, heat, 5, { spacing: { search: false }, inset: { search: true, min: 3, max: 5 } });
+  assert.deepEqual(fixed.spacings, [5]);
+  assert.ok(fixed.insets.every((v) => v >= 3 && v <= 5) && !fixed.insets.includes(2));
+  // The plan counts every geometry and gives each extra path type its own dose window.
+  const plan = planSearch(config, heat, { level: 2, vars, knob: 'drive' });
+  assert.equal(plan.geometries, s.geometries.length);
+  assert.equal(plan.keep, 4 + 3);
+});
+
+test('a search across path types gives every type a dose window; a dot uses its own dose knob', async () => {
+  const heat = { shape: 'rectangle', width: 14, depth: 14, offsetX: 3, offsetY: -2, gap: 0.5, cellSize: 1, power: 10, ...PRESS_DEFAULTS, airMode: 'vent' };
+  const config = { ...fromRegistry(registry, 'grease'), mode: 'pattern', speed: 10, offsetX: 40, offsetY: 30, pathSettings: { ...heat, pattern: 'serpentine', spacing: 3, edgeInset: 2, spiralShape: 'auto', spiralDirection: 'outside-in' } };
+  const vars = { pattern: { search: true, options: ['serpentine', 'spiral', 'point', 'line'] }, spacing: { search: false }, inset: { search: false }, spiralDirection: { search: true } };
+  const r = await optimizeSettings(config, heat, { goals: { coverage: 80, overflow: 6 }, vars, knob: 'drive', pointKnob: 'motion', searchCell: 1, keep: 1, verify: 1, bisections: 2 });
+  assert.deepEqual(r.types, ['serpentine', 'spiral', 'point', 'line']);
+  for (const t of r.types) assert.ok(r.candidates.some((c) => c.type === t && !c.screenedOnly), `${t} has a window`);
+  assert.ok(r.candidates.some((c) => c.type === 'spiral' && c.spiralDirection === 'inside-out'));
+  const dot = r.candidates.find((c) => c.type === 'point');
+  assert.equal(dot.knobInfo.key, 'gateDuration');
+  assert.equal(dot.motionInfo.key, 'gateDuration');
+  const serp = r.candidates.find((c) => c.type === 'serpentine');
+  assert.equal(serp.knobInfo.key, 'pressure');
+  assert.ok(r.best.verified, 'the leader is checked on the final grid');
+  // The dot of a pattern search is placed at the heat-source centre.
+  const { evaluateTask } = await import('../src/optimize.js');
+  let seen = null;
+  await optimizeSettings(config, heat, {
+    goals: { coverage: 80, overflow: 6 },
+    vars: { ...vars, pattern: { search: true, options: ['point'] } },
+    pointKnob: 'motion',
+    searchCell: 1,
+    keep: 1,
+    verify: 0,
+    bisections: 1,
+    evaluate: async (task) => {
+      seen = task.config;
+      try {
+        return evaluateTask(task);
+      } catch {
+        return null;
+      }
+    },
+  });
+  assert.ok(seen.mode === 'point' && seen.offsetX === 3 && seen.offsetY === -2 && !seen.pathSettings);
+});

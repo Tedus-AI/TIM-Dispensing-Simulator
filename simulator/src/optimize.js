@@ -135,21 +135,107 @@ function resolve(heat, options) {
   return o;
 }
 
+// Path types the search can switch between, and the labels used in progress messages and tables.
+export const SEARCH_PATTERNS = Object.freeze(['serpentine', 'spiral', 'point', 'line']);
+export const TYPE_LABEL = Object.freeze({ serpentine: '蛇形', spiral: '螺旋', line: '中心線', n: 'N 形', perimeter: '外框', point: '單點', straight: '直線' });
+export const DIRECTION_LABEL = Object.freeze({ 'outside-in': '外向內', 'inside-out': '中心向外' });
+const PITCHED = new Set(['serpentine', 'spiral']);
+// Default search variables: pitch and inset searched (as before v1.6), everything else fixed at the current setting.
+export const VARS_DEFAULT = Object.freeze({
+  pattern: { search: false, options: [...SEARCH_PATTERNS] },
+  spacing: { search: true, min: null, max: null },
+  inset: { search: true, min: null, max: null },
+  spiralDirection: { search: false },
+  speed: { search: false, min: null, max: null },
+});
+const typeOf = (config) => (config.mode === 'pattern' ? config.pathSettings?.pattern : config.mode === 'point' ? 'point' : 'straight');
+const shortSide = (heat) => Math.min(heat.width, heat.shape === 'circle' ? heat.width : heat.depth);
+/** Heat-source path settings to start from when the current path is a line or a dot. */
+export function basePathSettings(config, heat) {
+  return config.pathSettings ?? { shape: heat.shape, width: heat.width, depth: heat.depth, offsetX: heat.offsetX ?? 0, offsetY: heat.offsetY ?? 0, pattern: 'serpentine', spacing: Math.max(1.5, round(shortSide(heat) / 6, 0.5)), edgeInset: 2, spiralShape: 'auto', spiralDirection: 'outside-in' };
+}
+/** Automatic ranges (shown in the page; a user range replaces them). */
+export function autoRanges(config, heat) {
+  const short = shortSide(heat);
+  const s0 = Number(config.speed) > 0 ? config.speed : 20;
+  return {
+    spacing: [Math.max(1.5, short / 12), Math.max(Math.max(1.5, short / 12), short / 4)],
+    inset: [1, Math.max(4, short / 5)],
+    speed: [Math.max(1, s0 / 4), Math.min(800, s0 * 2)],
+  };
+}
+const niceSpeed = (v) => (v < 10 ? round(v, 0.5) : v < 100 ? round(v, 1) : round(v, 5));
+export const speedCount = (n) => Math.max(3, Math.round(n / 2));
+
 /**
- * Geometry candidates: for serpentine and spiral the pitch (geometric steps between short/12 and short/4),
- * for every heat-source pattern the edge inset (1 mm up to max(4 mm, short/5)), each plus the current
- * value, rounded to 0.5 mm (0.25 mm below a 20 mm source). A line or a dot has no pattern geometry.
+ * Geometry candidates. Each geometry is one path type with its own values: pitch for serpentine and spiral,
+ * edge inset for every heat-source pattern, start direction for a spiral, travel speed for a moving path
+ * (not when travel speed is the dose knob). A variable that is not searched keeps the current setting.
+ * Searched ranges are automatic (pitch short/12–short/4 geometric, inset 1 mm–max(4 mm, short/5), speed
+ * ¼–2 × current, each plus the current value) unless a range is given; n candidates per range (speed
+ * max(3, n/2)), rounded to 0.5 mm (0.25 mm below a 20 mm source).
  */
-export function searchSpace(config, heat, n = 5) {
-  if (config.mode !== 'pattern') return { spacings: [null], insets: [null], pitched: false, geometry: false };
-  const p = config.pathSettings;
-  const short = Math.min(heat.width, heat.shape === 'circle' ? heat.width : heat.depth);
+export function searchSpace(config, heat, n = 5, vars = null, knob = 'drive') {
+  const v = { ...VARS_DEFAULT, ...(vars || {}) };
+  const p = basePathSettings(config, heat);
+  const short = shortSide(heat);
   const step = short >= 20 ? 0.5 : 0.25;
-  const pitched = p.pattern === 'serpentine' || p.pattern === 'spiral';
-  const lo = Math.max(1.5, short / 12);
-  const spacings = pitched ? unique([...spread(lo, Math.max(lo, short / 4), n, true), p.spacing].map((v) => round(v, step)).filter((v) => v >= 1.5 && v <= short / 2.5)) : [p.spacing];
-  const insets = unique([...spread(1, Math.max(4, short / 5), n, false), p.edgeInset].map((v) => round(v, step)).filter((v) => v >= 0 && v < short / 2 - 1));
-  return { spacings: spacings.length ? spacings : [p.spacing], insets: insets.length ? insets : [p.edgeInset], pitched, geometry: true };
+  const auto = autoRanges(config, heat);
+  const current = typeOf(config);
+  let types = v.pattern.search ? SEARCH_PATTERNS.filter((t) => (v.pattern.options || []).includes(t)) : [current];
+  if (!types.length) types = [current];
+  const ranged = (spec, [aLo, aHi], geometric, count, fix, keep, nice) => {
+    const user = spec.min != null || spec.max != null;
+    const lo = spec.min ?? aLo;
+    const hi = Math.max(lo, spec.max ?? aHi);
+    const values = spread(lo, hi, count, geometric).map(nice).filter(keep);
+    if (!user && keep(fix)) values.push(fix);
+    return unique(values);
+  };
+  const spacings = v.spacing.search
+    ? ranged(v.spacing, auto.spacing, true, n, p.spacing, (x) => x >= (v.spacing.min != null ? 0.5 : 1.5) && x <= (v.spacing.max != null ? short : short / 2.5), (x) => round(x, step))
+    : [p.spacing];
+  const insets = v.inset.search ? ranged(v.inset, auto.inset, false, n, p.edgeInset, (x) => x >= 0 && x < short / 2 - (v.inset.max != null ? 0 : 1), (x) => round(x, step)) : [p.edgeInset];
+  const directions = v.spiralDirection.search ? ['outside-in', 'inside-out'] : [p.spiralDirection || 'outside-in'];
+  const speedSearch = v.speed.search && knob !== 'motion';
+  const speeds = speedSearch ? ranged(v.speed, auto.speed, true, speedCount(n), config.speed, (x) => x >= 1 && x <= 800, niceSpeed) : [config.speed];
+  const sp = spacings.length ? spacings : [p.spacing];
+  const ins = insets.length ? insets : [p.edgeInset];
+  const geometries = [];
+  for (const type of types) {
+    if (type === 'point') {
+      geometries.push({ type, mode: 'point', key: 'point' });
+      continue;
+    }
+    for (const speed of speeds) {
+      if (type === 'straight') {
+        geometries.push({ type, mode: 'line', speed, key: `straight|${speed}` });
+        continue;
+      }
+      for (const spacing of PITCHED.has(type) ? sp : [null])
+        for (const edgeInset of ins)
+          for (const spiralDirection of type === 'spiral' ? directions : [p.spiralDirection || 'outside-in'])
+            geometries.push({ type, mode: 'pattern', pattern: type, spacing, edgeInset, spiralDirection, speed, key: [type, spacing, edgeInset, spiralDirection, speed].join('|') });
+    }
+  }
+  const patternTypes = types.filter((t) => t !== 'point' && t !== 'straight');
+  const pitched = types.some((t) => PITCHED.has(t));
+  return {
+    geometries,
+    types,
+    spacings: pitched ? sp : patternTypes.length ? [p.spacing] : [null],
+    insets: patternTypes.length ? ins : [null],
+    pitched,
+    geometry: patternTypes.length > 0,
+    varies: {
+      pattern: types.length > 1,
+      spacing: pitched && sp.length > 1,
+      inset: patternTypes.length > 0 && ins.length > 1,
+      spiralDirection: types.includes('spiral') && directions.length > 1,
+      speed: speedSearch && speeds.length > 1 && types.some((t) => t !== 'point'),
+    },
+    speedLocked: v.speed.search && knob === 'motion',
+  };
 }
 
 /** The setting that sets the dose: the drive (pressure / pump speed), or travel speed / gate time. */
@@ -212,13 +298,14 @@ export function squeezeMs(cal, cell) {
 /** How many evaluations a level runs at most (screening, dose windows, final check). */
 export function planSearch(config, heat, options = {}) {
   const o = resolve(heat, options);
-  const space = searchSpace(config, heat, o.candidates);
-  const geometries = space.spacings.length * space.insets.length;
-  const keep = Math.min(o.keep, geometries);
+  const space = searchSpace(config, heat, o.candidates, o.vars, o.knob);
+  const geometries = space.geometries.length;
+  // Besides the overall leaders, the best geometry of every path type gets a dose window.
+  const keep = Math.min(geometries, o.keep + Math.max(0, space.types.length - 1));
   const verify = Math.min(o.verify, keep);
   const screen = geometries * (o.screenDoses >= 2 ? 2 : 1);
   const window = keep * (3 + 2 * o.bisections);
-  return { level: o.level, geometries, keep, verify, band: o.band, screenDoses: o.screenDoses >= 2 ? 2 : 1, bisections: o.bisections, screen, window, coarse: screen + window, fine: verify * o.band, searchCell: o.searchCell, verifyCell: o.verifyCell };
+  return { level: o.level, geometries, types: space.types, keep, verify, band: o.band, screenDoses: o.screenDoses >= 2 ? 2 : 1, bisections: o.bisections, screen, window, coarse: screen + window, fine: verify * o.band, searchCell: o.searchCell, verifyCell: o.verifyCell };
 }
 
 /**
@@ -310,9 +397,13 @@ export async function optimizeSettings(config, heat, options = {}) {
   const required = (area * heat.gap) / 1000;
   const coarse = { ...heat, cellSize: o.searchCell, frames: 0 };
   const fine = { ...heat, cellSize: o.verifyCell, frames: 0 };
-  const knob = doseKnob(config, o.knob);
-  const motion = { key: motionKeyOf(config), label: config.mode === 'point' ? '開膠時間' : '移動速度', unit: config.mode === 'point' ? 's' : 'mm/s' };
-  const space = searchSpace(config, heat, o.candidates);
+  // The dose knob of a geometry follows its path type: a dot has its own (gate time by default).
+  const knobOf = (mode) => doseKnob({ ...config, mode }, mode === 'point' ? (o.pointKnob ?? o.knob) : o.knob);
+  const motionOf = (mode) => ({ key: mode === 'point' ? 'gateDuration' : 'speed', label: mode === 'point' ? '開膠時間' : '移動速度', unit: mode === 'point' ? 's' : 'mm/s' });
+  const knob = knobOf(config.mode);
+  const motion = motionOf(config.mode);
+  const space = searchSpace(config, heat, o.candidates, o.vars, o.knob);
+  const basePath = basePathSettings(config, heat);
   const plan = planSearch(config, heat, o);
   const run =
     o.evaluate ??
@@ -328,20 +419,41 @@ export async function optimizeSettings(config, heat, options = {}) {
   const mid = Math.min(dose[1], Math.max(dose[0], screenDoses[0] / (1 - tol)));
   const bandFactors = o.band >= 5 ? [-1, -0.5, 0, 0.5, 1] : [-1, 0, 1];
 
-  const geometries = space.spacings.flatMap((spacing) =>
-    space.insets.map((edgeInset) => {
-      let diameter = config.diameter;
-      if (o.nozzle === 'match' && space.geometry) {
-        const length = planDispensePath({ ...config.pathSettings, spacing, edgeInset }).length;
-        diameter = nearestNeedle(Math.sqrt((4 * ((required * 1000 * mid) / length)) / Math.PI)).id;
-      }
-      return { spacing, edgeInset, diameter };
-    }),
-  );
-  const describeGeometry = (g) =>
-    space.geometry ? `${space.pitched ? `間距 ${g.spacing} mm、` : ''}內縮 ${g.edgeInset} mm${o.nozzle === 'match' ? `、針嘴 ${needleLabel(g.diameter)}` : ''}` : config.mode === 'point' ? '單點膠量' : '直線膠量';
-  const configFor = (g) =>
-    space.geometry ? { ...config, diameter: g.diameter, pathSettings: { ...config.pathSettings, spacing: g.spacing, edgeInset: g.edgeInset } } : { ...config, diameter: g.diameter };
+  const pathOf = (g) => ({ ...basePath, pattern: g.pattern, spacing: g.spacing ?? basePath.spacing, edgeInset: g.edgeInset, spiralDirection: g.spiralDirection });
+  const geometries = space.geometries.map((g) => {
+    let diameter = config.diameter;
+    if (o.nozzle === 'match' && g.mode === 'pattern') {
+      const length = planDispensePath(pathOf(g)).length;
+      diameter = nearestNeedle(Math.sqrt((4 * ((required * 1000 * mid) / length)) / Math.PI)).id;
+    }
+    return { ...g, diameter };
+  });
+  const describeGeometry = (g) => {
+    if (!space.geometry && !space.varies.pattern) return `${g.mode === 'point' ? '單點膠量' : '直線膠量'}${space.varies.speed ? `、${g.speed} mm/s` : ''}`;
+    return [
+      space.varies.pattern || g.mode !== 'pattern' ? TYPE_LABEL[g.type] : '',
+      space.varies.spacing && g.spacing != null ? `間距 ${g.spacing} mm` : '',
+      g.mode === 'pattern' ? `內縮 ${g.edgeInset} mm` : '',
+      space.varies.spiralDirection && g.type === 'spiral' ? DIRECTION_LABEL[g.spiralDirection] : '',
+      space.varies.speed && g.mode !== 'point' ? `${g.speed} mm/s` : '',
+      o.nozzle === 'match' && g.mode === 'pattern' ? `針嘴 ${needleLabel(g.diameter)}` : '',
+    ]
+      .filter(Boolean)
+      .join('、');
+  };
+  // A dot that replaces another path type sits at the heat-source centre; a dot that is the current path
+  // keeps its place.
+  const configFor = (g) => {
+    const c = { ...config, mode: g.mode, diameter: g.diameter };
+    if (g.speed != null) c.speed = g.speed;
+    if (g.mode === 'pattern') c.pathSettings = pathOf(g);
+    else delete c.pathSettings;
+    if (g.mode === 'point' && config.mode !== 'point') {
+      c.offsetX = heat.offsetX ?? 0;
+      c.offsetY = heat.offsetY ?? 0;
+    }
+    return c;
+  };
 
   // Progress counts an evaluation on the final grid as costlier than one on the search grid.
   const costRatio = o.costRatio ?? (o.searchCell / o.verifyCell) ** 3;
@@ -350,19 +462,22 @@ export async function optimizeSettings(config, heat, options = {}) {
   let evaluations = 0;
   const cache = new Map();
   const evaluate = (g, f, h, stage) => {
-    const key = `${g.spacing}|${g.edgeInset}|${g.diameter}|${f.toFixed(5)}|${h.cellSize}`;
-    if (!cache.has(key))
+    const key = `${g.key}|${g.diameter}|${f.toFixed(5)}|${h.cellSize}`;
+    if (!cache.has(key)) {
+      const k = knobOf(g.mode);
       cache.set(
         key,
-        run({ config: configFor(g), heat: h, target: required * f, knob: knob.id }).then((r) => {
+        run({ config: configFor(g), heat: h, target: required * f, knob: k.id }).then((r) => {
           evaluations++;
           done += h === fine ? costRatio : 1;
           o.onProgress?.(Math.min(0.99, done / budget), `${stage}：${describeGeometry(g)}`);
-          return r ? { ...g, factor: f, knobValue: r.settings[knob.key], cycleOk: !(o.cycleLimit > 0) || r.cycle <= o.cycleLimit, ...r } : null;
+          return r ? { ...g, factor: f, knobValue: r.settings[k.key], knobInfo: k, motionInfo: motionOf(g.mode), cycleOk: !(o.cycleLimit > 0) || r.cycle <= o.cycleLimit, ...r } : null;
         }),
       );
+    }
     return cache.get(key);
   };
+  const geoOf = (c) => geometries.find((g) => g.key === c.key && g.diameter === c.diameter);
 
   const feasible = (r) => r.reached && r.cycleOk;
   const order = (a, b) => {
@@ -386,7 +501,7 @@ export async function optimizeSettings(config, heat, options = {}) {
       const j = judge(c.worst || c, goals);
       return { ...c, ...j, pass: isPass(c), coarsePass: !c.verified && Boolean(c.robust) && feasible(c) };
     });
-    return { goals, tolerance: tol, knob, motion, nozzle: space.geometry ? o.nozzle : 'fixed', cycleLimit: o.cycleLimit, required, dose, space, plan, level: o.level, searchCell: o.searchCell, verifyCell: o.verifyCell, band: bandFactors.length, evaluations, candidates: list, best: list[0], complete };
+    return { goals, tolerance: tol, knob, motion, types: space.types, nozzle: space.geometry ? o.nozzle : 'fixed', cycleLimit: o.cycleLimit, required, dose, space, plan, level: o.level, searchCell: o.searchCell, verifyCell: o.verifyCell, band: bandFactors.length, evaluations, candidates: list, best: list[0], complete };
   };
   const screenedRow = (s) => ({ ...rank(s.pts, goals)[0], fCov: null, fOvf: null, margin: null, robust: false, screenedOnly: true });
 
@@ -408,8 +523,14 @@ export async function optimizeSettings(config, heat, options = {}) {
     .filter(Boolean)
     .sort(screenOrder);
   if (!screened.length) throw new Error('所有組合都無法在設備限制內完成，請放寬膠量範圍或調整壓力／針嘴');
-  const keep = Math.min(o.keep, screened.length);
-  const rest = screened.slice(keep).map(screenedRow);
+  // The overall leaders get a dose window, and so does the best geometry of every other path type, so the
+  // table compares path types on their real windows.
+  const kept = screened.slice(0, Math.min(o.keep, screened.length));
+  for (const t of space.types) if (!kept.some((s) => s.g.type === t)) {
+    const best = screened.find((s) => s.g.type === t);
+    if (best) kept.push(best);
+  }
+  const rest = screened.filter((s) => !kept.includes(s)).map(screenedRow);
   o.onPartial?.(assemble([], screened.map(screenedRow), false));
 
   // 2. Dose window of the best few: least dose reaching the coverage goal, most dose within the overflow
@@ -465,7 +586,7 @@ export async function optimizeSettings(config, heat, options = {}) {
       nominal = fCov / (1 - tol);
       if (nominal * (1 + tol) > fOvf) nominal = Math.sqrt(fCov * fOvf);
     } else {
-      const prefix = `${g.spacing}|${g.edgeInset}|${g.diameter}|`;
+      const prefix = `${g.key}|${g.diameter}|`;
       const tried = (await Promise.all([...cache.entries()].filter(([k]) => k.startsWith(prefix) && k.endsWith(`|${coarse.cellSize}`)).map(([, p]) => p))).filter(Boolean);
       nominal = rank(tried, goals)[0]?.factor ?? dose[1];
     }
@@ -476,23 +597,20 @@ export async function optimizeSettings(config, heat, options = {}) {
   };
   const windowed = [];
   await Promise.all(
-    screened.slice(0, keep).map((s) =>
+    kept.map((s) =>
       windowOf(s).then((c) => {
         if (c) windowed.push(c);
-        o.onPartial?.(assemble(windowed, [...screened.slice(0, keep).filter((x) => !windowed.some((c2) => c2.spacing === x.g.spacing && c2.edgeInset === x.g.edgeInset)).map(screenedRow), ...rest], false));
+        o.onPartial?.(assemble(windowed, [...kept.filter((x) => !windowed.some((c2) => c2.key === x.g.key)).map(screenedRow), ...rest], false));
       }),
     ),
   );
   // Deterministic order regardless of which worker finished first.
-  let candidates = screened
-    .slice(0, keep)
-    .map((s) => windowed.find((c) => c.spacing === s.g.spacing && c.edgeInset === s.g.edgeInset && c.diameter === s.g.diameter))
-    .filter(Boolean);
+  let candidates = kept.map((s) => windowed.find((c) => c.key === s.g.key && c.diameter === s.g.diameter)).filter(Boolean);
 
   // 3. Re-run the leaders on the final grid across the tolerance band, until the top ones are all checked:
   //    a leader that fails moves down and the next one is checked, so the recommendation is never unchecked.
   const verifyOne = async (c) => {
-    const g = { spacing: c.spacing, edgeInset: c.edgeInset, diameter: c.diameter };
+    const g = geoOf(c);
     const band = (await Promise.all(bandFactors.map((s) => evaluate(g, c.factor * (1 + s * tol), fine, '複核')))).filter(Boolean);
     if (!band.length) return { ...c, verified: true, robust: false };
     const nominal = band.find((r) => Math.abs(r.factor - c.factor) < 1e-9) || c;
