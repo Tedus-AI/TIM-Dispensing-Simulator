@@ -69,20 +69,77 @@ function volumeOf(g) {
   return Math.abs(v);
 }
 
-// Shared bead mesh builder: rings at each grid node, a flat underside, no internal caps.
-function beadGeometry(deposits, cellLength, ratio, ringAt, standoff, nozzle) {
+/**
+ * Height of the glue already under each ring when a path comes back over itself (a star's spokes laid out
+ * and back, a centre passed again and again): rings follow arc length, the order the nozzle lays them, and
+ * each ring sits on the top surface of the earlier bead it lands on (that bead's own base plus its half-ellipse
+ * height at the ring's distance from its centre line). The bead's own recent rings are left out, with a ramp
+ * so a reversal climbs onto the earlier bead instead of stepping. Geometry for the picture; the stack check of
+ * the results is in stacking.js.
+ */
+export function stackBases(rings, widths, heights) {
+  const n = rings.length;
+  const base = new Float64Array(n);
+  let wMax = 0;
+  for (const w of widths) if (w > wMax) wMax = w;
+  if (!(wMax > 0)) return base;
+  const cell = wMax;
+  const grid = new Map();
+  const key = (i, j) => `${i},${j}`;
+  for (let i = 0; i < n; i++) {
+    const p = rings[i];
+    let top = 0;
+    for (const j of grid.get(key(Math.floor(p.x / cell), Math.floor(p.y / cell))) || []) {
+      const a = rings[j];
+      const b = rings[j + 1];
+      const gap = p.s - b.s;
+      const g0 = Math.max(widths[i], widths[j], widths[j + 1]) + (b.s - a.s);
+      if (gap <= g0) continue;
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const len2 = dx * dx + dy * dy;
+      const t = len2 > 0 ? Math.min(1, Math.max(0, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2)) : 0;
+      const d = Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
+      const w = widths[j] + t * (widths[j + 1] - widths[j]);
+      if (!(w > 0) || d >= w / 2) continue;
+      const h = heights[j] + t * (heights[j + 1] - heights[j]);
+      const under = base[j] + t * (base[j + 1] - base[j]);
+      const ramp = Math.min(1, (gap - g0) / g0);
+      top = Math.max(top, ramp * (under + h * Math.sqrt(1 - ((2 * d) / w) ** 2)));
+    }
+    base[i] = top;
+    // Index the segment that ends here in every cell its bead can reach.
+    if (i > 0) {
+      const a = rings[i - 1];
+      const r = wMax / 2;
+      for (let gx = Math.floor((Math.min(a.x, p.x) - r) / cell); gx <= Math.floor((Math.max(a.x, p.x) + r) / cell); gx++)
+        for (let gy = Math.floor((Math.min(a.y, p.y) - r) / cell); gy <= Math.floor((Math.max(a.y, p.y) + r) / cell); gy++) {
+          const k = key(gx, gy);
+          if (!grid.has(k)) grid.set(k, []);
+          grid.get(k).push(i - 1);
+        }
+    }
+  }
+  return base;
+}
+
+// Shared bead mesh builder: rings at each grid node, a flat underside, no internal caps. With `stack`, a
+// ring that lands on an earlier pass sits on top of it (see stackBases).
+function beadGeometry(deposits, cellLength, ratio, ringAt, standoff, nozzle, { stack = false } = {}) {
   const profile = beadProfile(deposits, cellLength, ratio, standoff, nozzle);
   const n = deposits.length;
   const sides = BEAD_SIDES;
   const m = sides + 1;
   const pos = [];
   const idx = [];
+  const rings = Array.from({ length: n + 1 }, (_, i) => ({ ...ringAt(i), s: i * cellLength }));
+  const base = stack ? stackBases(rings, profile.widths, profile.heights) : new Float64Array(n + 1);
   for (let i = 0; i <= n; i++) {
-    const p = ringAt(i);
+    const p = rings[i];
     for (let j = 0; j <= sides; j++) {
       const a = (j * Math.PI) / sides;
       const w = (profile.widths[i] * Math.cos(a)) / 2;
-      pos.push(p.x + p.nx * w, p.y + p.ny * w, profile.heights[i] * Math.sin(a));
+      pos.push(p.x + p.nx * w, p.y + p.ny * w, base[i] + profile.heights[i] * Math.sin(a));
     }
   }
   for (let i = 0; i < n; i++)
@@ -93,9 +150,9 @@ function beadGeometry(deposits, cellLength, ratio, ringAt, standoff, nozzle) {
   // Duplicate only the underside edge vertices to keep its flat normals off the curved surface.
   const bottom = pos.length / 3;
   for (let i = 0; i <= n; i++) {
-    const p = ringAt(i);
+    const p = rings[i];
     const w = profile.widths[i] / 2;
-    pos.push(p.x + p.nx * w, p.y + p.ny * w, 0, p.x - p.nx * w, p.y - p.ny * w, 0);
+    pos.push(p.x + p.nx * w, p.y + p.ny * w, base[i], p.x - p.nx * w, p.y - p.ny * w, base[i]);
   }
   for (let i = 0; i < n; i++) {
     const a = bottom + 2 * i;
@@ -106,6 +163,7 @@ function beadGeometry(deposits, cellLength, ratio, ringAt, standoff, nozzle) {
   g.setIndex(idx);
   g.computeVertexNormals();
   g.userData.unitVolume = volumeOf(g);
+  g.userData.maxBase = base.reduce((a, b) => Math.max(a, b), 0);
   return g;
 }
 
@@ -115,14 +173,23 @@ function continuousLineGeometry(deposits, cellLength, ratio, standoff, nozzle) {
 }
 
 // Bins follow path arc length; the nozzle footprint may extend beyond the ends, so extend the end
-// tangent. Bent rings are a geometric illustration; crossings are not a material union.
+// tangent. Where the path comes back over itself the later bead is drawn on top of the earlier one;
+// bent rings and crossings remain a geometric illustration, not a material union.
 function continuousPathGeometry(deposits, cellLength, ratio, path, gridStart, standoff, nozzle) {
-  return beadGeometry(deposits, cellLength, ratio, (i) => {
-    const s = gridStart + i * cellLength;
-    const q = pointOnPath(path, s);
-    const extra = s - Math.max(0, Math.min(path.length, s));
-    return { x: q.x + q.tx * extra, y: q.y + q.ty * extra, nx: -q.ty, ny: q.tx };
-  }, standoff, nozzle);
+  return beadGeometry(
+    deposits,
+    cellLength,
+    ratio,
+    (i) => {
+      const s = gridStart + i * cellLength;
+      const q = pointOnPath(path, s);
+      const extra = s - Math.max(0, Math.min(path.length, s));
+      return { x: q.x + q.tx * extra, y: q.y + q.ty * extra, nx: -q.ty, ny: q.tx };
+    },
+    standoff,
+    nozzle,
+    { stack: true },
+  );
 }
 
 // Heat-source footprint: a coordinate guide, not the chip itself.
