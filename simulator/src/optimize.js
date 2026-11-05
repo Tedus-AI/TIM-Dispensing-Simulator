@@ -2,6 +2,7 @@ import { estimateCompression } from './compression.js';
 import { runTiming, steadyFlow } from './engine.js';
 import { tuneDose, driveOf, BOUNDS } from './tuning.js';
 import { planDispensePath } from './path-planning.js';
+import { stackedBead } from './stacking.js';
 
 /*
  * Goal-based ranking and a robust settings search for one dispensing path.
@@ -89,6 +90,8 @@ export const MATCH_BAND = Object.freeze([0.7, 1.5]);
  * How well the nozzle suits the bead it lays: bead cross-section, matched bore, stretch ratio, height. The
  * ratio comes from the bead actually laid (deposit per mm of path), so acceleration and corners that keep
  * the nozzle below its set speed are included; the set speed alone overstates the stretch on short segments.
+ * `drags` covers both a single pass taller than the standoff (`buried`) and glue stacked by passes that come
+ * back over it standing above the standoff, which the nozzle meets on its next pass (`stack.contact`).
  */
 export function beadMatch(run) {
   const c = run.config;
@@ -98,6 +101,7 @@ export function beadMatch(run) {
   const exitSpeed = (run.Q * 1000) / boreArea;
   const speedRatio = c.mode !== 'point' && beadArea > 0 ? boreArea / beadArea : null;
   const state = speedRatio === null ? 'n/a' : speedRatio > MATCH_BAND[1] ? 'stretched' : speedRatio < MATCH_BAND[0] ? 'piled' : 'ok';
+  const stack = stackedBead(run);
   return {
     beadArea,
     matchedId: Math.sqrt((4 * beadArea) / Math.PI),
@@ -107,7 +111,9 @@ export function beadMatch(run) {
     state,
     beadHeight: run.summary.maxHeight,
     standoff: c.standoff,
-    drags: run.summary.maxHeight > c.standoff + 1e-9, // nozzle buried in the material
+    buried: run.summary.maxHeight > c.standoff + 1e-9, // one pass already taller than the standoff
+    drags: run.summary.maxHeight > c.standoff + 1e-9 || stack.contact, // nozzle in the material
+    stack: { maxHeight: stack.maxHeight, where: stack.where, x: stack.x, y: stack.y, overlap: stack.overlap, contact: stack.contact },
     flattened: Boolean(run.summary.flattened),
   };
 }
@@ -490,16 +496,22 @@ export function estimateWindow(points, goals, tol) {
   const nominal = fCov !== null ? fCov / (1 - tol) : null;
   return { feasible: nominal !== null && fOvf !== null && nominal * (1 + tol) <= fOvf, nominal, deficit, tie: [-p.coveredPercent, q.squeezeOutMm] };
 }
-// Estimated windows within 2 % of material compare on the process (bead, cycle) first.
-const screenOrder = (a, b) => {
-  if (a.est.feasible !== b.est.feasible) return a.est.feasible ? -1 : 1;
-  const d = a.est.feasible ? a.est.nominal - b.est.nominal : a.est.deficit - b.est.deficit;
-  if (a.est.feasible && Math.abs(d) <= 0.02 * Math.max(a.est.nominal, b.est.nominal)) {
-    const c = (a.cost ?? 0) - (b.cost ?? 0);
-    if (Math.abs(c) > 0.15) return c;
-  }
-  if (Math.abs(d) > 1e-9) return d;
-  return a.est.tie[0] - b.est.tie[0] || a.est.tie[1] - b.est.tie[1] || a.index - b.index;
+// Bands of `width` (fraction) from the least value, so "about the same material" is one fixed group for a
+// whole list (comparing pairs within a tolerance is not transitive and would make the order depend on the
+// sort), and process cost in 0.15 steps.
+const bandOf = (v, least, width) => (least > 0 && v > 0 ? Math.floor(Math.log(v / least) / Math.log(1 + width) + 1e-9) : 0);
+const costStep = (cost) => Math.round((cost ?? 0) / 0.15);
+// Screening order: feasible estimates in 2 % bands of nominal dose, then process (bead, cycle), then dose.
+const screenOrderFor = (list) => {
+  const feasible = list.filter((s) => s.est.feasible).map((s) => s.est.nominal);
+  const least = feasible.length ? Math.min(...feasible) : 0;
+  return (a, b) => {
+    if (a.est.feasible !== b.est.feasible) return a.est.feasible ? -1 : 1;
+    if (a.est.feasible) return bandOf(a.est.nominal, least, 0.02) - bandOf(b.est.nominal, least, 0.02) || costStep(a.cost) - costStep(b.cost) || a.est.nominal - b.est.nominal || a.index - b.index;
+    const d = a.est.deficit - b.est.deficit;
+    if (Math.abs(d) > 1e-9) return d;
+    return a.est.tie[0] - b.est.tie[0] || a.est.tie[1] - b.est.tie[1] || a.index - b.index;
+  };
 };
 
 /**
@@ -615,23 +627,31 @@ export async function optimizeSettings(config, heat, options = {}) {
   const geoOf = (c) => geometries.find((g) => gid(g) === gid(c));
 
   const feasible = (r) => r.reached && r.cycleOk;
-  const order = (a, b) => {
-    const pa = a.robust && feasible(a);
-    const pb = b.robust && feasible(b);
-    if (pa !== pb) return pa ? -1 : 1;
-    if (pa) {
-      // Within 3 % of material, prefer the more practical process (bead near the nozzle size, cycle near the
-      // reference, drive with room to correct a drifting dose), then the shorter cycle, then the wider window.
-      if (Math.abs(a.depositedMl - b.depositedMl) > MATERIAL_TIE * Math.max(a.depositedMl, b.depositedMl)) return a.depositedMl - b.depositedMl;
-      const cost = processCost(a, cycleRef) - processCost(b, cycleRef);
-      if (Math.abs(cost) > 0.15) return cost;
-      return a.cycle - b.cycle || (b.margin ?? 0) - (a.margin ?? 0);
-    }
-    return compareRanked(a, b, goals);
+  // Passing results: 3 % material bands from the least material passing, then the more practical process
+  // (bead near the nozzle size, nozzle clear of stacked glue, cycle near the reference, drive with room to
+  // correct a drifting dose) in 0.15 steps, then the shorter cycle, then the wider window. The rest by how far
+  // they miss.
+  const orderFor = (list) => {
+    const passing = list.filter((c) => c.robust && feasible(c)).map((c) => c.depositedMl);
+    const least = passing.length ? Math.min(...passing) : 0;
+    return (a, b) => {
+      const pa = a.robust && feasible(a);
+      const pb = b.robust && feasible(b);
+      if (pa !== pb) return pa ? -1 : 1;
+      if (pa)
+        return (
+          bandOf(a.depositedMl, least, MATERIAL_TIE) - bandOf(b.depositedMl, least, MATERIAL_TIE) ||
+          costStep(processCost(a, cycleRef)) - costStep(processCost(b, cycleRef)) ||
+          a.cycle - b.cycle ||
+          (b.margin ?? 0) - (a.margin ?? 0)
+        );
+      return compareRanked(a, b, goals);
+    };
   };
   // Only a result re-run on the final grid across the tolerance band can pass.
   const isPass = (c) => Boolean(c.verified && c.robust && feasible(c));
   const assemble = (candidates, rest, complete) => {
+    const order = orderFor(candidates);
     const list = [...[...candidates].sort((a, b) => isPass(b) - isPass(a) || order(a, b)), ...rest].map((c) => {
       const j = judge(c.worst || c, goals);
       return { ...c, ...j, pass: isPass(c), coarsePass: !c.verified && Boolean(c.robust) && feasible(c) };
@@ -642,21 +662,20 @@ export async function optimizeSettings(config, heat, options = {}) {
 
   // 1. Screen every geometry in the decision zone; rank by the estimated dose window (or how far it misses).
   const soFar = [];
-  const screened = (
+  const screenedAll = (
     await Promise.all(
       geometries.map(async (g, index) => {
         const pts = (await Promise.all(screenDoses.map((f) => evaluate(g, f, coarse, '篩選')))).filter(Boolean);
         const s = pts.length ? { g, index, pts, est: estimateWindow(pts, goals, tol), cost: processCost(pts.at(-1), cycleRef) } : null;
         if (s) {
           soFar.push(s);
-          o.onPartial?.(assemble([], [...soFar].sort(screenOrder).map(screenedRow), false));
+          o.onPartial?.(assemble([], [...soFar].sort(screenOrderFor(soFar)).map(screenedRow), false));
         }
         return s;
       }),
     )
-  )
-    .filter(Boolean)
-    .sort(screenOrder);
+  ).filter(Boolean);
+  const screened = screenedAll.sort(screenOrderFor(screenedAll));
   if (!screened.length) throw new Error('所有組合都無法在設備限制內完成，請放寬膠量範圍或調整壓力／針嘴');
   // The overall leaders get a dose window, and so does the best geometry of every other path type, so the
   // table compares path types on their real windows.
@@ -770,7 +789,7 @@ export async function optimizeSettings(config, heat, options = {}) {
     return { ...c, ...nominal, fCov: c.fCov, fOvf: c.fOvf, margin: c.margin, supportedTol: c.supportedTol, fCovAtMin: c.fCovAtMin, worst, bandPoints, capFactor, headroom: band.every((r) => !r.fallback), verified: true, robust: ok };
   };
   for (;;) {
-    candidates.sort(order);
+    candidates.sort(orderFor(candidates));
     const todo = candidates.slice(0, o.verify).filter((c) => !c.verified);
     if (!todo.length) break;
     const checked = await Promise.all(todo.map(verifyOne));
