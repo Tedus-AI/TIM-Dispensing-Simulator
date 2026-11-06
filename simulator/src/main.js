@@ -1,6 +1,6 @@
 import './style.css';
 import registry from '../../data/engineering_defaults_v0.3.json';
-import { fromRegistry, simulate, frameAt, calibrateFlow, LABEL, VERSION, ENDING_DEFAULT, MOTION_DEFAULTS, CORNER_DEFAULTS } from './engine.js';
+import { fromRegistry, simulate, frameAt, calibrateFlow, airScale, R75_AIR, LABEL, VERSION, ENDING_DEFAULT, MOTION_DEFAULTS, CORNER_DEFAULTS } from './engine.js';
 import { PARAMETER_UPDATES, parameterValue } from './parameters.js';
 import { MATERIALS } from './materials.js';
 import { DispenseScene, VIEW_LABELS } from './scene.js';
@@ -39,7 +39,7 @@ const store = {
 };
 
 // Per-material/architecture parameters; everything else carries over when switching scenario.
-const PROFILE_KEYS = ['pressure', 'rpm', 'efficiency', 'delay', 'tauOn', 'tauOff', 'fill', 'residual', 'referenceRate', 'pressureExponent', 'viscosity', 'hoseId', 'hoseLength', 'reverseRpm', 'reverseDuration', 'density'];
+const PROFILE_KEYS = ['pressure', 'rpm', 'efficiency', 'delay', 'tauOn', 'tauOff', 'fill', 'residual', 'referenceRate', 'pressureExponent', 'viscosity', 'flowIndex', 'hoseId', 'hoseLength', 'reverseRpm', 'reverseDuration', 'density'];
 const DEFAULT_HEAT = () => ({
   shape: 'rectangle',
   width: 30,
@@ -50,11 +50,12 @@ const DEFAULT_HEAT = () => ({
   cellSize: 0.5,
   power: parameterValue(registry, 'thermal.power'),
   ...PRESS_DEFAULTS,
-  viscosity: null, // null = material default (see squeezeRheology)
+  viscosity: null, // null = the paste's own power law, as in its nozzle flow (see squeezeRheology)
+  flowIndex: null,
   yieldStress: null,
 });
 // Heat-panel keys that only affect the squeeze estimate (no dispensing re-run).
-const PRESS_KEYS = ['gap', 'cellSize', 'power', 'airMode', 'pressKgf', 'pressSpeed', 'settleTime', 'viscosity', 'yieldStress'];
+const PRESS_KEYS = ['gap', 'cellSize', 'power', 'airMode', 'pressKgf', 'pressSpeed', 'settleTime', 'viscosity', 'flowIndex', 'yieldStress'];
 const AIR_MODE_NAMES = { compressible: '可壓縮氣泡', rigid: '剛性牆（v1.0）', vent: '全部排出' };
 const AIR_MODE_SHORT = { compressible: '可壓縮', rigid: '剛性牆', vent: '全排出' };
 const DEFAULT_PATTERN = () => ({ pattern: 'n', spacing: 5, edgeInset: 2, spiralShape: 'auto', spiralDirection: 'outside-in' });
@@ -289,7 +290,7 @@ function switchProfile(material, architecture) {
   next.material = material;
   next.architecture = architecture;
   next.profile = fresh.profile;
-  if (material !== S.config.material) S.heat = { ...S.heat, viscosity: null, yieldStress: null };
+  if (material !== S.config.material) S.heat = { ...S.heat, viscosity: null, flowIndex: null, yieldStress: null };
   if (!tryRecompute(next)) {
     $('#sel-material') && ($('#sel-material').value = S.config.material);
     $('#sel-arch') && ($('#sel-arch').value = S.config.architecture);
@@ -322,12 +323,12 @@ function renderEquipment() {
   const c = S.config;
   const isPcp = pcp();
   const mat = MATERIALS[c.material];
-  const method = isPcp ? '理想容積計量' : c.material === 'putty' ? 'TDS 參考點 × 冪律管流' : '常黏度 Poiseuille 圓管';
+  const method = isPcp ? '理想容積計量' : c.material === 'putty' ? 'TDS 參考點 × 冪律管流' : '冪律管流（剪切變稀）';
   const methodNote = isPcp
     ? `每轉 ${c.displacement} mL × 轉速 × 效率；滿腔與起停時間為假設。`
     : c.material === 'putty'
       ? `90 psi 時 75 g/min（TDS）；壓力冪次 m=${c.pressureExponent} 取自 Laird 點膠指南曲線形狀。Q ∝ P^m · d^(3+m) / L^m。`
-      : '黏度 2,500,000 cP（TDS，Brookfield 2 rpm）暫作常數，不代表完整流變。';
+      : `黏度 2,500,000 cP（TDS，Brookfield 2 rpm，約 1 s⁻¹）當作稠度 K；剪切變稀指數 n=${c.flowIndex} 比照 Laird 同類膏體曲線（AI 初估）。Q ∝ P^(1/n) · d^(3+1/n) / L^(1/n)：針嘴內剪切率高、視黏度低很多。絕對出膠量不確定數倍，請用實測校正。`;
   const q = S.run ? S.run.Q : 0;
   return `
   <div class="pair">
@@ -348,10 +349,14 @@ function renderEquipment() {
   )}
   ${group(
     '用實測出膠量校正',
-    `<div class="pair"><label class="field"><span class="lbl">實測重量</span><span class="input"><input type="number" id="cal-grams" min="0" step="any" placeholder="秤重結果" aria-label="實測重量"><b>g</b></span></label><label class="field"><span class="lbl">出膠時間</span><span class="input"><input type="number" id="cal-seconds" min="0" step="any" value="60" aria-label="出膠時間"><b>s</b></span></label></div><button class="chip-btn" id="cal-apply">校正出膠量</button>`,
+    `<div class="pair"><label class="field"><span class="lbl">實測重量</span><span class="input"><input type="number" id="cal-grams" min="0" step="any" placeholder="秤重結果" aria-label="實測重量"><b>g</b></span></label><label class="field"><span class="lbl">出膠時間</span><span class="input"><input type="number" id="cal-seconds" min="0" step="any" value="60" aria-label="出膠時間"><b>s</b></span></label></div>${
+      isPcp
+        ? ''
+        : `<p class="note inline-note">第二組（選填）：換一個壓力再量一次，可擬合${c.material === 'putty' ? '壓力冪次 m' : '剪切變稀指數 n'}${tip('同一支針嘴、不同壓力（例如 40 與 80 psi）各量一次。流量隨壓力增加得越快，膏體越剪切變稀；這決定換針嘴、換壓力時模型外推準不準。')}</p><div class="pair"><label class="field"><span class="lbl">第二組壓力</span><span class="input"><input type="number" id="cal-p2" min="0" step="any" placeholder="psi" aria-label="第二組壓力"><b>psi</b></span></label><label class="field"><span class="lbl">第二組重量</span><span class="input"><input type="number" id="cal-g2" min="0" step="any" placeholder="g" aria-label="第二組重量"><b>g</b></span></label></div><div class="pair"><label class="field"><span class="lbl">第二組時間</span><span class="input"><input type="number" id="cal-s2" min="0" step="any" value="60" aria-label="第二組時間"><b>s</b></span></label></div>`
+    }<button class="chip-btn" id="cal-apply">校正出膠量</button>`,
     {
       open: false,
-      note: `模型的出膠量是用資料表推估的，未經實機校準。用目前的${isPcp ? '轉速' : '壓力'}與針嘴（${fmt(c.diameter, 2)} mm）在原地連續出膠（例如 60 秒，避開開關膠的頭尾）後秤重，輸入重量與時間，模型就會對齊實測：${isPcp ? '調整容積效率' : c.material === 'putty' ? '調整 90 psi 參考流率' : '調整等效黏度'}。目前模型約 ${fmt(q * c.density * 60, 3)} g/min；換針嘴或膠材後建議再量一次。`,
+      note: `模型的出膠量是用資料表推估的，未經實機校準。用目前的${isPcp ? '轉速' : '壓力'}與針嘴（${fmt(c.diameter, 2)} mm）在原地連續出膠（例如 60 秒，避開開關膠的頭尾）後秤重，輸入重量與時間，模型就會對齊實測：${isPcp ? '調整容積效率' : c.material === 'putty' ? '調整 90 psi 參考流率' : '調整稠度 K'}。${isPcp ? '' : '再加第二組不同壓力的量測，會一併擬合流量隨壓力變化的冪次。'}目前模型約 ${fmt(q * c.density * 60, 3)} g/min；換針嘴或膠材後建議再量一次。`,
     },
   )}
   ${group(
@@ -363,15 +368,21 @@ function renderEquipment() {
         ? num({ bind: 'c.pressureExponent', label: '壓力冪次 m', value: c.pressureExponent, unit: '', min: 0.1, max: 4, tag: 'derived', hint: '指南曲線 20–100 psi 擬合 2.73；設 1 回到 v0.x 線性' }) +
           num({ bind: 'c.referenceRate', label: '90 psi 參考流率', value: c.referenceRate, unit: 'mL/s', min: 0, max: 10, tag: 'tds', hint: '75 g/min ÷ 3.2 g/cc；指南圖讀約 75 cc/min，單位待 Laird 確認' })
         : '') +
-      (!isPcp && c.material === 'grease' ? num({ bind: 'c.viscosity', label: '等效黏度', value: c.viscosity, unit: 'Pa·s', min: 1, max: 100000, tag: 'tds' }) : ''),
-    { open: false, note: '起停常數為 AI 初估；未含溫度效應（指南：低於 23 °C 流率下降，60–80 °C 加熱可改善）。' },
+      (!isPcp && c.material === 'grease'
+        ? num({ bind: 'c.viscosity', label: '稠度 K（1 s⁻¹ 視黏度）', value: c.viscosity, unit: 'Pa·sⁿ', min: 1, max: 100000, tag: 'tds', hint: 'TDS Brookfield 2 rpm 2,500,000 cP' }) +
+          num({ bind: 'c.flowIndex', label: '剪切變稀指數 n', value: c.flowIndex, unit: '', min: 0.1, max: 1.2, tag: 'ai', hint: '1 = 牛頓流體（v1.9 以前）；Laird 同類膏體約 0.37–0.42' })
+        : ''),
+    {
+      open: false,
+      note: `起停常數為 AI 初估${isPcp ? '' : `，指膠筒裝填 ${R75_AIR.referenceFill} mL 時；氣壓式的壓力經活塞上方的空氣建立，膠越少空氣越多、反應越慢，目前裝填 ${fmt(c.fill, 1)} mL 的實際時間常數為 ${fmt(c.tauOn * airScale(c), 3)} / ${fmt(c.tauOff * airScale(c), 3)} s`}。未含溫度效應（指南：低於 23 °C 流率下降，60–80 °C 加熱可改善）。`,
+    },
   )}
   ${group(
     '膠筒與預填管路',
     num({ bind: 'c.fill', label: '膠筒初始裝填', value: c.fill, unit: 'mL', min: c.residual, max: isPcp ? 300 : 75, tag: c.material === 'putty' ? 'tds' : 'ai', hint: c.material === 'putty' ? (isPcp ? '300cc 鋁筒裝填 300 cc（960 g）' : '75cc EFD 裝填 56 cc（179 g）') : `Tgrease 實際包材：${MATERIALS.grease.packaging}` }) +
       num({ bind: 'c.residual', label: '不可用殘量', value: c.residual, unit: 'mL', min: 0, max: c.fill, tag: 'ai' }) +
       (isPcp ? num({ bind: 'c.hoseId', label: '供料管內徑', value: c.hoseId, unit: 'mm', min: 1, max: 25, tag: 'ai' }) + num({ bind: 'c.hoseLength', label: '供料管長', value: c.hoseLength, unit: 'mm', min: 0, max: 5000, tag: 'ai' }) : ''),
-    { open: false, note: isPcp ? '管路已預填，只計入持膠量；未求解壓降。畫面管路為示意。' : '氣室與氣管未分開求解；畫面氣管與控制器為示意。' },
+    { open: false, note: isPcp ? '管路已預填，只計入持膠量；未求解壓降。畫面管路為示意。' : '氣壓式：裝填越少，活塞上方空氣越多，起停反應越慢（時間常數與空氣體積成正比），膠筒快用完時起頭與收尾膠量會變。可把裝填改小，看膠筒後段的情況。畫面氣管與控制器為示意。' },
   )}`;
 }
 
@@ -417,11 +428,12 @@ function pressFields(h) {
     ${num({ bind: 'h.pressSpeed', label: '下降速度上限', value: h.pressSpeed, unit: 'mm/s', min: 0.01, max: 100, tag: 'ai', hint: '剛接觸時的壓板速度' })}
   </div>
   <div class="pair">
-    ${num({ bind: 'h.viscosity', label: '有效黏度', value: rh.viscosity, unit: 'Pa·s', min: 1, max: 1e7, tag: grease ? 'tds' : 'derived', hint: grease ? 'TDS Brookfield 2 rpm（同設備頁）' : '由針嘴冪律擬合推算 @1 s⁻¹' })}
-    ${num({ bind: 'h.yieldStress', label: '降伏應力', value: rh.yieldStress, unit: 'Pa', min: 0, max: 1e6, tag: 'ai', hint: '公開散熱膏實測約 7–30 Pa' })}
+    ${num({ bind: 'h.viscosity', label: '稠度 K', value: rh.viscosity, unit: 'Pa·sⁿ', min: 1, max: 1e7, tag: grease ? 'tds' : 'derived', hint: grease ? '1 s⁻¹ 視黏度，與設備頁的出膠模型相同' : '由出膠冪律（參考流率與壓力冪次）推算，與出膠模型相同' })}
+    ${num({ bind: 'h.flowIndex', label: '剪切變稀指數 n', value: rh.flowIndex, unit: '', min: 0.1, max: 1.2, tag: grease ? 'ai' : 'derived', hint: '與出膠模型相同；1 = 牛頓流體（v1.9 以前的壓合）' })}
   </div>
+  ${num({ bind: 'h.yieldStress', label: '降伏應力', value: rh.yieldStress, unit: 'Pa', min: 0, max: 1e6, tag: 'ai', hint: '公開散熱膏實測約 7–30 Pa' })}
   ${num({ bind: 'h.settleTime', label: '靜置觀察時間', value: h.settleTime, unit: 's', min: 0, max: 3600, tag: 'ai', hint: '壓到墊片後氣泡回脹的時間；建議與透明板拍照時間一致' })}
-  ${h.viscosity != null || h.yieldStress != null ? '<button class="chip-btn" id="rheo-reset">恢復材料預設黏度／降伏應力</button>' : ''}`;
+  ${h.viscosity != null || h.yieldStress != null || h.flowIndex != null ? '<button class="chip-btn" id="rheo-reset">恢復與出膠相同的流變</button>' : ''}`;
 }
 
 function renderPath() {
@@ -455,6 +467,7 @@ function renderPath() {
     body += group(
       '運動',
       `<div class="pair">${num({ bind: 'c.speed', label: '設定速度', value: c.speed, unit: 'mm/s', min: 1, max: 800, tag: 'ai' })}${num({ bind: 'c.acceleration', label: '加速度', value: c.acceleration, unit: 'mm/s²', min: 1, max: 10000, tag: 'ai' })}</div>` +
+        num({ bind: 'c.startDwell', label: '起點出膠等待', value: c.startDwell, unit: 's', min: 0, max: 5, tag: 'ai', hint: '機台的 Feed On Delay／Head Time：開膠後先停在起點再移動，避免起頭膠太細。常見 0.05–0.1 s' }) +
         (c.mode === 'pattern'
           ? select({ bind: 'c.cornerMode', label: '轉角速度', value: c.cornerMode, options: [['junction', '依轉角減速（junction deviation）'], ['off', '不減速（v0.7 對照）']] }) +
             (c.cornerMode === 'junction' ? num({ bind: 'c.junctionDeviation', label: '轉角偏差', value: c.junctionDeviation, unit: 'mm', min: 0.001, max: 5, tag: 'ai', hint: '越小轉角越慢、轉角積膠越多' }) : '')
@@ -613,17 +626,22 @@ $('#tab-body').addEventListener('click', (e) => {
     case 'reverse-example':
       return tryRecompute({ ...S.config, reverseRpm: 30, reverseDuration: 0.05 });
     case 'rheo-reset':
-      S.heat = { ...S.heat, viscosity: null, yieldStress: null };
+      S.heat = { ...S.heat, viscosity: null, flowIndex: null, yieldStress: null };
       markPressStale();
       return renderTab();
     case 'cal-apply': {
       // Fit the flow law to a measured steady output at the current drive and nozzle.
       try {
-        const fit = calibrateFlow(S.config, Number($('#cal-grams').value), Number($('#cal-seconds').value));
-        if (!fit.inRange) return toast(`實測是模型的 ${fmt(fit.ratio, 2)} 倍，換算的數值超出允許範圍（${fit.range.join('–')}）；請確認重量、時間與目前的壓力和針嘴`, 'error');
-        const label = { viscosity: '等效黏度', referenceRate: '90 psi 參考流率', efficiency: '容積效率' }[fit.key];
-        const value = Number(fit.value.toPrecision(4));
-        if (tryRecompute({ ...S.config, [fit.key]: value })) toast(`已校正：實測出膠是模型的 ${fmt(fit.ratio, 2)} 倍，${label}改為 ${value}`, 'ok');
+        const p2 = Number($('#cal-p2')?.value);
+        const second = p2 > 0 ? { pressure: S.pressureUnit === 'bar' ? p2 / BAR : p2, grams: Number($('#cal-g2').value), seconds: Number($('#cal-s2').value) } : null;
+        const fit = calibrateFlow(S.config, Number($('#cal-grams').value), Number($('#cal-seconds').value), second);
+        const label = { viscosity: '稠度 K', flowIndex: '剪切變稀指數 n', pressureExponent: '壓力冪次 m', referenceRate: '90 psi 參考流率', efficiency: '容積效率' };
+        const bad = fit.fits.find((f) => !f.inRange);
+        if (bad) return toast(`${label[bad.key]}算出 ${fmt(bad.value, 3)}，超出允許範圍（${bad.range.join('–')}）；請確認重量、時間與目前的壓力和針嘴`, 'error');
+        const updates = Object.fromEntries(fit.fits.map((f) => [f.key, Number(f.value.toPrecision(4))]));
+        const text = fit.fits.map((f) => `${label[f.key]}改為 ${updates[f.key]}`).join('、');
+        const shape = second ? `流量 ∝ 壓力^${fmt(fit.exponent, 2)}；` : '';
+        if (tryRecompute({ ...S.config, ...updates })) toast(`已校正：${shape}實測出膠是模型的 ${fmt(fit.ratio, 2)} 倍，${text}`, 'ok');
       } catch (err) {
         toast(err.message, 'error');
       }
@@ -1360,7 +1378,8 @@ async function saveScenario() {
 function loadScenario(x) {
   S.heat = { ...DEFAULT_HEAT(), ...x.heat };
   S.pattern = { ...DEFAULT_PATTERN(), ...x.pattern };
-  if (tryRecompute(structuredClone(x.config))) {
+  // Settings added after the scenario was saved take their defaults.
+  if (tryRecompute({ ...fromRegistry(registry, x.config.material, x.config.architecture), ...structuredClone(x.config) })) {
     $('#scenarios-dialog').close();
     toast(`已載入「${x.name}」`, 'ok');
   }
@@ -2179,10 +2198,11 @@ function renderSources() {
 $('#help-body').innerHTML = `
 <ol class="steps">
   <li><b>① 熱源工件</b>：輸入元件接觸面的形狀、尺寸、位置、組裝間隙（墊片高度）與功耗；它們決定膠量需求（熱源面積 × 間隙）與「依熱源」路徑。點膠平板的尺寸與 STL／GLB 匯入收在同頁的「工件」群組。</li>
-  <li><b>② 膠材設備</b>：選膠材（Tputty 910／Tgrease 2500）與架構（R75 氣壓／P300 PCP），設定壓力或轉速、針嘴內徑與響應參數。針頭以 G 數（規格號數，整數，數字越大越細）稱呼：可在「針頭規格」直接選，會自動填入內徑；也可自行輸入內徑，旁邊的 ? 有 G 數對照表。「用實測出膠量校正」：原地連續出膠一段時間後秤重，輸入重量與時間，模型的出膠量就會對齊實測。</li>
-  <li><b>③ 路徑</b>：依熱源選中心線／N／蛇形／螺旋／米字形／外框，或直線、單點（米字形：從中心往四角與四邊各畫一條再回中心，空氣較易往外排）；設定速度、加速度與針嘴離面高度。針嘴低於膠的自然高度時，膠被壓成針距高度並變寬（膠量不變）；過低會埋針。</li>
+  <li><b>② 膠材設備</b>：選膠材（Tputty 910／Tgrease 2500）與架構（R75 氣壓／P300 PCP），設定壓力或轉速、針嘴內徑與響應參數。針頭以 G 數（規格號數，整數，數字越大越細）稱呼：可在「針頭規格」直接選，會自動填入內徑；也可自行輸入內徑，旁邊的 ? 有 G 數對照表。「用實測出膠量校正」：原地連續出膠一段時間後秤重，輸入重量與時間，模型的出膠量就會對齊實測；再填一組不同壓力的量測，會一併擬合膏體的剪切變稀程度。</li>
+  <li><b>剪切變稀（v2.0）</b>：導熱膏、putty 這類高填充膏體越快剪切越稀。針嘴內剪切率高，實際黏度遠低於資料表的 Brookfield 黏度，所以出膠量隨壓力約以 2.5 次方、隨針頭內徑約以 5.5 次方增加（不是牛頓流體的 1 次方與 4 次方）。壓合用同一條流變：一開始壓得快，越接近墊片膠流越慢、黏度越高，最後一段最花時間。</li>
+  <li><b>③ 路徑</b>：依熱源選中心線／N／蛇形／螺旋／米字形／外框，或直線、單點（米字形：從中心往四角與四邊各畫一條再回中心，空氣較易往外排）；設定速度、加速度、起點出膠等待（機台的 Feed On Delay）與針嘴離面高度。針嘴低於膠的自然高度時，膠被壓成針距高度並變寬（膠量不變）；過低會埋針。</li>
   <li><b>④ 收尾</b>：提前關膠、停留、抬針與回退、PCP 反轉。</li>
-  <li><b>⑤ 壓合</b>：透明板的壓合力、下降速度、夾氣處理（可壓縮／剛性牆／全排出）、黏度、降伏應力、靜置時間與估算網格。</li>
+  <li><b>⑤ 壓合</b>：透明板的壓合力、下降速度、夾氣處理（可壓縮／剛性牆／全排出）、稠度 K 與剪切變稀指數 n（預設與出膠相同）、降伏應力、靜置時間與估算網格。</li>
   <li><b>膠量列（左上，固定顯示）</b>：顯示需求、目前沉積與比值。輸入目標（× 需求、mL 或 g）後按「套用」：線與圖樣預設「調壓力（P300 調轉速），到極限才改速度」，也可選只調速度；單點預設調開膠時間，也可選調壓力。</li>
   <li><b>播放</b>：空白鍵播放／暫停；拖曳時間軸或點曲線跳到該時刻；時間軸上的標記可跳到關膠、到位、抬針、退離。</li>
   <li><b>模擬壓合</b>：結果卡的「模擬壓合」顯示透明板以定力壓到墊片、膠膜擴散、氣泡壓縮／遷移／排出與靜置後回脹；可切換「前緣時序」著色。</li>

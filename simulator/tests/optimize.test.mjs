@@ -92,8 +92,8 @@ test('robust search: the nominal dose keeps the tolerance inside the window and 
 
 test('dose knob: drive first, motion only at the drive limit, or motion directly', async () => {
   const { tuneDose } = await import('../src/tuning.js');
-  const line = { ...fromRegistry(registry, 'grease'), mode: 'line', lineLength: 60, shutoffDistance: 0, speed: 10 };
-  // About 0.04 mL at 10 psi and 0.41 mL at 100 psi along this line at 10 mm/s.
+  const line = { ...fromRegistry(registry, 'grease'), mode: 'line', lineLength: 60, shutoffDistance: 0, speed: 10, diameter: 1.54 };
+  // With a 14G needle, about 0.002 mL at 10 psi and 0.57 mL at 100 psi along this line at 10 mm/s.
   const inRange = tuneDose(line, 0.2, 'drive');
   assert.ok(inRange.reached && !inRange.fallback && inRange.key === 'pressure' && inRange.config.speed === 10);
   // Too much material for 100 psi at 10 mm/s: pressure goes to its limit and the travel speed drops.
@@ -101,7 +101,7 @@ test('dose knob: drive first, motion only at the drive limit, or motion directly
   assert.ok(pushed.fallback && pushed.key === 'speed' && pushed.config.pressure === 100 && pushed.config.speed < 10);
   assert.ok(pushed.reached && Math.abs(pushed.run.summary.deposited - 0.6) <= 0.6 * 0.03);
   // Too little for 10 psi: pressure goes to its lower limit and the travel speed rises.
-  const thin = tuneDose(line, 0.02, 'drive');
+  const thin = tuneDose(line, 0.001, 'drive');
   assert.ok(thin.fallback && thin.config.pressure === 10 && thin.config.speed > 10 && thin.reached);
   const motion = tuneDose(line, 0.2, 'motion');
   assert.ok(motion.reached && motion.key === 'speed' && motion.config.pressure === line.pressure);
@@ -211,7 +211,7 @@ test('parallel evaluation finishing in any order gives the same result; partial 
 test('dose tuning: secant search reaches 0.1 % in a few simulations, range ends are exact', async () => {
   const { tuneForVolume } = await import('../src/tuning.js');
   const { simulate } = await import('../src/engine.js');
-  const line = { ...fromRegistry(registry, 'grease'), mode: 'line', lineLength: 60, shutoffDistance: 0, speed: 10 };
+  const line = { ...fromRegistry(registry, 'grease'), mode: 'line', lineLength: 60, shutoffDistance: 0, speed: 10, diameter: 1.54 };
   for (const target of [0.06, 0.2, 0.35]) {
     const t = tuneForVolume(line, target, { key: 'pressure', lo: 10, hi: 100 });
     assert.ok(t.reached && t.simulations <= 10 && Math.abs(t.run.summary.deposited / target - 1) < 2e-3, `${target}: ${t.simulations}`);

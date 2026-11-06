@@ -1,4 +1,4 @@
-import { beadProfile, dotDimensions } from './engine.js';
+import { beadProfile, dotDimensions, pasteRheology } from './engine.js';
 import { pointOnPath } from './path-planning.js';
 import { MATERIALS } from './materials.js';
 import { runField } from './deposit.js';
@@ -37,6 +37,8 @@ const DRY = 1e-3; // a cell below (1 − DRY) of the plate height is dry (well a
 const HELD = 0.003 * ATM; // overpressure below which a relaxing pocket counts as settled
 const CG_TOL = 5e-5; // per-cell volume residual / cell volume; 20× below DRY so round-off never opens cells
 const FRONT = 0.8; // target front overshoot per plate step (cells)
+const PICARD = 30; // power-law face-factor iterations at most per solve
+const PICARD_TOL = 1e-2; // relative pressure change that ends them (press time within 0.5 % of 2e-3)
 
 // The deposited nozzle footprint extends slightly past either end of the path.
 function pathPoint(path, s) {
@@ -69,17 +71,24 @@ export function depositSources(run) {
   return sources;
 }
 
-/** Effective squeeze rheology for a run: options override the material card. */
+/**
+ * Squeeze rheology of a run (v2.0): the same power law τ = K·γ̇ⁿ as its nozzle flow (pasteRheology), so a flow
+ * calibration also moves the squeeze; options override K (`viscosity`, Pa·sⁿ), n (`flowIndex`) and the yield
+ * stress. Before v2.0 the squeeze used one Newtonian viscosity.
+ */
 export function squeezeRheology(config, options = {}) {
   const material = MATERIALS[config.material] || MATERIALS.putty;
-  const viscosity =
-    Number.isFinite(options.viscosity) && options.viscosity > 0
-      ? options.viscosity
-      : config.material === 'grease' && Number.isFinite(config.viscosity) && config.viscosity > 0
-        ? config.viscosity
-        : material.squeezeViscosity;
+  let paste = { K: material.squeezeViscosity, n: 1 };
+  try {
+    const r = pasteRheology(config);
+    if (r.K > 0 && r.n > 0) paste = r;
+  } catch {
+    /* incomplete config: material card */
+  }
+  const viscosity = Number.isFinite(options.viscosity) && options.viscosity > 0 ? options.viscosity : paste.K;
+  const flowIndex = Number.isFinite(options.flowIndex) && options.flowIndex > 0 ? options.flowIndex : paste.n;
   const yieldStress = Number.isFinite(options.yieldStress) && options.yieldStress >= 0 ? options.yieldStress : material.yieldStress;
-  return { viscosity, yieldStress };
+  return { viscosity, flowIndex, yieldStress };
 }
 
 // Jacobi-preconditioned conjugate gradient. Rows 0..m−1 are film cells (4 faces each, `nb`/`w`);
@@ -146,7 +155,18 @@ export function squeezeRaster(raster, settings) {
   const volume = Float64Array.from(raster.volume);
   const gap = settings.gap;
   const mode = settings.airMode || 'compressible';
-  const mu = settings.viscosity;
+  // Power-law film (v2.0): τ = K·γ̇ⁿ with K = `viscosity` (Pa·sⁿ) and n = `flowIndex` (1 = Newtonian). Flow per
+  // unit width in a slit of height h under gradient G is q = c·h^(2+1/n)·(G/K)^(1/n), c = 2n/(2n+1)·2^-(2+1/n);
+  // through one cell face in Δt that is κ·|Δp|^(1/n−1)·Δp with κ = c·h^(2+1/n)·K^(-1/n)·Δt·Δx^(1−1/n), which is
+  // h³Δt/12μ for n = 1. The face factor |Δp|^(1/n−1) is iterated (Picard, damped by n) inside each solve.
+  const K = settings.viscosity;
+  const nIndex = settings.flowIndex > 0 ? settings.flowIndex : 1;
+  const nonlinear = Math.abs(nIndex - 1) > 1e-9;
+  const cn = ((2 * nIndex) / (2 * nIndex + 1)) * 2 ** -(2 + 1 / nIndex);
+  const kappaOf = (h, dt) => cn * h ** (2 + 1 / nIndex) * K ** (-1 / nIndex) * dt * cellSize ** (1 - 1 / nIndex);
+  const dtOf = (h, kappa) => kappa / kappaOf(h, 1);
+  // A unit solve's pressures scale as κ^-n (κ^-1 when Newtonian), so the load fixes κ in closed form.
+  const kappaForLoad = (unit, F) => (unit / F) ** (1 / nIndex);
   const force = settings.force;
   const tauY = settings.yieldStress || 0;
   const settle = Math.max(0, settings.settleTime ?? PRESS_DEFAULTS.settleTime);
@@ -449,11 +469,95 @@ export function squeezeRaster(raster, settings) {
         }
     }
     for (let k = 0; k < size; k++) if (!(diag[k] > 0)) diag[k] = 1;
-    return { cells, m, size, nb, w, diag, rhsVol, open, pface, activePockets, excess, cap };
+    const sys = { cells, m, size, nb, w, diag, rhsVol, open, pface, activePockets, excess, cap };
+    if (nonlinear) {
+      sys.w0 = Float64Array.from(w);
+      sys.open0 = open.slice();
+      sys.pface0 = pface.slice();
+      // ln φ per face (0 = φ of 1).
+      sys.phiW = new Float64Array(4 * m);
+      sys.phiO = new Float64Array(open.length / 3);
+      sys.phiP = new Float64Array(pface.length / 5);
+      sys.fixed = new Uint8Array(size);
+      for (let k = 0; k < m; k++) {
+        let any = false;
+        for (let e = 4 * k; e < 4 * k + 4; e++) if (nb[e] >= 0) any = true;
+        if (!any) sys.fixed[k] = 1;
+      }
+      for (let f = 0; f < open.length; f += 3) sys.fixed[open[f]] = 0;
+      for (let f = 0; f < pface.length; f += 5) sys.fixed[pface[f]] = 0;
+    }
+    return sys;
   }
 
-  // Solve with film conductance κ = h³Δt/12μ (mm³/Pa); pocket nodes use Newton on pV = const.
-  // With κ = 1 and no pockets the unknowns are in volume units ("unit" solve) and scale with 1/κ.
+  // Power-law face factors from pressures x (in the units the system is posed in): φ = |∇p|^(1/n−1), with |∇p|
+  // the full gradient at the face (its normal difference, w·Δp, and the tangential difference averaged from the
+  // cells on either side) so the film conducts the same in every direction, not only along the grid axes. φ is
+  // blended geometrically with the previous factors by `beta` (β = n removes the 1-D Picard error in one step);
+  // then the effective weights and diagonal. A floor at 1e-4 of the largest face gradient keeps φ finite.
+  function reweight(sys, x, beta) {
+    const { m, size, nb, w0, open0, pface0, phiW, phiO, phiP, cells } = sys;
+    const ex = 1 / nIndex - 1;
+    // Central (or one-sided) pressure differences per cell along x and y over film neighbours.
+    const gx = new Float64Array(m);
+    const gy = new Float64Array(m);
+    for (let k = 0; k < m; k++) {
+      const l = nb[4 * k];
+      const r = nb[4 * k + 1];
+      const d = nb[4 * k + 2];
+      const u = nb[4 * k + 3];
+      const L = l >= 0 && l < m;
+      const Rr = r >= 0 && r < m;
+      const D = d >= 0 && d < m;
+      const U = u >= 0 && u < m;
+      gx[k] = L && Rr ? (x[r] - x[l]) / 2 : Rr ? x[r] - x[k] : L ? x[k] - x[l] : 0;
+      gy[k] = D && U ? (x[u] - x[d]) / 2 : U ? x[u] - x[k] : D ? x[k] - x[d] : 0;
+    }
+    // Work with ln φ = (ex/2)·ln(|∇p|²): one log and one exp per face.
+    const sq = (normal, tangent) => normal * normal + tangent * tangent;
+    let big = 0;
+    for (let k = 0; k < m; k++) big = Math.max(big, gx[k] * gx[k] + gy[k] * gy[k]);
+    for (let f = 0; f < open0.length; f += 3) big = Math.max(big, (open0[f + 2] * x[open0[f]]) ** 2);
+    for (let f = 0; f < pface0.length; f += 5) big = Math.max(big, (pface0[f + 3] * (x[pface0[f]] - x[pface0[f + 2]])) ** 2);
+    if (!(big > 0)) return;
+    const floor2 = 1e-8 * big; // (1e-4 of the largest gradient)²
+    const half = ex / 2;
+    const phi = (g2) => half * Math.log(g2 > floor2 ? g2 : floor2);
+    const mix = (old, now) => (beta >= 1 ? now : old + beta * (now - old));
+    const diag = new Float64Array(size);
+    for (let k = 0; k < m; k++)
+      for (let e = 4 * k; e < 4 * k + 4; e++) {
+        const j = nb[e];
+        if (j < 0 || j >= m) continue;
+        const across = e - 4 * k < 2 ? (gy[k] + gy[j]) / 2 : (gx[k] + gx[j]) / 2;
+        phiW[e] = mix(phiW[e], phi(sq(w0[e] * (x[k] - x[j]), across)));
+        sys.w[e] = w0[e] * Math.exp(phiW[e]);
+        diag[k] += sys.w[e];
+      }
+    for (let f = 0, q = 0; f < open0.length; f += 3, q++) {
+      const k = open0[f];
+      const horizontal = Math.abs(open0[f + 1] - cells[k]) === 1;
+      phiO[q] = mix(phiO[q], phi(sq(open0[f + 2] * x[k], horizontal ? gy[k] : gx[k])));
+      sys.open[f + 2] = open0[f + 2] * Math.exp(phiO[q]);
+      diag[k] += sys.open[f + 2];
+    }
+    for (let f = 0, q = 0; f < pface0.length; f += 5, q++) {
+      const k = pface0[f];
+      const nd = pface0[f + 2];
+      const horizontal = (pface0[f + 4] - 4 * k) < 2;
+      phiP[q] = mix(phiP[q], phi(sq(pface0[f + 3] * (x[k] - x[nd]), horizontal ? gy[k] : gx[k])));
+      const g = pface0[f + 3] * Math.exp(phiP[q]);
+      sys.pface[f + 3] = g;
+      sys.w[pface0[f + 4]] = g;
+      diag[k] += g;
+      diag[nd] += g;
+    }
+    for (let k = 0; k < size; k++) sys.diag[k] = sys.fixed[k] || !(diag[k] > 0) ? 1 : diag[k];
+  }
+
+  // Solve with film conductance κ (kappaOf; h³Δt/12μ when Newtonian, mm³/Pa); pocket nodes use Newton on
+  // pV = const. With κ = 1 and no pockets the unknowns are in volume units ("unit" solve) and scale with κ^-n.
+  // A power-law film also iterates its face factors until the pressures settle.
   function solve(sys, kappa, guessScale = 1, tight = false) {
     const { m, size, nb, w, rhsVol, activePockets: act, pface } = sys;
     const x = new Float64Array(size);
@@ -468,7 +572,10 @@ export function squeezeRaster(raster, settings) {
     });
     const absTol2 = size * (((tight ? 1e-10 : CG_TOL) * sys.cap) / kappa) ** 2;
     let inflow = new Float64Array(B);
-    for (let it = 0; it < (B ? 5 : 1); it++) {
+    if (nonlinear) reweight(sys, x, 1);
+    let prevX = null;
+    let lastChange = 1;
+    for (let it = 0; it < (B ? 5 : 1) + (nonlinear ? PICARD : 0); it++) {
       const diag = Float64Array.from(sys.diag);
       const rhs = new Float64Array(size);
       for (let k = 0; k < m; k++) rhs[k] = rhsVol[k] / kappa;
@@ -479,7 +586,8 @@ export function squeezeRaster(raster, settings) {
         rhs[m + b] = (C * qi[b] - fgas(b, qi[b])) / kappa;
         x[m + b] = qi[b];
       }
-      solvePressure(m, size, nb, w, diag, rhs, x, absTol2);
+      // Early face-factor rounds only steer the next one: a 10× looser residual is enough there.
+      solvePressure(m, size, nb, w, diag, rhs, x, nonlinear && lastChange > 10 * PICARD_TOL ? absTol2 * 100 : absTol2);
       inflow = new Float64Array(B);
       for (let f = 0; f < pface.length; f += 5) inflow[pface[f + 2] - m] += kappa * pface[f + 3] * (x[pface[f]] - x[pface[f + 2]]);
       let worst = 0;
@@ -488,7 +596,24 @@ export function squeezeRaster(raster, settings) {
         worst = Math.max(worst, Math.abs(inflow[b] - fgas(b, q)) / (V0[b] + 0.05 * sys.cap));
         qi[b] = q;
       }
-      if (worst < 0.02) break;
+      if (!nonlinear) {
+        if (worst < 0.02) break;
+        continue;
+      }
+      let change = 1;
+      if (prevX) {
+        let d = 0;
+        let big = 0;
+        for (let k = 0; k < m; k++) {
+          d = Math.max(d, Math.abs(x[k] - prevX[k]));
+          big = Math.max(big, Math.abs(x[k]));
+        }
+        change = big > 0 ? d / big : 0;
+      }
+      if (worst < 0.02 && change < (tight ? PICARD_TOL / 10 : PICARD_TOL) && lastChange <= 10 * PICARD_TOL) break;
+      lastChange = change;
+      prevX = x.slice(0, m);
+      reweight(sys, x, nIndex);
     }
     return { x, kappa, inflow, q: qi, hold };
   }
@@ -679,18 +804,18 @@ export function squeezeRaster(raster, settings) {
     if (!crushed) {
       const guess = kappaPrev && excessPrev ? (kappaPrev * sys.excess) / excessPrev : 0;
       // The plate moves no faster than the approach speed; below that the press force limits it.
-      const kappaSpeed = Number.isFinite(vmax) ? (h ** 3 * ((hCur - h) / vmax)) / (12 * mu) : 0;
+      const kappaSpeed = Number.isFinite(vmax) ? kappaOf(h, (hCur - h) / vmax) : 0;
       if (!act.length) {
-        // Pressures scale exactly with 1/κ: solve once in volume units and pick κ to carry the force.
-        sol = solve(sys, 1, guess);
-        kappa = Math.max(kappaSpeed, force > 0 ? Math.max(1e-30, unitLoad(sys, sol) / force) : 1);
+        // Pressures scale exactly with κ^-n: solve once in volume units and pick κ to carry the force.
+        sol = solve(sys, 1, guess ** nIndex);
+        kappa = Math.max(kappaSpeed, force > 0 ? Math.max(1e-30, kappaForLoad(unitLoad(sys, sol), force)) : 1);
       } else {
-        kappa = Math.max(kappaSpeed, guess || Math.max(1e-30, unitLoad(sys, solve(build(cap, []), 1, 0)) / force));
+        kappa = Math.max(kappaSpeed, guess || Math.max(1e-30, kappaForLoad(unitLoad(sys, solve(build(cap, []), 1, 0)), force)));
         for (let r = 0; r < 3; r++) {
           sol = solve(sys, kappa);
           const ratio = load(sys, sol) / force;
           if (!(ratio > 0) || Math.abs(ratio - 1) < 0.35 || (ratio < 1 && kappa <= kappaSpeed * (1 + 1e-9))) break;
-          kappa = Math.max(kappaSpeed, kappa * Math.min(20, Math.max(0.05, ratio)));
+          kappa = Math.max(kappaSpeed, kappa * Math.min(20, Math.max(0.05, ratio)) ** (1 / nIndex));
         }
       }
       t = trialVolumes(sys, sol);
@@ -702,10 +827,10 @@ export function squeezeRaster(raster, settings) {
       continue;
     }
     volume.set(t.trial);
-    const scale = act.length ? 1 : kappa;
+    const scale = act.length ? 1 : kappa ** nIndex;
     for (let q = 0; q < sys.m; q++) warm[sys.cells[q]] = sol.x[q] / scale;
     act.forEach((b, q) => (b.q = sol.q[q]));
-    const dt = (12 * mu * kappa) / h ** 3;
+    const dt = dtOf(h, kappa);
     time += dt;
     dtLast = dt;
     kappaPrev = kappa;
@@ -746,7 +871,7 @@ export function squeezeRaster(raster, settings) {
       const step = Math.min(dt, settle - relaxTime);
       const sys = build(cap, act);
       if (sys.m === 0) break;
-      const sol = solve(sys, (gap ** 3 * step) / (12 * mu));
+      const sol = solve(sys, kappaOf(gap, step));
       const t = trialVolumes(sys, sol);
       if ((t.negative || t.drain > 0.6 || t.swing > 0.3) && dt > 1e-6) {
         dt *= 0.5;
@@ -829,7 +954,8 @@ export function estimateCompression(run, options) {
   // null / undefined means "material default"; anything else must be a valid number.
   if (o.viscosity != null && !(o.viscosity >= 1 && o.viscosity <= 1e7)) throw new Error('有效黏度需介於 1 與 10,000,000 Pa·s');
   if (o.yieldStress != null && !(o.yieldStress >= 0 && o.yieldStress <= 1e6)) throw new Error('降伏應力需介於 0 與 1,000,000 Pa');
-  const { viscosity, yieldStress } = squeezeRheology(c, o);
+  if (o.flowIndex != null && !(o.flowIndex >= 0.1 && o.flowIndex <= 1.2)) throw new Error('剪切變稀指數需介於 0.1 與 1.2');
+  const { viscosity, flowIndex, yieldStress } = squeezeRheology(c, o);
   if (!(viscosity >= 1 && viscosity <= 1e7)) throw new Error('有效黏度需介於 1 與 10,000,000 Pa·s');
   if (!(yieldStress >= 0 && yieldStress <= 1e6)) throw new Error('降伏應力需介於 0 與 1,000,000 Pa');
   const conductivity = Number.isFinite(o.conductivity) && o.conductivity > 0 ? o.conductivity : material.conductivity;
@@ -965,7 +1091,7 @@ export function estimateCompression(run, options) {
   const force = o.pressKgf * KGF;
   const sq = squeezeRaster(
     { cols, rows, cellSize, volume: deposit },
-    { gap: o.gap, airMode: o.airMode, force, pressSpeed: o.pressSpeed, viscosity, yieldStress, settleTime: o.settleTime, frames: o.frames, sourceFraction, trace: o.trace },
+    { gap: o.gap, airMode: o.airMode, force, pressSpeed: o.pressSpeed, viscosity, flowIndex, yieldStress, settleTime: o.settleTime, frames: o.frames, sourceFraction, trace: o.trace },
   );
   const volume = sq.volume;
   const cap = sq.cap;
@@ -1091,6 +1217,7 @@ export function estimateCompression(run, options) {
     forceKgf: o.pressKgf,
     pressSpeed: o.pressSpeed,
     viscosity,
+    flowIndex,
     yieldStress,
     settleTime: o.settleTime,
     pressTime: sq.press.time,
@@ -1113,7 +1240,7 @@ export function estimateCompression(run, options) {
     vent: '被膠包圍的空氣假設全部排出（覆蓋率上限）',
   };
   const warnings = [
-    `覆蓋與空洞來自平行板 Hele-Shaw 擠壓近似（等效牛頓黏度 ${Math.round(viscosity)} Pa·s、定力 ${o.pressKgf} kgf 壓到墊片）；${AIR_TEXT[o.airMode]}。未含剪切稀化、壁滑、潤濕與指狀穿透，不能判定實際接觸或可靠度。`,
+    `覆蓋與空洞來自平行板 Hele-Shaw 擠壓近似（冪律膏體 K ${Math.round(viscosity)} Pa·sⁿ、n ${+flowIndex.toFixed(2)}，與出膠用同一組流變；定力 ${o.pressKgf} kgf 壓到墊片）；${AIR_TEXT[o.airMode]}。未含壁滑、觸變、潤濕與指狀穿透，不能判定實際接觸或可靠度。`,
     '熱阻為一維估算：(間隙 ÷ 導熱率 + TDS 推算接觸熱阻) ÷ 濕潤面積；不含擴散熱阻與空洞周邊的橫向傳熱，只供方案相對比較。',
   ];
   if (o.airMode === 'compressible' && sq.press.sealed > 0)
@@ -1122,7 +1249,13 @@ export function estimateCompression(run, options) {
     );
   if (sq.press.coarse)
     warnings.push('壓合步數超過上限，後段改以粗步長完成；覆蓋與夾氣仍有效，但壓合時間與壓合中的氣壓精度下降。');
-  if (sq.press.time > 120) warnings.push(`以 ${o.pressKgf} kgf 壓到墊片約需 ${sq.press.time.toFixed(0)} s；實際手壓若較快，壓合中的氣泡壓縮會更大。`);
+  if (sq.press.time > 120) {
+    const t = sq.press.time;
+    const span = t < 600 ? `${t.toFixed(0)} s` : t < 7200 ? `${(t / 60).toFixed(0)} 分鐘` : `${(t / 3600).toFixed(1)} 小時`;
+    warnings.push(
+      `以 ${o.pressKgf} kgf 壓到墊片約需 ${span}：越接近墊片膠層越薄、膠流越慢，剪切變稀的膏體在低剪切率下黏度很高，最後一段最花時間。實際組裝時間內膠層可能停在比墊片厚的地方（熱阻變高）；要更薄需要更大的力或更長的保壓。壓合中的氣泡壓縮與最後的覆蓋仍以壓到墊片計算。`,
+    );
+  }
   if (o.airMode === 'compressible' && sq.press.sealed > 0)
     warnings.push('氣泡在膠牆變薄處排出（吹破）的位置與時機受網格影響（指狀穿透未完整解析）；比較圖樣請使用相同網格，建議 ≤ 0.5 mm。');
   if (unresolved > 1e-9) warnings.push('部分膠量被夾氣區完全包圍而無法再推出，已保留在原位；局部膜厚可能高於間隙。');
@@ -1143,6 +1276,10 @@ export function estimateCompression(run, options) {
   if (o.gap < material.minBondLine)
     warnings.push(
       `${material.name} 資料表最小黏結層厚度為 ${material.minBondLine} mm；目前目標間隙較小，須向廠商確認適用性，不代表此模型已考慮顆粒或硬接觸。`,
+    );
+  else if (o.gap < 1.5 * material.minBondLine)
+    warnings.push(
+      `目標間隙 ${o.gap} mm 接近 ${material.name} 的最小黏結層厚度 ${material.minBondLine} mm（TDS）：膠層這麼薄時填料顆粒會互相卡住，實際需要的壓合力可能比模型高很多，膠層也可能停在比墊片更厚處。模型把膏體當連續流體，沒有算這一段；請用透明板或實際組裝量膠層厚度。`,
     );
 
   return {

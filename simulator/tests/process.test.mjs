@@ -52,14 +52,27 @@ test('米字形 (star): eight spokes laid out and back from the centre, inside t
   assert.ok(run.summary.deposited > 0 && run.motion.corners >= 8);
 });
 
-test('flow calibration fits the flow law to one measured output', () => {
+test('flow calibration fits the flow law to one measured output, or two at different pressures', () => {
   const grease = { ...fromRegistry(registry, 'grease'), diameter: 0.84, pressure: 100 };
   const model = steadyFlow(grease);
-  // Ten times the model flow: the equivalent viscosity drops tenfold and the model then matches.
+  // Ten times the model flow: Q ∝ K^(-1/n), so the consistency drops by 10^n and the model then matches.
   const fit = calibrateFlow(grease, model * 10 * grease.density * 60, 60);
   assert.equal(fit.key, 'viscosity');
-  assert.ok(Math.abs(fit.ratio - 10) < 1e-9 && Math.abs(fit.value - grease.viscosity / 10) < 1e-9 && fit.inRange);
+  assert.ok(Math.abs(fit.ratio - 10) < 1e-9 && Math.abs(fit.value - grease.viscosity * 10 ** -grease.flowIndex) < 1e-9 && fit.inRange);
   assert.ok(Math.abs(steadyFlow({ ...grease, viscosity: fit.value }) / (model * 10) - 1) < 1e-12);
+  // Two pressures measured on a paste with n = 0.5, K = 1500: both are recovered.
+  const truth = { ...grease, flowIndex: 0.5, viscosity: 1500 };
+  const g = (p) => steadyFlow({ ...truth, pressure: p }) * truth.density * 60;
+  const two = calibrateFlow(grease, g(100), 60, { pressure: 50, grams: g(50), seconds: 60 });
+  const got = Object.fromEntries(two.fits.map((f) => [f.key, f.value]));
+  assert.ok(Math.abs(got.flowIndex - 0.5) < 1e-9 && Math.abs(got.viscosity / 1500 - 1) < 1e-9 && Math.abs(two.exponent - 2) < 1e-9, JSON.stringify(got));
+  assert.throws(() => calibrateFlow(grease, g(100), 60, { pressure: 99, grams: g(50), seconds: 60 }), /5%/);
+  // Putty: the pressure exponent and the reference rate.
+  const puttyTruth = { ...fromRegistry(registry, 'putty'), pressureExponent: 2.2, referenceRate: 0.5 };
+  const pg = (p) => steadyFlow({ ...puttyTruth, pressure: p }) * puttyTruth.density * 60;
+  const pt = calibrateFlow({ ...fromRegistry(registry, 'putty'), pressure: 90 }, pg(90), 60, { pressure: 40, grams: pg(40), seconds: 60 });
+  const pgot = Object.fromEntries(pt.fits.map((f) => [f.key, f.value]));
+  assert.ok(Math.abs(pgot.pressureExponent - 2.2) < 1e-9 && Math.abs(pgot.referenceRate - 0.5) < 1e-9, JSON.stringify(pgot));
   const putty = fromRegistry(registry, 'putty');
   const p = calibrateFlow(putty, steadyFlow(putty) * 0.5 * putty.density * 10, 10);
   assert.ok(p.key === 'referenceRate' && Math.abs(p.value - putty.referenceRate * 0.5) < 1e-12);
@@ -85,8 +98,8 @@ test('process choice: a nozzle and speed that lay the whole dose band, trading b
   const speeds = searchSpace(c, thinHeat).speeds;
   const needles = NEEDLES.map((n) => n.id);
   const p = chooseProcess(c, { ...band, speeds, needles });
-  // 18G cannot lay 1.4 × at 100 psi even at 1 mm/s: a coarser needle, with room on the drive at both ends.
-  assert.ok(p.fits && p.ok && p.headroom && p.diameter > 0.84, JSON.stringify(p));
+  // A whole-gauge needle that lays the band with room on the drive at both ends.
+  assert.ok(p.fits && p.ok && p.headroom && NEEDLES.some((n) => n.id === p.diameter), JSON.stringify(p));
   const top = runTiming({ ...c, speed: p.speed, diameter: p.diameter, pressure: 100 }).deposited;
   assert.ok(top >= band.needMl && Math.abs(top / p.capTop - 1) < 1e-9, 'capacity by flow scaling is exact');
   // A longer cycle allowed buys a bead closer to the nozzle (finer needle); a shorter one a coarser needle.
@@ -94,8 +107,8 @@ test('process choice: a nozzle and speed that lay the whole dose band, trading b
   const quick = chooseProcess(c, { ...band, speeds, needles, cycleRef: 10 });
   assert.ok(slow.diameter <= p.diameter && quick.diameter >= p.diameter && slow.cycle >= quick.cycle, `${slow.diameter} ${p.diameter} ${quick.diameter}`);
   assert.ok(Math.abs(Math.log(slow.ratio)) <= Math.abs(Math.log(quick.ratio)));
-  // The fixed 18G at 1 mm/s cannot reach the band top; a path too long for 1 mm/s cannot run at all.
-  const fixed = chooseProcess(thin({ edgeInset: 4.5 }), { ...band, speeds: [1], needles: [0.84] });
+  // A fixed 25G at 1 mm/s cannot reach the band top; a path too long for 1 mm/s cannot run at all.
+  const fixed = chooseProcess(thin({ edgeInset: 4.5 }), { ...band, speeds: [1], needles: [0.25] });
   assert.ok(fixed.fits && !fixed.ok && fixed.capTop < band.needMl);
   assert.equal(chooseProcess(thin({ pattern: 'serpentine', spacing: 2.5, edgeInset: 1 }), { ...band, speeds: [1], needles }).fits, false);
   // A volumetric pump: flow does not depend on the needle, so the bead decides the needle.
@@ -112,20 +125,21 @@ test('process cost: bead band, cycle over the reference, drive at its range end'
   assert.equal(processCost({ bead: { speedRatio: 1 }, cycle: 10, headroom: false }), 0.5);
 });
 
-test('thin gap, viscous grease: the auto process lays the dose band where a fixed 18G is capped', async () => {
+test('thin gap, viscous grease: the auto process lays the dose band where a fixed 21G is capped', async () => {
   const opts = { goals: { coverage: 95, overflow: 3 }, tolerance: 0.1, searchCell: 0.75, verifyCell: 0.5, keep: 1, verify: 1, band: 3, bisections: 3 };
   const geometry = { spacing: { search: false }, inset: { search: false } };
   const auto = await optimizeSettings(thin(), thinHeat, { ...opts, nozzle: 'auto', vars: geometry });
   const a = auto.best;
   assert.equal(auto.sizing.limited, 0);
-  assert.ok(a.verified && a.diameter > 0.84 && a.headroom === true && a.cycle < 60, JSON.stringify({ d: a.diameter, v: a.speed, cycle: a.cycle }));
+  assert.ok(a.verified && a.diameter > 0.25 && a.headroom === true && a.cycle < 60, JSON.stringify({ d: a.diameter, v: a.speed, cycle: a.cycle }));
   assert.ok(a.bandPoints.length === 3 && a.bandPoints.every((p) => p.reached && !p.capped && !p.fallback));
   assert.ok(a.bandPoints.every((p) => Math.abs(p.laid / p.factor - 1) < 0.03), 'every dose of the band is laid');
-  // Fixed 18G at 1 mm/s (the v1.7 result): the top of the band is beyond the equipment, and the page is told so.
-  const fixed = await optimizeSettings(thin(), thinHeat, { ...opts, nozzle: 'fixed', vars: { ...geometry, speed: { search: false } } });
+  // A fixed 21G at 1 mm/s: the band is beyond the equipment (it lays at most about 0.9 × the requirement), and
+  // the page is told so.
+  const fixed = await optimizeSettings({ ...thin(), diameter: 0.51 }, thinHeat, { ...opts, nozzle: 'fixed', vars: { ...geometry, speed: { search: false } } });
   const f = fixed.best;
   assert.equal(fixed.sizing.limited, 1);
-  assert.ok(!f.pass && f.capFactor > 1 && f.capFactor < fixed.sizing.needFactor, `${f.capFactor}`);
+  assert.ok(!f.pass && f.capFactor > 0.5 && f.capFactor < fixed.sizing.needFactor, `${f.capFactor}`);
   assert.ok(f.bandPoints.some((p) => p.capped && p.laid < p.factor * 0.97));
 });
 
@@ -203,4 +217,31 @@ test('3D bead: the pattern is drawn from the deposit field, frame by frame', asy
     }
   assert.ok(mid > 1.7 * star.summary.maxHeight && mid < 2.3 * star.summary.maxHeight, `${mid} ${star.summary.maxHeight}`);
   terrain.dispose();
+});
+
+test('machine settings: feed-on delay at the line start, pneumatic response slows as the cartridge empties', async () => {
+  const { airScale, R75_AIR } = await import('../src/engine.js');
+  const { estimateCompression } = await import('../src/compression.js');
+  const line = { ...fromRegistry(registry, 'grease'), mode: 'line', lineLength: 40, shutoffDistance: 0, speed: 10, diameter: 0.84 };
+  // Feed-on delay: the nozzle waits at the start with the dispenser on, then moves; the cycle is longer by the
+  // wait and the start of the line gets the glue laid meanwhile.
+  const a = simulate(line);
+  const b = simulate({ ...line, startDwell: 0.1 });
+  assert.ok(Math.abs(b.ending.motionEnd - a.ending.motionEnd - 0.1) < 1e-9 && b.summary.deposited > a.summary.deposited);
+  const head = (r) => r.summary.deposits.slice(0, Math.ceil(3 / r.cellLength)).reduce((s, v) => s + v, 0);
+  assert.ok(head(b) > head(a) * 1.2, `${head(a)} ${head(b)}`);
+  assert.ok(Math.abs(runTiming({ ...line, startDwell: 0.1 }).deposited / b.summary.deposited - 1) < 1e-9);
+  assert.ok(b.frames.find((f) => f.t > 0.05 && f.t < 0.09).x === a.frames[0].x, 'still at the start during the wait');
+  // Air over the piston: the time constants scale with the air volume (cartridge − fill + dead volume).
+  assert.equal(airScale(line), 1);
+  const low = { ...line, fill: 10 };
+  assert.ok(Math.abs(airScale(low) - (R75_AIR.cartridge - 10 + R75_AIR.dead) / (R75_AIR.cartridge - R75_AIR.referenceFill + R75_AIR.dead)) < 1e-12);
+  assert.equal(airScale({ ...fromRegistry(registry, 'grease', 'P300'), fill: 10 }), 1, 'a pump has no air cushion');
+  // A short dot lays less from a nearly empty cartridge: the pressure takes longer to build.
+  const dot = { ...line, mode: 'point', gateDuration: 0.3 };
+  assert.ok(simulate({ ...dot, fill: 10 }).summary.deposited < 0.8 * simulate(dot).summary.deposited);
+  // A gap close to the material's minimum bond line is flagged.
+  const run = simulate({ ...line, mode: 'pattern', pathSettings: square('serpentine') });
+  const near = estimateCompression(run, { ...thinHeat, gap: 0.06, cellSize: 1 });
+  assert.ok(near.warnings.some((w) => w.includes('最小黏結層厚度')));
 });

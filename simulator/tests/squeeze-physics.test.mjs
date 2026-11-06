@@ -36,6 +36,26 @@ test('constant-force squeeze of a disc matches the Stefan closing time on coarse
   }
 });
 
+test('shear-thinning squeeze of a disc matches the power-law closing time (v2.0)', () => {
+  // Constant-volume disc between parallel plates, power law τ = K·γ̇ⁿ, constant force F:
+  // F = π/(n+3) · K · ((2n+1)/2n)ⁿ · (2/h)^(2n+1) · (−ḣ/2)ⁿ · R^(n+3), R² = V/(πh) ⇒ −ḣ = C·h^a, a = 5(n+1)/2n.
+  const [h1, h2, K, F] = [1, 0.3, 1000, 50];
+  const r0 = raster(0.5, 2 * 6 * Math.sqrt(h1 / h2) + 6, h1, (x, y) => Math.hypot(x, y) < 6);
+  const V = total(r0.volume) * 1e-9;
+  for (const n of [0.6, 0.4]) {
+    const a = (5 * (n + 1)) / (2 * n);
+    const C = (((F * (n + 3)) / (Math.PI * K)) * ((2 * n) / (2 * n + 1)) ** n * 2 ** -(2 * n + 1) * 2 ** n * (Math.PI / V) ** ((n + 3) / 2)) ** (1 / n);
+    const closed = ((h2 * 1e-3) ** (1 - a) - (h1 * 1e-3) ** (1 - a)) / (C * (a - 1));
+    const out = squeezeRaster(r0, { gap: h2, airMode: 'vent', force: F, viscosity: K, flowIndex: n, settleTime: 0 });
+    assert.ok(Math.abs(out.press.time / closed - 1) < 0.05, `n ${n}: ${out.press.time} s vs ${closed} s`);
+    assert.ok(Math.abs(total(out.volume) - total(r0.volume)) < 1e-9 * total(r0.volume));
+  }
+  // Shear thinning at these rates: the same disc closes far faster than a Newtonian paste of μ = K.
+  const newton = squeezeRaster(r0, { gap: h2, airMode: 'vent', force: F, viscosity: K, settleTime: 0 });
+  const thin = squeezeRaster(r0, { gap: h2, airMode: 'vent', force: F, viscosity: K, flowIndex: 0.4, settleTime: 0 });
+  assert.ok(thin.press.time < newton.press.time / 5);
+});
+
 test('an enclosed bubble drifts with the squeeze flow at about twice the fluid speed (Taylor–Saffman)', () => {
   const [h1, xb] = [1, 4];
   const r0 = raster(0.25, 2 * 10 * Math.SQRT2 + 8, h1, (x, y) => Math.hypot(x, y) < 10 && Math.hypot(x - xb, y) > 1.5);
@@ -133,11 +153,12 @@ test('frames carry the press and relaxation phases with time; options are valida
 });
 
 test('a thin bond line with a tight spiral still reaches the spacers: more material spreads further and takes longer', async () => {
-  // Field case: Tgrease square spiral 1.5 mm pitch, Ø2 mm nozzle, 0.05 mm spacers, two travel speeds.
-  // v1.1.0 ran out of plate steps here and jumped to the gap, leaving most material unspread.
+  // Field case: Tgrease square spiral 1.5 mm pitch, 0.05 mm spacers, two travel speeds. v1.1.0 ran out of plate
+  // steps here and jumped to the gap, leaving most material unspread. v2.0: a 16G needle at 70 psi lays about
+  // 2–3 × the requirement with the shear-thinning flow law (the original Ø2 mm at 90 psi now lays ~60 ×).
   const { simulate } = await import('../src/engine.js');
   const heat = { shape: 'rectangle', width: 30, depth: 30, offsetX: 0, offsetY: 0, gap: 0.05, cellSize: 0.75, power: 25 };
-  const base = { ...fromRegistry(registry, 'grease'), mode: 'pattern', diameter: 2, pathSettings: { ...heat, pattern: 'spiral', spacing: 1.5, edgeInset: 3, spiralShape: 'square', spiralDirection: 'inside-out' } };
+  const base = { ...fromRegistry(registry, 'grease'), mode: 'pattern', diameter: 1.19, pressure: 70, pathSettings: { ...heat, pattern: 'spiral', spacing: 1.5, edgeInset: 3, spiralShape: 'square', spiralDirection: 'inside-out' } };
   const [fast, slow] = [
     { speed: 100, acceleration: 500 },
     { speed: 50, acceleration: 250 },
@@ -150,8 +171,9 @@ test('a thin bond line with a tight spiral still reaches the spacers: more mater
   }
   assert.ok(slow.squeezeOutMm > fast.squeezeOutMm + 2, 'more material squeezes out further');
   assert.ok(slow.coveredPercent >= fast.coveredPercent - 1);
-  // Stefan: closing time grows with the square of the volume at a fixed force.
+  // Stefan for a power law: at a fixed force the closing time grows as V^((n+3)/2n) (V² when Newtonian).
+  const n = slow.press.flowIndex;
   const ratio = slow.press.pressTime / fast.press.pressTime;
-  const expected = (slow.depositedMl / fast.depositedMl) ** 2;
-  assert.ok(ratio > 0.6 * expected && ratio < 1.6 * expected, `time ratio ${ratio} vs V² ratio ${expected}`);
+  const expected = (slow.depositedMl / fast.depositedMl) ** ((n + 3) / (2 * n));
+  assert.ok(n < 1 && ratio > 0.6 * expected && ratio < 1.6 * expected, `time ratio ${ratio} vs V^((n+3)/2n) ${expected}`);
 });
