@@ -40,6 +40,46 @@ const free = (area, ratio) => {
   return { w, h: ratio * w };
 };
 
+// An L: 10 mm along x, then 10 mm along y, uniform deposit per 0.5 mm cell.
+function ell({ area = 0.3, standoff = 2, bore = 1.54, ratio = 0.5 } = {}) {
+  const points = [
+    { x: 0, y: 0 },
+    { x: 10, y: 0 },
+    { x: 10, y: 10 },
+  ];
+  const path = { points, cumulative: [0, 10, 20], length: 20 };
+  const deposits = Array(40).fill((area * 0.5) / 1000);
+  return {
+    config: { mode: 'pattern', lineRatio: ratio, standoff, diameter: bore, pathSettings: { offsetX: 0, offsetY: 0 } },
+    path,
+    pathLength: 20,
+    gridStart: 0,
+    cellLength: 0.5,
+    summary: { deposits, deposited: deposits.reduce((a, b) => a + b, 0), maxHeight: 0 },
+  };
+}
+
+test('deposit field: a corner is round outside and filled once inside, a straight bead keeps its half-ellipse', () => {
+  // Paste leaves a round nozzle: each step lands as a disc of the bead's width, which swept along a straight
+  // line is exactly the half-ellipse. Square strips across the path (v1.9–v2.0.1) left a notch outside every
+  // corner, a double layer inside it, and flat end faces that stood up like fins in 3D.
+  const run = ell();
+  const f = depositField(run);
+  const { w, h } = free(0.3, 0.5);
+  assert.ok(Math.abs(f.volumeMm3 / (run.summary.deposited * 1000) - 1) < 1e-12 && f.lostMm3 === 0);
+  const mid = section(f, 5);
+  assert.ok(Math.abs(mid.top / h - 1) < 0.03, `${mid.top} vs ${h}`);
+  assert.ok(Math.abs(mid.width / w - 1) < 0.15, `${mid.width} vs ${w}`);
+  const g = f.grid;
+  const at = (x, y) => f.z[Math.floor((y - g.originY) / g.cell) * g.nx + Math.floor((x - g.originX) / g.cell)];
+  // Outside the corner: glue within half a bead width of the vertex (thin, only the discs near the vertex
+  // reach it), none beyond.
+  assert.ok(at(10 + 0.3 * w, -0.3 * w) > 0.15 * h, `${at(10 + 0.3 * w, -0.3 * w)}`);
+  assert.ok(at(10 + 0.45 * w, -0.45 * w) < 0.02 * h, `${at(10 + 0.45 * w, -0.45 * w)}`);
+  // Inside: the overlap of the two legs' footprints, about √2 the bead height at most (two strips gave 2×).
+  assert.ok(f.maxHeight > 1.1 * h && f.maxHeight < 1.6 * h, `${f.maxHeight} vs ${h}`);
+});
+
 test('deposit field: the return pass stands on the outward bead, volume exact', () => {
   const run = outAndBack();
   const f = depositField(run);

@@ -39,7 +39,14 @@ export function createCompressionScene(config, settings, result, { plateMargin =
   const finalCoverage = Uint8Array.from(grid.coverage, (v) => Math.round(Math.max(0, Math.min(1, Number(v) || 0)) * 255));
   const frames = grid.frames?.length
     ? grid.frames
-    : [{ gap: settings.gap, coverage: finalCoverage, trapped: grid.voidMask || new Uint8Array(finalCoverage.length) }];
+    : [
+        {
+          gap: settings.gap,
+          coverage: finalCoverage,
+          trapped: grid.voidMask || new Uint8Array(finalCoverage.length),
+          air: grid.airFraction ? Uint8Array.from(grid.airFraction, (v) => Math.round(Math.max(0, Math.min(1, Number(v) || 0)) * 255)) : null,
+        },
+      ];
   const n = grid.cols * grid.rows;
   const arrival = new Float32Array(n).fill(-1);
   frames.forEach((f, k) => {
@@ -149,6 +156,35 @@ export function createCompressionScene(config, settings, result, { plateMargin =
   let colorMode = 'material';
   let current = frames.length - 1;
   const shade = new THREE.Color();
+  // Trapped air tints the film in the chosen colour by the air share of its cells, so a squeezed bubble that
+  // still holds some glue shows as well as one that is all air; the quads below show through film holes.
+  const voidTint = new THREE.Color(voidColor);
+  const airSmooth = new Float32Array(vx * vy);
+  const raw = new Float32Array(vx * vy);
+  // Vertex field = mean of the four touching cells, then one 3×3 box pass so an edge is interpolated across a
+  // cell instead of following the cell staircase.
+  const vertexField = (cell, out) => {
+    for (let j = 0; j < vy; j++)
+      for (let i = 0; i < vx; i++) {
+        const gx = x0 + i;
+        const gy = y0 + j;
+        raw[j * vx + i] = (cell(gx - 1, gy - 1) + cell(gx, gy - 1) + cell(gx - 1, gy) + cell(gx, gy)) / 4;
+      }
+    for (let j = 0; j < vy; j++)
+      for (let i = 0; i < vx; i++) {
+        let sum = 0;
+        let count = 0;
+        for (let dj = -1; dj <= 1; dj++)
+          for (let di = -1; di <= 1; di++) {
+            const a = i + di;
+            const b = j + dj;
+            if (a < 0 || b < 0 || a >= vx || b >= vy) continue;
+            sum += raw[b * vx + a];
+            count++;
+          }
+        out[j * vx + i] = sum / count;
+      }
+  };
   function setFrame(index) {
     current = Math.max(0, Math.min(frames.length - 1, index));
     const f = frames[current];
@@ -156,30 +192,13 @@ export function createCompressionScene(config, settings, result, { plateMargin =
     plate.position.set((minX + maxX) / 2, (minY + maxY) / 2, z + gap + plateThickness / 2);
     outline.position.z = z + gap + 0.02;
     if (hasFilm) {
-      const cell = (x, y) => (x < 0 || y < 0 || x >= grid.cols || y >= grid.rows ? 0 : f.coverage[y * grid.cols + x] / 255);
-      // Vertex field = mean of the four touching cells, then one 3×3 box pass so the wetted edge is
-      // interpolated across a cell instead of following the cell staircase.
-      const raw = new Float32Array(vx * vy);
-      for (let j = 0; j < vy; j++)
-        for (let i = 0; i < vx; i++) {
-          const gx = x0 + i;
-          const gy = y0 + j;
-          raw[j * vx + i] = (cell(gx - 1, gy - 1) + cell(gx, gy - 1) + cell(gx - 1, gy) + cell(gx, gy)) / 4;
-        }
-      for (let j = 0; j < vy; j++)
-        for (let i = 0; i < vx; i++) {
-          let sum = 0;
-          let count = 0;
-          for (let dj = -1; dj <= 1; dj++)
-            for (let di = -1; di <= 1; di++) {
-              const a = i + di;
-              const b = j + dj;
-              if (a < 0 || b < 0 || a >= vx || b >= vy) continue;
-              sum += raw[b * vx + a];
-              count++;
-            }
-          smooth[j * vx + i] = sum / count;
-        }
+      const inside = (x, y) => x >= 0 && y >= 0 && x < grid.cols && y < grid.rows;
+      vertexField((x, y) => (inside(x, y) ? f.coverage[y * grid.cols + x] / 255 : 0), smooth);
+      // Air share per cell: the squeeze's own (frames since v2.1), else the trapped mask of older results.
+      const air = f.air || f.trapped;
+      const scaleAir = f.air ? 1 / 255 : 1;
+      if (air) vertexField((x, y) => (inside(x, y) ? air[y * grid.cols + x] * scaleAir : 0), airSmooth);
+      else airSmooth.fill(0);
       for (let j = 0; j < vy; j++)
         for (let i = 0; i < vx; i++) {
           const v = j * vx + i;
@@ -200,6 +219,7 @@ export function createCompressionScene(config, settings, result, { plateMargin =
             const rgb = rampColor(t < 0 ? 1 : t);
             shade.setRGB(rgb[0], rgb[1], rgb[2], THREE.SRGBColorSpace);
           } else shade.copy(glue).multiplyScalar(0.7 + 0.2 * Math.min(1, value));
+          if (airSmooth[v] > 0.02) shade.lerp(voidTint, Math.min(1, 1.8 * airSmooth[v]));
           colors[3 * v] = shade.r;
           colors[3 * v + 1] = shade.g;
           colors[3 * v + 2] = shade.b;
@@ -248,6 +268,8 @@ export function createCompressionScene(config, settings, result, { plateMargin =
     setFrame,
     setVoidColor(color) {
       voidMesh.material.color.set(color);
+      voidTint.set(color);
+      setFrame(current);
     },
     setColorMode(mode) {
       colorMode = mode;

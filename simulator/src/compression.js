@@ -722,11 +722,13 @@ export function squeezeRaster(raster, settings) {
   const snapshot = (h, cap) => {
     const cov = new Uint8Array(n);
     const trapped = new Uint8Array(n);
+    const air = new Uint8Array(n); // air share of the cell (pockets and rigid trapped air), 0–255
     let covered = 0;
     for (let i = 0; i < n; i++) {
       const f = state[i] === FROZEN ? 0 : Math.min(1, volume[i] / cap);
       cov[i] = Math.round(f * 255);
       if (state[i] === FROZEN || (state[i] === POCKET && f < 0.5)) trapped[i] = 1;
+      if (state[i] === FROZEN || state[i] === POCKET) air[i] = Math.round((1 - f) * 255);
       if (sourceFraction) covered += sourceFraction[i] * f * area;
     }
     // Count bubbles the way the summary does (at least max(3 cells, 0.5 mm²) of footprint).
@@ -744,6 +746,7 @@ export function squeezeRaster(raster, settings) {
       phase,
       coverage: cov,
       trapped,
+      air,
       coveredPercent: sourceArea > 0 ? (covered / sourceArea) * 100 : 0,
       bubbles: count,
       bubbleKPa: maxP / 1000,

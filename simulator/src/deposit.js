@@ -5,6 +5,9 @@ import { pointOnPath } from './path-planning.js';
  * Deposited glue (v1.9): one height field of glue thickness on the part, laid cell by cell in the order the
  * nozzle lays it, so a pass that comes back over earlier glue lands on that glue. The 3D bead, the stack
  * check and the squeeze all start from this field.
+ *  - Footprint (v2.1): paste leaves a round nozzle and lands under it, so each step lays a disc of the bead's
+ *    width; along a straight path the discs add up to the bead's half-ellipse cross-section, round a corner
+ *    they give a round outside and a filled inside, and a bead starts and ends round.
  *  - Superposition: every cell's volume goes where it is laid; the total is exact.
  *  - Remaining gap: the needle tip stays at the standoff above the part, so over earlier glue the gap left
  *    under it is the standoff minus the glue below the bore. A bead taller than that gap is pressed to it
@@ -13,7 +16,7 @@ import { pointOnPath } from './path-planning.js';
  *    the new glue flat and wide, so the pile grows sideways instead of up.
  *  - Needle plough: glue standing above the needle tip inside the needle's outer diameter is in its way; the
  *    moving needle pushes it out to the side it is on, into a ridge beside the needle (volume conserved).
- * The glue a pass has just laid is hidden from its own nozzle for a few grid cells behind it, so the grid does
+ * The glue a pass has just laid is hidden from its own nozzle until the nozzle has passed it, so the grid does
  * not mistake a bead for its own predecessor. Not modelled: glue the needle wets and carries away (strings,
  * tails), slumping under gravity or surface tension, air folded in where a bead crosses another (evaluated in
  * 30_v1.9來回點膠的疊膠物理.md). Engineering model, not free-surface flow.
@@ -139,7 +142,7 @@ export function createDepositor(run, grid = null) {
   const strips = Math.max(2, Math.ceil(ridge / h));
   const sub = Math.max(2, Math.ceil((2 * ds) / h));
   const step = ds / sub;
-  const exclude = step + 2 * h; // a pass's own new bead is hidden from its nozzle this far behind it
+  const behind = step + 2 * h; // a pass's new bead stays hidden until the nozzle is this far past its front edge
   const area = h * h;
   const line = centreLine(run);
   // Glue laid more than this far back along the path belongs to an earlier pass (a star's outward spoke, a
@@ -162,6 +165,16 @@ export function createDepositor(run, grid = null) {
       P[k + 2] = q.tx;
       P[k + 3] = q.ty;
     }
+  // Bead width and cross-section at each cell boundary for the footprint: the run's profile, except that the two
+  // end boundaries (zero in the lofted bead) take their neighbour's, since a disc footprint rounds the ends.
+  const nodeW = Float64Array.from(profile.widths);
+  const nodeRing = Float64Array.from(profile.widths, (w, k) => w * profile.heights[k]);
+  if (n >= 2) {
+    nodeW[0] = nodeW[1];
+    nodeRing[0] = nodeRing[1];
+    nodeW[n] = nodeW[n - 1];
+    nodeRing[n] = nodeRing[n - 1];
+  }
   const w0 = new Float64Array(n);
   const ref = new Float64Array(n);
   for (let i = 0; i < n; i++) {
@@ -194,16 +207,55 @@ export function createDepositor(run, grid = null) {
     const t = Math.floor(Math.floor(k / nx) / TILE) * tilesX + Math.floor((k % nx) / TILE);
     if (st.z[k] > st.tiles[t]) st.tiles[t] = st.z[k];
   };
-  const commit = (st, upTo) => {
-    const { queue, z } = st;
-    while (st.head < queue.length && queue[st.head].s <= upTo) {
-      const q = queue[st.head++];
-      for (let k = 0; k < q.idx.length; k++) {
-        z[q.idx[k]] += q.amt[k];
-        st.laid[q.idx[k]] = q.s;
-        raise(st, q.idx[k]);
+  // A sub-step's glue lands as a uniform disc of the bead's width under the nozzle. Swept along a straight path,
+  // uniform discs add up exactly to the bead's half-ellipse cross-section (the projection of a disc is a
+  // half-ellipse), so straight beads keep their shape; at a corner the bead rounds on the outside and fills in
+  // on the inside, and it starts and ends round, as paste laid from a round nozzle does. (Until v2.0.1 each
+  // sub-step was a half-ellipse strip cut square across the path: a square notch outside every corner, a
+  // double layer inside it, and stepped ends.) The rim is spread over one cell; the volume is exact.
+  const stamp = (st, q) => {
+    const rc = Math.max(q.r, 0.75 * h) / h;
+    const fx = (q.x - originX) / h - 0.5;
+    const fy = (q.y - originY) / h - 0.5;
+    const i0 = Math.floor(fx - rc - 0.5);
+    const i1 = Math.ceil(fx + rc + 0.5);
+    const j0 = Math.floor(fy - rc - 0.5);
+    const j1 = Math.ceil(fy + rc + 0.5);
+    let sum = 0;
+    for (let j = j0; j <= j1; j++) {
+      const dy = j - fy;
+      for (let i = i0; i <= i1; i++) {
+        const dx = i - fx;
+        const w = rc + 0.5 - Math.sqrt(dx * dx + dy * dy);
+        if (w > 0) sum += w < 1 ? w : 1;
       }
     }
+    if (!(sum > 0)) return;
+    const unit = q.v / (sum * area);
+    const { z, laid } = st;
+    for (let j = j0; j <= j1; j++) {
+      const dy = j - fy;
+      for (let i = i0; i <= i1; i++) {
+        const dx = i - fx;
+        let w = rc + 0.5 - Math.sqrt(dx * dx + dy * dy);
+        if (!(w > 0)) continue;
+        if (w > 1) w = 1;
+        if (i < 0 || j < 0 || i >= nx || j >= ny) {
+          st.lost += unit * w * area;
+          continue;
+        }
+        const k = j * nx + i;
+        z[k] += unit * w;
+        laid[k] = q.s;
+        raise(st, k);
+      }
+    }
+  };
+  // Glue joins the field once the nozzle has moved `behind` past the front of its disc, so a pass never sees
+  // its own new bead under the bore (only where its path comes back over it).
+  const commit = (st, upTo) => {
+    const { queue } = st;
+    while (st.head < queue.length && queue[st.head].s + queue[st.head].r + behind <= upTo) stamp(st, queue[st.head++]);
     if (st.head > 512 && st.head * 2 > queue.length) {
       st.queue = queue.slice(st.head);
       st.head = 0;
@@ -332,13 +384,18 @@ export function createDepositor(run, grid = null) {
       return;
     }
     const A = v / ds;
-    // Clean-part width: the run's own profile, scaled by the bead rule while the cell is still filling.
-    const clean = A > 0 && ref[i] > 0 ? w0[i] * (pressedWidth(A, standoff, ratio, bore) / ref[i]) : w0[i];
+    // Clean-part width: the run's own profile, varying linearly across the cell from one boundary to the next,
+    // scaled by the bead rule while the cell is still filling; the cell's volume follows the profile's cross-
+    // section across it. A bead that widens or narrows (start, end, corners) so has smooth sides.
+    const scale = A > 0 && ref[i] > 0 ? pressedWidth(A, standoff, ratio, bore) / ref[i] : 1;
+    const ringA = nodeRing[i];
+    const ringB = nodeRing[i + 1];
+    const share = ringA + ringB > 0 ? (t) => (2 * (ringA + t * (ringB - ringA))) / (ringA + ringB) : () => 1;
     let cellBase = 0;
     for (let a = 0; a < sub; a++) {
       const k4 = (i * sub + a) * 4;
       const s = run.gridStart + (i + (a + 0.5) / sub) * ds;
-      commit(st, s - exclude);
+      commit(st, s);
       const px = P[k4];
       const py = P[k4 + 1];
       const tx = P[k4 + 2];
@@ -366,30 +423,15 @@ export function createDepositor(run, grid = null) {
       }
       if (!(v > 0)) continue;
       under = Math.min(under, standoff);
+      const t = (a + 0.5) / sub;
+      const across = nodeW[i] + t * (nodeW[i + 1] - nodeW[i]);
+      const clean = (across > 0 ? across : ref[i]) * scale;
       const w = under > 0.01 && ref[i] > 0 ? clean * (pressedWidth(A, standoff - under, ratio, bore) / pressedWidth(A, standoff, ratio, bore)) : clean;
       if (old) st.stacked += v / sub;
       if (under > 0.01 && ratio * Math.sqrt((4 * A) / (Math.PI * ratio)) > standoff - under) st.pressed += v / sub;
       if (under > cellBase) cellBase = under;
-      // The sub-step's bead: a half-ellipse across, uniform along.
-      const across = Math.max(4, Math.ceil((2 * w) / h));
-      const alongN = Math.max(1, Math.ceil((2 * step) / h));
-      let sum = 0;
-      for (let b = 0; b < across; b++) sum += Math.sqrt(Math.max(0, 1 - ((2 * (b + 0.5)) / across - 1) ** 2));
-      const unit = v / sub / (sum * alongN) / area;
-      let count = 0;
-      for (let t = 0; t < alongN; t++) {
-        const d = ((t + 0.5) / alongN - 0.5) * step;
-        for (let b = 0; b < across; b++) {
-          const q = (2 * (b + 0.5)) / across - 1;
-          const u = (q * w) / 2;
-          if (count + 4 > scratchIdx.length) {
-            st.queue.push({ s, idx: scratchIdx.slice(0, count), amt: scratchAmt.slice(0, count) });
-            count = 0;
-          }
-          count = splat(st, px + tx * d - ty * u, py + ty * d + tx * u, unit * Math.sqrt(Math.max(0, 1 - q * q)), count);
-        }
-      }
-      st.queue.push({ s, idx: scratchIdx.slice(0, count), amt: scratchAmt.slice(0, count) });
+      // The sub-step's glue: a disc of the bead's width under the nozzle (see stamp).
+      st.queue.push({ s, x: px, y: py, r: w / 2, v: (v / sub) * share(t) });
     }
     st.base[i] = cellBase;
     if (cellBase > st.maxBase) st.maxBase = cellBase;
