@@ -10,8 +10,8 @@ import { createC300Enclosure } from './c300-enclosure.js';
 import { createPcpHead } from './pcp-head.js';
 import { buildHoseGeometry } from './visual-hose.js';
 import { R75_NOZZLE } from './hardware-reference.js';
-import { pointOnPath } from './path-planning.js';
 import { MATERIALS } from './materials.js';
+import { createDepositor, runField } from './deposit.js';
 import { createPalette, PartKit, createDragChain, createLcd } from './scene-parts.js';
 import { createCompressionScene } from './compression-scene.js';
 
@@ -69,77 +69,21 @@ function volumeOf(g) {
   return Math.abs(v);
 }
 
-/**
- * Height of the glue already under each ring when a path comes back over itself (a star's spokes laid out
- * and back, a centre passed again and again): rings follow arc length, the order the nozzle lays them, and
- * each ring sits on the top surface of the earlier bead it lands on (that bead's own base plus its half-ellipse
- * height at the ring's distance from its centre line). The bead's own recent rings are left out, with a ramp
- * so a reversal climbs onto the earlier bead instead of stepping. Geometry for the picture; the stack check of
- * the results is in stacking.js.
- */
-export function stackBases(rings, widths, heights) {
-  const n = rings.length;
-  const base = new Float64Array(n);
-  let wMax = 0;
-  for (const w of widths) if (w > wMax) wMax = w;
-  if (!(wMax > 0)) return base;
-  const cell = wMax;
-  const grid = new Map();
-  const key = (i, j) => `${i},${j}`;
-  for (let i = 0; i < n; i++) {
-    const p = rings[i];
-    let top = 0;
-    for (const j of grid.get(key(Math.floor(p.x / cell), Math.floor(p.y / cell))) || []) {
-      const a = rings[j];
-      const b = rings[j + 1];
-      const gap = p.s - b.s;
-      const g0 = Math.max(widths[i], widths[j], widths[j + 1]) + (b.s - a.s);
-      if (gap <= g0) continue;
-      const dx = b.x - a.x;
-      const dy = b.y - a.y;
-      const len2 = dx * dx + dy * dy;
-      const t = len2 > 0 ? Math.min(1, Math.max(0, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2)) : 0;
-      const d = Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
-      const w = widths[j] + t * (widths[j + 1] - widths[j]);
-      if (!(w > 0) || d >= w / 2) continue;
-      const h = heights[j] + t * (heights[j + 1] - heights[j]);
-      const under = base[j] + t * (base[j + 1] - base[j]);
-      const ramp = Math.min(1, (gap - g0) / g0);
-      top = Math.max(top, ramp * (under + h * Math.sqrt(1 - ((2 * d) / w) ** 2)));
-    }
-    base[i] = top;
-    // Index the segment that ends here in every cell its bead can reach.
-    if (i > 0) {
-      const a = rings[i - 1];
-      const r = wMax / 2;
-      for (let gx = Math.floor((Math.min(a.x, p.x) - r) / cell); gx <= Math.floor((Math.max(a.x, p.x) + r) / cell); gx++)
-        for (let gy = Math.floor((Math.min(a.y, p.y) - r) / cell); gy <= Math.floor((Math.max(a.y, p.y) + r) / cell); gy++) {
-          const k = key(gx, gy);
-          if (!grid.has(k)) grid.set(k, []);
-          grid.get(k).push(i - 1);
-        }
-    }
-  }
-  return base;
-}
-
-// Shared bead mesh builder: rings at each grid node, a flat underside, no internal caps. With `stack`, a
-// ring that lands on an earlier pass sits on top of it (see stackBases).
-function beadGeometry(deposits, cellLength, ratio, ringAt, standoff, nozzle, { stack = false } = {}) {
+// Shared bead mesh builder: rings at each grid node, a flat underside, no internal caps.
+function beadGeometry(deposits, cellLength, ratio, ringAt, standoff, nozzle) {
   const profile = beadProfile(deposits, cellLength, ratio, standoff, nozzle);
   const n = deposits.length;
   const sides = BEAD_SIDES;
   const m = sides + 1;
   const pos = [];
   const idx = [];
-  const rings = Array.from({ length: n + 1 }, (_, i) => ({ ...ringAt(i), s: i * cellLength }));
-  const base = stack ? stackBases(rings, profile.widths, profile.heights) : new Float64Array(n + 1);
+  const rings = Array.from({ length: n + 1 }, (_, i) => ringAt(i));
   for (let i = 0; i <= n; i++) {
     const p = rings[i];
     for (let j = 0; j <= sides; j++) {
       const a = (j * Math.PI) / sides;
       const w = (profile.widths[i] * Math.cos(a)) / 2;
-      pos.push(p.x + p.nx * w, p.y + p.ny * w, base[i] + profile.heights[i] * Math.sin(a));
+      pos.push(p.x + p.nx * w, p.y + p.ny * w, profile.heights[i] * Math.sin(a));
     }
   }
   for (let i = 0; i < n; i++)
@@ -152,7 +96,7 @@ function beadGeometry(deposits, cellLength, ratio, ringAt, standoff, nozzle, { s
   for (let i = 0; i <= n; i++) {
     const p = rings[i];
     const w = profile.widths[i] / 2;
-    pos.push(p.x + p.nx * w, p.y + p.ny * w, base[i], p.x - p.nx * w, p.y - p.ny * w, base[i]);
+    pos.push(p.x + p.nx * w, p.y + p.ny * w, 0, p.x - p.nx * w, p.y - p.ny * w, 0);
   }
   for (let i = 0; i < n; i++) {
     const a = bottom + 2 * i;
@@ -163,7 +107,6 @@ function beadGeometry(deposits, cellLength, ratio, ringAt, standoff, nozzle, { s
   g.setIndex(idx);
   g.computeVertexNormals();
   g.userData.unitVolume = volumeOf(g);
-  g.userData.maxBase = base.reduce((a, b) => Math.max(a, b), 0);
   return g;
 }
 
@@ -172,24 +115,131 @@ function continuousLineGeometry(deposits, cellLength, ratio, standoff, nozzle) {
   return beadGeometry(deposits, cellLength, ratio, (i) => ({ x: i * cellLength, y: 0, nx: 0, ny: 1 }), standoff, nozzle);
 }
 
-// Bins follow path arc length; the nozzle footprint may extend beyond the ends, so extend the end
-// tangent. Where the path comes back over itself the later bead is drawn on top of the earlier one;
-// bent rings and crossings remain a geometric illustration, not a material union.
-function continuousPathGeometry(deposits, cellLength, ratio, path, gridStart, standoff, nozzle) {
-  return beadGeometry(
-    deposits,
-    cellLength,
-    ratio,
-    (i) => {
-      const s = gridStart + i * cellLength;
-      const q = pointOnPath(path, s);
-      const extra = s - Math.max(0, Math.min(path.length, s));
-      return { x: q.x + q.tx * extra, y: q.y + q.ty * extra, nx: -q.ty, ny: q.tx };
-    },
-    standoff,
-    nozzle,
-    { stack: true },
-  );
+const TERRAIN_SINK = 0.05; // mm: cells without glue sit just under the part surface, so the bead edge meets it
+
+/**
+ * A pattern's bead drawn from its deposit field (deposit.js), the same glue the stack check and the squeeze
+ * start from: passes that come back over earlier glue stand on it, a pile the needle reaches is pressed and
+ * ploughed. A height-field mesh over every cell the finished bead covers; each frame lays the frame's
+ * deposits, continuing from the cells the nozzle has already finished (a frame before them starts over).
+ */
+export class DepositTerrain {
+  constructor(run) {
+    this.run = run;
+    const d = (this.depositor = createDepositor(run));
+    const g = d.grid;
+    const { nx, ny, cell: h, originX, originY } = g;
+    const full = runField(run); // the finished bead (cached; the stack check and the squeeze read it too)
+    const vid = new Int32Array(nx * ny).fill(-1);
+    const cells = [];
+    for (let j = 0; j < ny; j++)
+      for (let i = 0; i < nx; i++) {
+        let near = false;
+        for (let jj = Math.max(0, j - 1); jj <= Math.min(ny - 1, j + 1) && !near; jj++)
+          for (let ii = Math.max(0, i - 1); ii <= Math.min(nx - 1, i + 1); ii++)
+            if (full.z[jj * nx + ii] > 0) {
+              near = true;
+              break;
+            }
+        if (near) vid[j * nx + i] = cells.push(j * nx + i) - 1;
+      }
+    this.cells = Int32Array.from(cells);
+    const nv = cells.length;
+    const pos = new Float32Array(3 * nv);
+    for (let v = 0; v < nv; v++) {
+      const k = cells[v];
+      pos[3 * v] = originX + ((k % nx) + 0.5) * h;
+      pos[3 * v + 1] = originY + (Math.floor(k / nx) + 0.5) * h;
+      pos[3 * v + 2] = -TERRAIN_SINK;
+    }
+    const idx = [];
+    for (const k of cells) {
+      if (k % nx === nx - 1 || k + nx >= nx * ny) continue;
+      const a = vid[k];
+      const b = vid[k + 1];
+      const c = vid[k + nx];
+      const e = vid[k + nx + 1];
+      if (b >= 0 && c >= 0 && e >= 0) idx.push(a, b, e, a, e, c);
+    }
+    const geometry = new THREE.BufferGeometry();
+    this.position = new THREE.BufferAttribute(pos, 3);
+    this.normal = new THREE.BufferAttribute(new Float32Array(3 * nv), 3);
+    this.position.setUsage(THREE.DynamicDrawUsage);
+    this.normal.setUsage(THREE.DynamicDrawUsage);
+    geometry.setAttribute('position', this.position);
+    geometry.setAttribute('normal', this.normal);
+    geometry.setIndex(idx);
+    const top = Math.max(full.maxHeight, run.config.standoff) + 1;
+    geometry.boundingSphere = new THREE.Sphere(
+      new THREE.Vector3(originX + (nx * h) / 2, originY + (ny * h) / 2, top / 2),
+      Math.hypot((nx * h) / 2, (ny * h) / 2, top / 2),
+    );
+    geometry.userData.unitVolume = 0;
+    this.geometry = geometry;
+    // How far along the path the nozzle has been by each frame (a backtrack at the end does not undo it).
+    this.reach = new Map();
+    let m = -Infinity;
+    for (const f of run.frames) {
+      m = Math.max(m, f.s);
+      this.reach.set(f, m);
+    }
+    this.stable = d.fresh();
+    this.stableCell = 0;
+    this.viewZ = null;
+    this.maxHeight = 0;
+  }
+
+  /** Lay the glue of one frame of the run and update the mesh. */
+  show(frame) {
+    const d = this.depositor;
+    const run = this.run;
+    const fin = run.summary.deposits;
+    const D = frame.deposits;
+    const until = this.reach.get(frame) ?? frame.s;
+    // Cells finished by this frame: their final volume, and the nozzle wholly past them.
+    let done = 0;
+    while (done < d.n && D[done] === fin[done] && run.gridStart + (done + 1) * run.cellLength <= until) done++;
+    if (done < this.stableCell) {
+      this.stable = d.fresh();
+      this.stableCell = 0;
+    }
+    for (; this.stableCell < done; this.stableCell++) d.lay(this.stable, this.stableCell, fin[this.stableCell], until);
+    const view = d.clone(this.stable, this.viewZ);
+    this.viewZ = view.z;
+    for (let i = this.stableCell; i < d.n; i++) d.lay(view, i, D[i], until);
+    d.finish(view);
+    const z = view.z;
+    const { nx, ny, cell: h } = d.grid;
+    const pos = this.position.array;
+    const nor = this.normal.array;
+    const at = (k) => (k >= 0 && k < z.length && z[k] > 0 ? z[k] : 0);
+    let peak = 0;
+    for (let v = 0; v < this.cells.length; v++) {
+      const k = this.cells[v];
+      const zk = z[k];
+      pos[3 * v + 2] = zk > 0 ? zk : -TERRAIN_SINK;
+      if (zk > peak) peak = zk;
+      const i = k % nx;
+      const j = Math.floor(k / nx);
+      const gx = ((i > 0 ? at(k - 1) : 0) - (i + 1 < nx ? at(k + 1) : 0)) / (2 * h);
+      const gy = ((j > 0 ? at(k - nx) : 0) - (j + 1 < ny ? at(k + nx) : 0)) / (2 * h);
+      const len = Math.hypot(gx, gy, 1);
+      nor[3 * v] = gx / len;
+      nor[3 * v + 1] = gy / len;
+      nor[3 * v + 2] = 1 / len;
+    }
+    let volume = 0;
+    for (let k = 0; k < z.length; k++) volume += z[k];
+    this.position.needsUpdate = true;
+    this.normal.needsUpdate = true;
+    this.geometry.userData.unitVolume = volume * h * h;
+    this.maxHeight = peak;
+    return this.geometry;
+  }
+
+  dispose() {
+    this.geometry.dispose();
+  }
 }
 
 // Heat-source footprint: a coordinate guide, not the chip itself.
@@ -494,9 +544,10 @@ export class DispenseScene {
     this.lastDeposits = null;
     this.depositMeshes = [];
     if (c.mode === 'point') this.dotGeo = capGeometry(c.dotRatio);
+    this.terrain = c.mode === 'pattern' ? new DepositTerrain(run) : null;
     const geometry =
       c.mode === 'pattern'
-        ? continuousPathGeometry(run.frames[0].deposits, run.cellLength, c.lineRatio, run.path, run.gridStart, c.standoff, c.diameter)
+        ? this.terrain.show(run.frames[0])
         : c.mode === 'line'
           ? continuousLineGeometry(run.frames[0].deposits, run.cellLength, c.lineRatio, c.standoff, c.diameter)
           : this.dotGeo;
@@ -834,11 +885,11 @@ export class DispenseScene {
     bead.visible = v > 1e-12 && !this.compression;
     if (c.mode === 'line' || c.mode === 'pattern') {
       if (this.lastDeposits !== s.deposits) {
-        bead.geometry.dispose();
-        bead.geometry =
-          c.mode === 'pattern'
-            ? continuousPathGeometry(s.deposits, this.run.cellLength, c.lineRatio, this.run.path, this.run.gridStart, c.standoff, c.diameter)
-            : continuousLineGeometry(s.deposits, this.run.cellLength, c.lineRatio, c.standoff, c.diameter);
+        if (this.terrain) this.terrain.show(s);
+        else {
+          bead.geometry.dispose();
+          bead.geometry = continuousLineGeometry(s.deposits, this.run.cellLength, c.lineRatio, c.standoff, c.diameter);
+        }
         this.lastDeposits = s.deposits;
       }
       if (c.mode === 'pattern') bead.position.set(0, 0, c.surfaceZ + 0.001);
@@ -1205,4 +1256,4 @@ export class DispenseScene {
   }
 }
 
-export { volumeOf, lineGeometry, capGeometry, continuousLineGeometry, continuousPathGeometry, createPatternSource, nozzleGeometry, nozzleStemGeometry };
+export { volumeOf, lineGeometry, capGeometry, continuousLineGeometry, createPatternSource, nozzleGeometry, nozzleStemGeometry };

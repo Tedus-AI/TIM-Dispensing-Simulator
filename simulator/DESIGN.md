@@ -1,5 +1,36 @@
 # 點膠研究室 · 機構與實作契約
 
+## v1.9.0（2026-11-06）
+
+- 新 `deposit.js`：一份鋪膠膠面（膠厚 height field），3D、疊高檢查、最佳化與壓合共用。
+  - `fieldGrid(run)`：涵蓋整條路徑加最寬可壓寬度與膠堤；格寬＝一般膠條寬 ÷ 6，限 0.02–0.1 mm、≤ 60 萬格。
+  - `createDepositor(run, grid)`：依弧長（出膠順序）每格切成 `ceil(2·cellLength/格寬)` 小步。每一小步：
+    - 先把超過 `exclude`（小步長 + 2 格）以前鋪的膠併入膠面，剛鋪的不讓自己的針嘴看到；
+    - 針管前半圈（外徑由 `needleOuterDiameter` 查規格表）掃過、高出針尖（`standoff`）的膠推到所在那側的膠堤（寬約外徑一半，越外越薄）；
+    - 讀內徑下 5 點的膠高 `under`，剩餘間隙 `standoff − under`；新膠條寬度＝該格乾淨工件寬 × `pressedWidth(A, 剩餘間隙) / pressedWidth(A, standoff)`，規則同 `beadProfile`（放得下保持自然比例，放不下壓到間隙高並在 `內徑 + 2×間隙` 內變寬，再放不下就堆在針旁）；
+    - 半橢圓截面雙線性鋪上，進待併入佇列。
+  - 每格記錄最新鋪膠的弧長位置（`laid`）。弧長差大於 `revisit`（max(3 × 一般膠條寬, 2 × 外徑, 1 mm)）的膠算「前一趟」，用來區分重複經過與轉角自己折回。
+  - 針尖碰到前一趟的膠（`under ≥ 0.98 × standoff` 或推到前一趟的膠）時，累計 `contactMm` 並記第一次的位置。
+  - `lay(state, i, volume, until)`：`until` 是針嘴已走到的弧長；只在走過的地方推膠，整條預設為路徑長，不推路徑終點之後只是針嘴範圍的格子。
+  - `clone` 只複製膠面、`laid`、tiles 和佇列參照；`finish` 併入全部。
+  - 每格的乾淨寬度用整條 run 的 `beadProfile`（與單趟模型一致）；畫面中還在出膠的格依本幀膠量照規則縮放，所以能從任一已完成的格接著鋪。
+  - `depositField(run, {deposits, until})` 回傳：膠面、`maxHeight` 與位置、`ploughedMm3`、`earlierPloughedMm3`、`stackedMm3`（落在前一趟上的膠）、`pressedMm3`（被針嘴壓在前一趟上的膠）、`maxBase`、`contactMm`、`lostMm3`（應為 0）。
+  - `runField(run)` 依 run 快取。
+- `stacking.js`：`stackedBead(run)` 改讀 `runField`。
+  - `contact`＝`contactMm > 0`；另回傳 `contactWhere`（`centre`／`vertex`／`path`）、`ploughedMm3`、`stackedMm3`。
+  - `overlap` 維持「> 1.15 × 單趟」。
+- `compression.js`：直線與圖樣的起始膠面改為把膠面每個細格的膠量放進其中心所在的壓合格（體積完全守恆），壓合範圍依膠面實際範圍。
+  - 單點不變。
+  - 選項 `field` 可指定膠面（比較用）。
+  - 舊的每段半橢圓取樣已移除；`depositSources` 只剩單點使用。
+- `scene.js`：移除 `stackBases`、`continuousPathGeometry`；圖樣改用 `DepositTerrain`。
+  - 網格頂點只放在完成膠面有膠的格及外圍一圈，沒膠的頂點沉到工件面下 0.05 mm，法向量用中心差分。
+  - `show(frame)`：已完成（膠量等於最終值且針嘴已走過）的格接續在 `stable` 狀態上，其餘格每幀重鋪；往回跳就從頭鋪。
+  - 頂點約 1.3 萬（使用者米字形），每幀中位數約 2–3 ms，往回拖 7–31 ms。
+  - 直線維持舊的 ring 網格（單趟不會疊）。
+- `compute-worker.js`／`main.js`：送進 Worker 的 run 加 `pathLength`。
+- `main.js`：`stackText(st, standoff)` 改說明針嘴壓膠、推膠已算進膠形與壓合，沒算的是沾針。說明頁「疊高」同步更新。
+
 ## v1.8.3（2026-11-05）
 
 - `scene.js`：

@@ -1,6 +1,7 @@
 import { beadProfile, dotDimensions } from './engine.js';
 import { pointOnPath } from './path-planning.js';
 import { MATERIALS } from './materials.js';
+import { runField } from './deposit.js';
 
 /*
  * Squeeze estimate (v1.1): a time-stepped Hele-Shaw squeeze between two flat parallel plates.
@@ -839,15 +840,34 @@ export function estimateCompression(run, options) {
     throw new Error('沉積體積資料無效');
   const totalMm3 = depositedMl * 1000;
   const targetDepth = o.shape === 'circle' ? o.width : o.depth;
-  const sources = depositSources(run);
+  // A line or pattern starts from the deposited glue as laid pass by pass (deposit.js: passes that come back
+  // over earlier glue land on it, the needle presses and ploughs a pile that reaches it); a dot from its cap.
+  const field = c.mode === 'point' ? null : o.field || runField(run);
+  const sources = field ? [] : depositSources(run);
   const dot = c.mode === 'point' ? dotDimensions(depositedMl, c.dotRatio, c.standoff, c.diameter) : null;
+  let glue = null;
+  if (field) {
+    const g = field.grid;
+    glue = { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity };
+    for (let j = 0; j < g.ny; j++)
+      for (let i = 0; i < g.nx; i++)
+        if (field.z[j * g.nx + i] > 0) {
+          const x = g.originX + (i + 0.5) * g.cell;
+          const y = g.originY + (j + 0.5) * g.cell;
+          glue.minX = Math.min(glue.minX, x);
+          glue.maxX = Math.max(glue.maxX, x);
+          glue.minY = Math.min(glue.minY, y);
+          glue.maxY = Math.max(glue.maxY, y);
+        }
+    if (!(glue.maxX >= glue.minX)) glue = null;
+  }
 
   // Domain: heat source and deposit plus the farthest any material could travel (all of it as one disc).
   // Cells beyond the workpiece simply count as off-workpiece; the workpiece itself is not gridded.
   const halfBead = Math.max(dot ? dot.radius : 0, ...sources.map((s) => s.width / 2), 0);
   const spread = Math.sqrt(totalMm3 / (Math.PI * o.gap)) + halfBead + 4 * o.cellSize;
-  const xs = sources.map((s) => s.x);
-  const ys = sources.map((s) => s.y);
+  const xs = glue ? [glue.minX, glue.maxX] : sources.map((s) => s.x);
+  const ys = glue ? [glue.minY, glue.maxY] : sources.map((s) => s.y);
   const minX = Math.min(o.offsetX - o.width / 2, c.offsetX, ...xs) - spread;
   const maxX = Math.max(o.offsetX + o.width / 2, c.offsetX, ...xs) + spread;
   const minY = Math.min(o.offsetY - targetDepth / 2, c.offsetY, ...ys) - spread;
@@ -872,7 +892,8 @@ export function estimateCompression(run, options) {
     return ix < 0 || iy < 0 || ix >= cols || iy >= rows ? -1 : iy * cols + ix;
   };
 
-  // Rasterise the undisturbed deposit with its own cross-section (half-ellipse bead, spherical-cap dot).
+  // Rasterise the deposit: a line or pattern from its deposit field (each fine cell's glue into the squeeze
+  // cell under it, exact volume), a dot with its spherical-cap cross-section.
   const deposit = new Float64Array(n);
   const addWeighted = (v, samples, fx, fy) => {
     let sum = 0;
@@ -905,18 +926,16 @@ export function estimateCompression(run, options) {
         if (w > 0) samples.push([iy * cols + ix, w]);
       }
     addWeighted(s.v, samples, s.x, s.y);
-  } else {
-    for (const s of sources) {
-      const half = Math.max(s.width / 2, 1e-6);
-      const count = Math.max(1, Math.min(256, Math.ceil((4 * half) / cellSize)));
-      const samples = [];
-      for (let j = 0; j < count; j++) {
-        const u = ((2 * (j + 0.5)) / count - 1) * half;
-        const i = cellOf(s.x - s.ty * u, s.y + s.tx * u);
-        if (i >= 0) samples.push([i, Math.sqrt(Math.max(0, 1 - (u / half) ** 2))]);
+  } else if (field) {
+    const g = field.grid;
+    const a = g.cell * g.cell;
+    for (let j = 0; j < g.ny; j++)
+      for (let i = 0; i < g.nx; i++) {
+        const v = field.z[j * g.nx + i];
+        if (!(v > 0)) continue;
+        const k = cellOf(g.originX + (i + 0.5) * g.cell, g.originY + (j + 0.5) * g.cell);
+        if (k >= 0) deposit[k] += v * a;
       }
-      addWeighted(s.v, samples, s.x, s.y);
-    }
   }
 
   const sourceFraction = new Float32Array(n);
@@ -1119,7 +1138,8 @@ export function estimateCompression(run, options) {
       `熱源內有 ${sourceVoids.length} 處被膠包圍的夾氣區（共 ${voidInSource.toFixed(1)} mm²）；外框、螺旋與蛇形較易發生，需透明板實測確認。`,
     );
   if (c.workpieceKind !== 'plate') warnings.push('匯入工件仍以其矩形邊界和水平上表面近似，不包含孔洞與曲面。');
-  if (c.mode === 'pattern') warnings.push('膠沿規劃路徑累加；彎角、重疊與壓合輪廓為幾何近似，並非已驗證的流變模擬。');
+  if (c.mode === 'pattern')
+    warnings.push('壓合從依出膠順序鋪出的膠面開始（重複經過處疊在先前的膠上，針嘴壓膠、推膠已算）；交叉處夾進的小氣泡、針頭沾膠與流變細節沒有算，並非已驗證的流變模擬。');
   if (o.gap < material.minBondLine)
     warnings.push(
       `${material.name} 資料表最小黏結層厚度為 ${material.minBondLine} mm；目前目標間隙較小，須向廠商確認適用性，不代表此模型已考慮顆粒或硬接觸。`,

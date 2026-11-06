@@ -143,47 +143,64 @@ test('needle sizes: whole gauges for the automatic choice, the 1/8" guideline no
   assert.ok(p.ok && NEEDLES.some((n) => n.id === p.diameter) && /^\d+G$/.test(needleLabel(p.diameter)), needleLabel(p.diameter));
 });
 
-test('stacked glue: passes that come back over themselves add up, and the nozzle meets a pile above the standoff', async () => {
+test('stacked glue: passes that come back over themselves add up, and the needle meets a pile that reaches its tip', async () => {
   const { stackedBead } = await import('../src/stacking.js');
   const { beadMatch } = await import('../src/optimize.js');
   const { tuneDose } = await import('../src/tuning.js');
   // One straight pass: the stack is the bead itself.
   const line = tuneDose({ ...thin(), mode: 'line', lineLength: 20, diameter: 1.54, speed: 11, offsetX: 0, offsetY: 0 }, 0.01, 'drive').run;
   const one = stackedBead(line);
-  assert.ok(!one.overlap && !one.contact && Math.abs(one.maxHeight / one.single - 1) < 0.15, JSON.stringify(one));
-  // The star lays every spoke twice and passes its centre nine times: a pile at the centre above the 2 mm standoff.
+  assert.ok(!one.overlap && !one.contact && Math.abs(one.maxHeight / one.single - 1) < 0.05, JSON.stringify(one));
+  // The star lays every spoke twice and passes its centre nine times: the pile grows to the 2 mm standoff, where
+  // the needle presses new glue flat and ploughs what stands above its tip.
   const starCase = { ...thin({ pattern: 'star', edgeInset: 3.5 }), diameter: 1.54, speed: 11 };
   const star = tuneDose(starCase, required * 1.1, 'drive').run;
   const s = stackedBead(star);
-  assert.ok(s.overlap && s.contact && s.where === 'centre' && s.maxHeight > 1.5 * star.config.standoff, JSON.stringify(s));
+  assert.ok(s.overlap && s.contact && s.contactWhere === 'centre' && s.where === 'centre', JSON.stringify(s));
+  assert.ok(s.maxHeight > 0.98 * star.config.standoff && s.maxHeight < star.config.standoff + star.summary.maxHeight && s.ploughedMm3 > 0, JSON.stringify(s));
   const b = beadMatch(star);
   assert.ok(b.drags && b.stack.contact && !b.buried && processCost({ bead: b, cycle: 10 }) >= 1);
-  // A higher standoff clears the pile; a serpentine does not come back over itself enough to reach the nozzle.
-  assert.equal(stackedBead(tuneDose({ ...starCase, standoff: 6 }, required * 1.1, 'drive').run).contact, false);
+  // A higher standoff clears the pile (it stands about 3 mm, every pass on the ones before); a serpentine does
+  // not come back over itself, only its corners fold a little glue onto the bead just laid.
+  const high = stackedBead(tuneDose({ ...starCase, standoff: 6 }, required * 1.1, 'drive').run);
+  assert.ok(!high.contact && high.maxHeight > 2.5 && high.ploughedMm3 === 0, JSON.stringify(high));
   const serp = tuneDose({ ...thin({ pattern: 'serpentine', spacing: 5, edgeInset: 2 }), diameter: 1.36, speed: 6 }, required * 1.1, 'drive').run;
-  assert.ok(!stackedBead(serp).contact && !beadMatch(serp).drags);
+  assert.ok(!stackedBead(serp).contact && !beadMatch(serp).drags && stackedBead(serp).maxHeight < 2.2 * serp.summary.maxHeight);
 });
 
-test('3D bead: a pass that comes back over earlier glue is drawn on top of it', async () => {
-  const { continuousPathGeometry, stackBases } = await import('../src/scene.js');
+test('3D bead: the pattern is drawn from the deposit field, frame by frame', async () => {
+  const { DepositTerrain } = await import('../src/scene.js');
+  const { runField, depositField } = await import('../src/deposit.js');
   const { tuneDose } = await import('../src/tuning.js');
-  // Two passes over one straight line, out and back: the returning rings sit on the first bead's crest,
-  // and the bead's own recent rings (the turn) do not lift it.
-  const rings = [...Array(21).keys()].map((i) => ({ x: i < 11 ? i : 20 - i, y: 0, s: i }));
-  const base = stackBases(rings, new Float64Array(21).fill(1), new Float64Array(21).fill(0.4));
-  assert.equal(base[3], 0);
-  assert.equal(base[11], 0, 'just after the turn the ring is still part of the same bead');
-  assert.ok(Math.abs(base[17] - 0.4) < 1e-9, `${base[17]}`);
-  // The star of the thin-gap case: spokes drawn two layers high and a pile at the centre; a serpentine flat.
   const star = tuneDose({ ...thin({ pattern: 'star', edgeInset: 3.5 }), diameter: 1.54, speed: 11 }, required * 1.1, 'drive').run;
-  const c = star.config;
-  const g = continuousPathGeometry(star.summary.deposits, star.cellLength, c.lineRatio, star.path, star.gridStart, c.standoff, c.diameter);
-  g.computeBoundingBox();
-  assert.ok(g.userData.maxBase > star.summary.maxHeight && g.boundingBox.max.z > 2 * star.summary.maxHeight, `${g.userData.maxBase} ${g.boundingBox.max.z}`);
-  const serp = tuneDose({ ...thin({ pattern: 'serpentine', spacing: 5, edgeInset: 2 }), diameter: 1.36, speed: 6 }, required * 1.1, 'drive').run;
-  const s = serp.config;
-  const h = continuousPathGeometry(serp.summary.deposits, serp.cellLength, s.lineRatio, serp.path, serp.gridStart, s.standoff, s.diameter);
-  assert.equal(h.userData.maxBase, 0);
-  g.dispose();
-  h.dispose();
+  const field = runField(star);
+  const terrain = new DepositTerrain(star);
+  // The last frame is the run's field: same glue, same height, same volume.
+  terrain.show(star.frames.at(-1));
+  assert.ok(Math.abs(terrain.maxHeight - field.maxHeight) < 1e-9 && Math.abs(terrain.geometry.userData.unitVolume / (star.summary.deposited * 1000) - 1) < 1e-9);
+  // Playing forward continues from the cells the nozzle has finished; jumping back starts over. Both match a
+  // field laid from scratch with the frame's deposits.
+  for (const f of [0.3, 0.6, 0.45, 0.9].map((q) => star.frames[Math.floor(q * (star.frames.length - 1))])) {
+    terrain.show(f);
+    let reach = -Infinity;
+    for (const g of star.frames) {
+      reach = Math.max(reach, g.s);
+      if (g === f) break;
+    }
+    const direct = depositField(star, { deposits: f.deposits, until: reach });
+    let diff = 0;
+    for (let k = 0; k < direct.z.length; k++) diff = Math.max(diff, Math.abs(direct.z[k] - terrain.viewZ[k]));
+    assert.ok(diff < 1e-12 && Math.abs(terrain.maxHeight - direct.maxHeight) < 1e-9, `${f.t} ${diff}`);
+  }
+  // Half way out along the +x spoke the outward and return beads stand on each other: about twice the single bead.
+  const g = field.grid;
+  let mid = 0;
+  for (let j = 0; j < g.ny; j++)
+    for (let i = 0; i < g.nx; i++) {
+      const x = g.originX + (i + 0.5) * g.cell;
+      const y = g.originY + (j + 0.5) * g.cell;
+      if (Math.abs(x - 5.75) < 0.3 && Math.abs(y) < 1) mid = Math.max(mid, field.z[j * g.nx + i]);
+    }
+  assert.ok(mid > 1.7 * star.summary.maxHeight && mid < 2.3 * star.summary.maxHeight, `${mid} ${star.summary.maxHeight}`);
+  terrain.dispose();
 });

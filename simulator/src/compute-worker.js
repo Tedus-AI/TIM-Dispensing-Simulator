@@ -8,6 +8,7 @@ const slim = (run) => ({
   config: run.config,
   summary: { deposits: run.summary.deposits },
   path: run.path,
+  pathLength: run.pathLength,
   gridStart: run.gridStart,
   cellLength: run.cellLength,
   maxHeight: run.maxHeight,
