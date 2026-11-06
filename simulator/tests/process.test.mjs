@@ -163,3 +163,27 @@ test('stacked glue: passes that come back over themselves add up, and the nozzle
   const serp = tuneDose({ ...thin({ pattern: 'serpentine', spacing: 5, edgeInset: 2 }), diameter: 1.36, speed: 6 }, required * 1.1, 'drive').run;
   assert.ok(!stackedBead(serp).contact && !beadMatch(serp).drags);
 });
+
+test('3D bead: a pass that comes back over earlier glue is drawn on top of it', async () => {
+  const { continuousPathGeometry, stackBases } = await import('../src/scene.js');
+  const { tuneDose } = await import('../src/tuning.js');
+  // Two passes over one straight line, out and back: the returning rings sit on the first bead's crest,
+  // and the bead's own recent rings (the turn) do not lift it.
+  const rings = [...Array(21).keys()].map((i) => ({ x: i < 11 ? i : 20 - i, y: 0, s: i }));
+  const base = stackBases(rings, new Float64Array(21).fill(1), new Float64Array(21).fill(0.4));
+  assert.equal(base[3], 0);
+  assert.equal(base[11], 0, 'just after the turn the ring is still part of the same bead');
+  assert.ok(Math.abs(base[17] - 0.4) < 1e-9, `${base[17]}`);
+  // The star of the thin-gap case: spokes drawn two layers high and a pile at the centre; a serpentine flat.
+  const star = tuneDose({ ...thin({ pattern: 'star', edgeInset: 3.5 }), diameter: 1.54, speed: 11 }, required * 1.1, 'drive').run;
+  const c = star.config;
+  const g = continuousPathGeometry(star.summary.deposits, star.cellLength, c.lineRatio, star.path, star.gridStart, c.standoff, c.diameter);
+  g.computeBoundingBox();
+  assert.ok(g.userData.maxBase > star.summary.maxHeight && g.boundingBox.max.z > 2 * star.summary.maxHeight, `${g.userData.maxBase} ${g.boundingBox.max.z}`);
+  const serp = tuneDose({ ...thin({ pattern: 'serpentine', spacing: 5, edgeInset: 2 }), diameter: 1.36, speed: 6 }, required * 1.1, 'drive').run;
+  const s = serp.config;
+  const h = continuousPathGeometry(serp.summary.deposits, serp.cellLength, s.lineRatio, serp.path, serp.gridStart, s.standoff, s.diameter);
+  assert.equal(h.userData.maxBase, 0);
+  g.dispose();
+  h.dispose();
+});

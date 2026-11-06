@@ -1,5 +1,15 @@
 # 點膠研究室 · 機構與實作契約
 
+## v1.8.3（2026-11-05）
+
+- `scene.js`：
+  - `stackBases(rings, widths, heights)`：依弧長順序（即鋪膠順序），每個 ring 的底高＝它落在的先前膠條頂面（該段的底高 + 半橢圓在該橫向距離的高度，取最大）；
+  - 自己剛鋪的 ring（弧長差 ≤ 寬度 + 一格）不算，之後以斜坡過渡，回程爬上去程膠條；
+  - 線段依包圍盒（加半寬）放進網格以便查找；
+  - `beadGeometry(..., { stack })` 把 ring 與底面抬高到底高；`continuousPathGeometry` 開啟，直線與單點不開；
+  - `userData.maxBase` 供檢查。
+- 只改畫面：壓合仍用各趟膠量加總（`depositSources`），疊高檢查仍用 `stacking.js` 的體積相加。
+
 ## v1.8.2（2026-11-05）
 
 - `stacking.js`：`stackedBead(run)`（依 run 快取）：
