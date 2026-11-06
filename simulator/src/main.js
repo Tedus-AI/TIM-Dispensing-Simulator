@@ -639,7 +639,7 @@ $('#tab-body').addEventListener('click', (e) => {
         const bad = fit.fits.find((f) => !f.inRange);
         if (bad) return toast(`${label[bad.key]}算出 ${fmt(bad.value, 3)}，超出允許範圍（${bad.range.join('–')}）；請確認重量、時間與目前的壓力和針嘴`, 'error');
         const updates = Object.fromEntries(fit.fits.map((f) => [f.key, Number(f.value.toPrecision(4))]));
-        const text = fit.fits.map((f) => `${label[f.key]}改為 ${updates[f.key]}`).join('、');
+        const text = fit.fits.map((f) => `${label[f.key]}${/[A-Za-z]$/.test(label[f.key]) ? ' ' : ''}改為 ${updates[f.key]}`).join('、');
         const shape = second ? `流量 ∝ 壓力^${fmt(fit.exponent, 2)}；` : '';
         if (tryRecompute({ ...S.config, ...updates })) toast(`已校正：${shape}實測出膠是模型的 ${fmt(fit.ratio, 2)} 倍，${text}`, 'ok');
       } catch (err) {
