@@ -278,6 +278,14 @@ test('a search across path types gives every type a dose window; a dot uses its 
   const serp = r.candidates.find((c) => c.type === 'serpentine');
   assert.equal(serp.knobInfo.key, 'pressure');
   assert.ok(r.best.verified, 'the leader is checked on the final grid');
+  // Every type's best window is checked too, not only the leader: no type is left on the coarse grid alone.
+  for (const t of r.types) {
+    const first = r.candidates.find((c) => c.type === t && (c.pass || c.coarsePass));
+    if (first) assert.ok(first.verified, `${t}: its best window is checked`);
+  }
+  const { planSearch } = await import('../src/optimize.js');
+  const plan = planSearch(config, heat, { vars, searchCell: 1, keep: 1, verify: 1 });
+  assert.deepEqual([plan.leaders, plan.keep, plan.checked, plan.verify], [1, 4, 1, 4], JSON.stringify(plan));
   // The dot of a pattern search is placed at the heat-source centre.
   const { evaluateTask } = await import('../src/optimize.js');
   let seen = null;
@@ -306,4 +314,39 @@ test('ranking within 1 % of material prefers the less stretched bead, then the s
   assert.equal(beadDeviation({ speedRatio: 1.2, drags: false }), 0);
   assert.ok(beadDeviation({ speedRatio: 4 }) < beadDeviation({ speedRatio: 17 }));
   assert.ok(beadDeviation({ speedRatio: 0.3 }) > 0 && beadDeviation({ speedRatio: 1, drags: true }) === 1);
+});
+
+test('a pass whose worst overflow is within one cell of the limit is marginal and ranks after the steady passes of its band', async () => {
+  const { passMargin, resultOrder } = await import('../src/optimize.js');
+  const g = { coverage: 95, overflow: 3 };
+  // Overflow is read at cell centres: 0.15 mm short of the limit on a 0.3 mm grid is within the noise.
+  assert.ok(passMargin({ coveredPercent: 95.3, squeezeOutMm: 2.85 }, g, 0.3).marginal);
+  assert.ok(!passMargin({ coveredPercent: 95.3, squeezeOutMm: 2.55 }, g, 0.3).marginal);
+  assert.ok(!passMargin({ coveredPercent: 95.3, squeezeOutMm: 2.7 }, g, 0.3).marginal, 'one whole cell left is enough');
+  // Coverage sits on the goal by construction (nominal = left window edge / (1 - tolerance)): never marginal.
+  const m = passMargin({ coveredPercent: 95.01, squeezeOutMm: 2 }, g, 0.3);
+  assert.ok(!m.marginal && Math.abs(m.coverage - 0.01) < 1e-9 && Math.abs(m.coverageNoise - 0.15) < 1e-12);
+  // The star-only case of a user: one material band; #1 has the least stretched bead but 0.1 mm of overflow left.
+  const pass = (id, ml, ratio, cycle, worstOvf) => ({
+    id,
+    depositedMl: ml,
+    bead: { speedRatio: ratio, drags: false },
+    cycle,
+    headroom: true,
+    robust: true,
+    reached: true,
+    cycleOk: true,
+    verified: true,
+    marginal: passMargin({ coveredPercent: 95.2, squeezeOutMm: worstOvf }, g, 0.3).marginal,
+  });
+  const list = [pass(1, 0.049, 2.6, 20, 2.9), pass(2, 0.0487, 2.7, 20.8, 2.4), pass(3, 0.0485, 3, 19.4, 2.4), pass(4, 0.0491, 3, 20.1, 2.3)];
+  const order = (rows, settled) => [...rows].sort(resultOrder(rows, { goals: g, settled })).map((c) => c.id);
+  assert.deepEqual(order(list, false), [1, 2, 3, 4], 'choosing what to check ignores margins');
+  assert.deepEqual(order(list, true), [2, 3, 4, 1]);
+  // Only within a material band: a steady pass laying 5 % more glue still ranks after the marginal one.
+  const wider = [pass(1, 0.049, 2.6, 20, 2.9), pass(5, 0.049 * 1.05, 1.2, 15, 2)];
+  assert.deepEqual(order(wider, true), [1, 5]);
+  // Results that do not pass keep their order by how far they miss.
+  const miss = { id: 6, depositedMl: 0.04, coveredPercent: 90, squeezeOutMm: 1, robust: false, reached: true, cycleOk: true };
+  assert.deepEqual(order([miss, ...list], true).at(-1), 6);
 });

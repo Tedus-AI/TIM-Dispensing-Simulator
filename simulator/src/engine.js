@@ -3,7 +3,7 @@ import { motionProfile, timeAtDistance, planPolylineMotion } from './motion.js';
 import { withUpdates } from './parameters.js';
 
 export { motionProfile, timeAtDistance };
-export const VERSION = '2.0.0';
+export const VERSION = '2.0.1';
 export const LABEL = '工程假設／未經實機校準';
 export const BEAD_SIDES = 32;
 

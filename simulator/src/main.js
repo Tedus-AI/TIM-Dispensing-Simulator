@@ -1308,7 +1308,7 @@ const goalControls = () =>
 function verdict(m) {
   const j = judge(m, S.goals);
   if (j.pass) return '<span class="ok-badge">達標</span>';
-  const why = [j.short > 0 ? `覆蓋差 ${fmt(j.short, 1)}%` : '', j.over > 0 ? `溢膠超 ${fmt(j.over, 1)} mm` : ''].filter(Boolean).join('・');
+  const why = [j.short > 0 ? `覆蓋差 ${fmt(j.short, j.short < 0.1 ? 2 : 1)}%` : '', j.over > 0 ? `溢膠超 ${fmt(j.over, j.over < 0.1 ? 2 : 1)} mm` : ''].filter(Boolean).join('・');
   return `<span class="no-badge">${why}</span>`;
 }
 function bindGoals(root, rerender) {
@@ -1528,7 +1528,8 @@ function learnSpeed(predicted, elapsed) {
 function levelPlanText(plan) {
   const grid = `網格 ${plan.searchCell} mm 篩選與找窗口，${plan.verifyCell} mm 複核`;
   if (plan.geometries === 1) return `只搜尋膠量：${plan.screenDoses} 個膠量起步 → 找膠量窗口（二分 ${plan.bisections} 次）→ 在容差內 ${plan.band} 個膠量複核；${grid}；最多約 ${plan.coarse + plan.fine} 次試算`;
-  return `${plan.geometries} 組幾何 × ${plan.screenDoses} 個膠量篩選 → 前 ${plan.keep} 組找膠量窗口（二分 ${plan.bisections} 次）→ 前 ${plan.verify} 組在容差內 ${plan.band} 個膠量複核；${grid}；最多約 ${plan.coarse + plan.fine} 次試算`;
+  const typed = plan.types.length > 1 ? '與每種圖樣最好的一組' : '';
+  return `${plan.geometries} 組幾何 × ${plan.screenDoses} 個膠量篩選 → 前 ${plan.leaders} 組${typed}找膠量窗口（二分 ${plan.bisections} 次）→ 前 ${plan.checked} 組${typed}在容差內 ${plan.band} 個膠量複核；${grid}；最多約 ${plan.coarse + plan.fine} 次試算`;
 }
 
 // Parallel evaluations: a pool of compute workers, closed when the search ends or is stopped.
@@ -1793,20 +1794,36 @@ function renderOptimize() {
   };
   // Short verdicts; the details are in the hover note.
   const badge = (cls, text, note) => `<span class="${cls}" tabindex="0" data-tip="${esc(note)}">${text}</span>`;
+  // A marginal recommendation: how close its overflow is, and the first steadier pass (more material) if any.
+  const marginalNote = (x) => {
+    const steady = r.candidates.find((c) => c.pass && !c.marginal);
+    const at = steady ? r.candidates.indexOf(steady) : -1;
+    const others = r.candidates.some((c) => c.pass && c !== x);
+    return `最差溢膠 ${fmt(x.worst.squeezeOutMm, 2)} mm，離上限只差 ${fmt(x.passMargin.overflow, 2)} mm，小於一個網格（${fmt(r.verifyCell, 2)} mm）的計算誤差${
+      steady
+        ? `；${at < rows.length ? `第 ${at + 1} 列` : '表中有一組'}溢膠餘裕 ${fmt(steady.passMargin.overflow, 2)} mm，但膠量多約 ${fmt((steady.depositedMl / x.depositedMl - 1) * 100, 0)}%`
+        : others
+          ? '；其他達標組合也一樣貼近上限'
+          : ''
+    }。請以透明板在膠量 +${tolPct}% 確認溢膠。`;
+  };
   const rowVerdict = (x) => {
-    if (x.pass) return badge('ok-badge', '達標', `在 ${fmt(r.verifyCell, 2)} mm 網格、膠量 ±${tolPct}% 內 ${r.band} 個點都達到覆蓋 ≥ ${S.goals.coverage}%、溢膠 ≤ ${S.goals.overflow} mm。`);
+    const passed = `在 ${fmt(r.verifyCell, 2)} mm 網格、膠量 ±${tolPct}% 內 ${r.band} 個點都達到覆蓋 ≥ ${S.goals.coverage}%、溢膠 ≤ ${S.goals.overflow} mm`;
+    const room = x.passMargin ? `最差溢膠 ${fmt(x.worst.squeezeOutMm, 2)} mm，離上限${x.marginal ? '只差' : '還有'} ${fmt(x.passMargin.overflow, 2)} mm` : '';
+    if (x.pass && x.marginal) return badge('mid-badge', '邊緣達標', `${passed}，但${room}，小於一個網格（${fmt(r.verifyCell, 2)} mm）的計算誤差，實際可能超過。同一段膠量內排在穩健的結果後面。`);
+    if (x.pass) return badge('ok-badge', '達標', `${passed}。${room ? `${room}（大於一個網格的計算誤差）。` : ''}`);
     if (!x.reached || x.bandPoints?.some((p) => p.capped))
       return badge('no-badge', '設備限制', `${capWhy(x)}都已到極限，${x.capFactor ? `最多只鋪得出約 ${fmt(x.capFactor, 2)}× 需求，` : ''}達不到需要的膠量。針嘴改「自動」或換粗一點、放寬速度範圍，或先用實測出膠量校正（設備頁）。`);
     if (!x.cycleOk) return badge('no-badge', '超過週期', `週期 ${fmt(x.cycle, 1)} s 超過週期上限。`);
     if (x.coarsePass) return badge('no-badge', '待複核', `粗網格（${fmt(r.searchCell, 2)} mm）的膠量窗口夠寬，但還沒以細網格在容差內複核；精細度提高或往下複核時才會確認。`);
     if (x.verified) {
       const j = judge(x.worst, S.goals);
-      const text = [j.short > 0 ? `覆蓋差 ${fmt(j.short, 1)}%` : '', j.over > 0 ? `溢膠超 ${fmt(j.over, 1)} mm` : ''].filter(Boolean).join('・') || '未全部達標';
+      const text = [j.short > 0 ? `覆蓋差 ${fmt(j.short, j.short < 0.1 ? 2 : 1)}%` : '', j.over > 0 ? `溢膠超 ${fmt(j.over, j.over < 0.1 ? 2 : 1)} mm` : ''].filter(Boolean).join('・') || '未全部達標';
       return badge('no-badge', text, `以容差內最差的一點判定：${missText(x) || '有膠量點設備達不到'}。標稱膠量本身可能達標，但量產漂移 ±${tolPct}% 時會不夠。`);
     }
     const j = judge(x, S.goals);
     if (j.pass) return x.screenedOnly ? badge('no-badge', '未完成', '只在篩選膠量算過，還沒找膠量窗口與複核。') : badge('no-badge', '窗口不足', `標稱膠量達標，但可行窗口比 ±${tolPct}% 窄，膠量漂移時可能超出目標。`);
-    return badge('no-badge', [j.short > 0 ? `覆蓋差 ${fmt(j.short, 1)}%` : '', j.over > 0 ? `溢膠超 ${fmt(j.over, 1)} mm` : ''].filter(Boolean).join('・'), `標稱膠量就未達標：覆蓋 ${fmt(x.coveredPercent, 1)}%（目標 ${S.goals.coverage}%）、溢膠 ${fmt(x.squeezeOutMm, 1)} mm（上限 ${S.goals.overflow} mm）。`);
+    return badge('no-badge', [j.short > 0 ? `覆蓋差 ${fmt(j.short, j.short < 0.1 ? 2 : 1)}%` : '', j.over > 0 ? `溢膠超 ${fmt(j.over, j.over < 0.1 ? 2 : 1)} mm` : ''].filter(Boolean).join('・'), `標稱膠量就未達標：覆蓋 ${fmt(x.coveredPercent, 1)}%（目標 ${S.goals.coverage}%）、溢膠 ${fmt(x.squeezeOutMm, 1)} mm（上限 ${S.goals.overflow} mm）。`);
   };
   const knobCell = (x) => {
     const k = knobOfRow(x);
@@ -1879,7 +1896,7 @@ function renderOptimize() {
                 best.worst ? `膠量 ±${tolPct}% 內：覆蓋 ≥ ${fmt(best.worst.coveredPercent, 1)}%、溢膠 ≤ ${fmt(best.worst.squeezeOutMm, 1)} mm` : `標稱：覆蓋 ${fmt(best.coveredPercent, 1)}%、溢膠 ${fmt(best.squeezeOutMm, 1)} mm`
               }；週期 ${fmt(best.cycle, 1)} s${best.bead.speedRatio !== null || best.bead.drags ? `；${best.mode === 'point' ? '膠點' : '膠條'} ${beadCellX(best)}` : ''}</span>${
                 best.fCovAtMin ? `<span class="warn">覆蓋在膠量範圍下限 ${fmt(r.dose[0], 2)}× 就已達標，真正的最少膠量可能更低：可把膠量範圍下限調低再搜尋。</span>` : ''
-              }${
+              }${best.pass && best.marginal ? `<span class="warn">${marginalNote(best)}</span>` : ''}${
                 !(best.depositedMl > 1e-9)
                   ? `<span class="warn">這組設定不會有膠沉積到工件${best.mode !== 'point' && o.config.shutoffDistance > 0 ? `（提前關膠 ${o.config.shutoffDistance} mm 是否 ≥ 路徑長？）` : ''}；請先檢查路徑與收尾設定。</span>`
                   : best.pass || best.coarsePass || best.screenedOnly
@@ -1898,9 +1915,9 @@ function renderOptimize() {
               }</div>`
             : ''
         }
-      <p class="opt-meta">${esc(o.describe)}　需求 ${fmt(r.required, 3)} mL　${esc(levelOf(r.level ?? 2).name)}：${r.plan?.geometries ?? '—'} 組幾何、試算 ${r.evaluations} 次${o.elapsed ? `、耗時 ${clockText(o.elapsed)}` : ''}${tip(`篩選與找窗口用 ${fmt(r.searchCell, 2)} mm 網格；前幾名以 ${fmt(r.verifyCell, 2)} mm 網格在膠量 ±${tolPct}% 內 ${r.band} 個點複核。${r.nozzle === 'auto' || r.space?.varies.speed ? `每組幾何的${[r.nozzle === 'auto' ? '針嘴' : '', r.space?.varies.speed ? '移動速度' : ''].filter(Boolean).join('與')}是先算好再壓合的：在壓力（轉速）範圍內鋪得出 ${fmt(r.sizing?.lowFactor, 2)}–${fmt(r.sizing?.needFactor, 2)}× 需求、膠條最接近針嘴、週期不超過 ${fmt(r.cycleRef, 0)} s 參考。` : ''}`)}${r.sizing?.tooSlow ? `<small class="warn">${r.sizing.tooSlow} 組在速度範圍內走完路徑都超過 180 s，已略過</small>` : ''}${r.sizing?.limited ? `<small class="warn">${r.sizing.limited} 組在設備範圍內出不了需要的膠量</small>` : ''}</p>
+      <p class="opt-meta">${esc(o.describe)}　需求 ${fmt(r.required, 3)} mL　${esc(levelOf(r.level ?? 2).name)}：${r.plan?.geometries ?? '—'} 組幾何、試算 ${r.evaluations} 次${o.elapsed ? `、耗時 ${clockText(o.elapsed)}` : ''}${tip(`篩選與找窗口用 ${fmt(r.searchCell, 2)} mm 網格；前幾名與每種圖樣最好的一組以 ${fmt(r.verifyCell, 2)} mm 網格在膠量 ±${tolPct}% 內 ${r.band} 個點複核。${r.nozzle === 'auto' || r.space?.varies.speed ? `每組幾何的${[r.nozzle === 'auto' ? '針嘴' : '', r.space?.varies.speed ? '移動速度' : ''].filter(Boolean).join('與')}是先算好再壓合的：在壓力（轉速）範圍內鋪得出 ${fmt(r.sizing?.lowFactor, 2)}–${fmt(r.sizing?.needFactor, 2)}× 需求、膠條最接近針嘴、週期不超過 ${fmt(r.cycleRef, 0)} s 參考。` : ''}`)}${r.sizing?.tooSlow ? `<small class="warn">${r.sizing.tooSlow} 組在速度範圍內走完路徑都超過 180 s，已略過</small>` : ''}${r.sizing?.limited ? `<small class="warn">${r.sizing.limited} 組在設備範圍內出不了需要的膠量</small>` : ''}</p>
       ${anyPass || o.stopped ? '' : '<p class="note warn-note">沒有設定在膠量容差內同時達到兩個目標；下表依差距排序。</p>'}
-      <div class="opt-table"><table class="cmp opt"><thead><tr><th>#</th>${head('判定', '綠色「達標」＝在細網格、膠量 ±容差內每個點都達到覆蓋目標與溢膠上限。待複核＝粗網格窗口夠寬、尚未複核；未完成＝只篩選；窗口不足＝標稱達標但窗口比容差窄。滑到每格可看細節。')}${head('路徑', '圖樣與幾何：間距、邊界內縮（mm）；針嘴與設定速度（自動選時每組不同）。')}${head('標稱膠量', '建議的膠量：可行窗口左界 ÷ (1 − 容差)。括號為需求倍數。', 'mL（×需求）')}${head('可行窗口', '左＝達到覆蓋目標的最少膠量，右＝溢膠不超過上限的最多膠量（需求倍數）。餘裕＝標稱膠量兩側離邊界還有多少，需 ≥ 容差。', '×需求')}${head('膠量設定', '達到標稱膠量的壓力（或轉速）與移動速度；單點是開膠時間。滑到格子可看實際平均速度。')}${head('覆蓋', '上：標稱膠量的覆蓋。下：膠量 ±容差內最差的覆蓋，判定看這個。滑到格子可看每個膠量點。', '%')}${head('溢出', '上：標稱膠量的溢出熱源距離。下：膠量 ±容差內最差的值。', 'mm')}${head('夾氣', '標稱膠量壓合後的夾氣處數 / 面積。', '處 / mm²')}${head('週期', '點膠動作完成時間（含收尾，不含上下料）。', 's')}${head('膠條', '拉細倍率＝針嘴內孔截面 ÷ 膠條截面＝平均移動速度 ÷ 出膠速度；0.7–1.5 為良好。滑到格子看說明。')}${head('', '套用會把參數與網格設成該列的結果，按「模擬壓合」可重現；請再以透明板在 −容差／標稱／+容差 各試一片。')}</tr></thead><tbody>
+      <div class="opt-table"><table class="cmp opt"><thead><tr><th>#</th>${head('判定', '綠色「達標」＝在細網格、膠量 ±容差內每個點都達到覆蓋目標與溢膠上限。綠框「邊緣達標」＝也達標，但最差溢膠離上限不到一個網格（計算誤差內），同一段膠量內排在穩健的後面。覆蓋那一側不分邊緣：標稱膠量就是選在膠量少一個容差時剛好達到覆蓋目標，每組的最差覆蓋都貼在目標上。待複核＝粗網格窗口夠寬、尚未複核；未完成＝只篩選；窗口不足＝標稱達標但窗口比容差窄。滑到每格可看細節。')}${head('路徑', '圖樣與幾何：間距、邊界內縮（mm）；針嘴與設定速度（自動選時每組不同）。')}${head('標稱膠量', '建議的膠量：可行窗口左界 ÷ (1 − 容差)。括號為需求倍數。', 'mL（×需求）')}${head('可行窗口', '左＝達到覆蓋目標的最少膠量，右＝溢膠不超過上限的最多膠量（需求倍數）。餘裕＝標稱膠量兩側離邊界還有多少，需 ≥ 容差。', '×需求')}${head('膠量設定', '達到標稱膠量的壓力（或轉速）與移動速度；單點是開膠時間。滑到格子可看實際平均速度。')}${head('覆蓋', '上：標稱膠量的覆蓋。下：膠量 ±容差內最差的覆蓋，判定看這個。滑到格子可看每個膠量點。', '%')}${head('溢出', '上：標稱膠量的溢出熱源距離。下：膠量 ±容差內最差的值。', 'mm')}${head('夾氣', '標稱膠量壓合後的夾氣處數 / 面積。', '處 / mm²')}${head('週期', '點膠動作完成時間（含收尾，不含上下料）。', 's')}${head('膠條', '拉細倍率＝針嘴內孔截面 ÷ 膠條截面＝平均移動速度 ÷ 出膠速度；0.7–1.5 為良好。滑到格子看說明。')}${head('', '套用會把參數與網格設成該列的結果，按「模擬壓合」可重現；請再以透明板在 −容差／標稱／+容差 各試一片。')}</tr></thead><tbody>
       ${rows
         .map(
           (x, i) =>
@@ -2023,7 +2040,7 @@ function candidateEntry(x) {
   const metrics = Object.fromEntries(METRIC_KEYS.map((k) => [k, x[k]]));
   // The grid the row was computed on, so that "模擬壓合" reproduces it.
   const heat = { ...o.heat, cellSize: x.verified ? r.verifyCell : r.searchCell };
-  return { config, heat, pattern, metrics, source: x.verified ? `自動最佳化・${levelOf(r.level ?? 2).name}（已複核）` : o.stopped ? '自動最佳化（未完成）' : '自動最佳化（粗網格）' };
+  return { config, heat, pattern, metrics, source: x.verified ? `自動最佳化・${levelOf(r.level ?? 2).name}（已複核${x.marginal ? '、邊緣達標' : ''}）` : o.stopped ? '自動最佳化（未完成）' : '自動最佳化（粗網格）' };
 }
 const rowSummary = (x) =>
   [
@@ -2206,12 +2223,12 @@ $('#help-body').innerHTML = `
   <li><b>膠量列（左上，固定顯示）</b>：顯示需求、目前沉積與比值。輸入目標（× 需求、mL 或 g）後按「套用」：線與圖樣預設「調壓力（P300 調轉速），到極限才改速度」，也可選只調速度；單點預設調開膠時間，也可選調壓力。</li>
   <li><b>播放</b>：空白鍵播放／暫停；拖曳時間軸或點曲線跳到該時刻；時間軸上的標記可跳到關膠、到位、抬針、退離。</li>
   <li><b>模擬壓合</b>：結果卡的「模擬壓合」顯示透明板以定力壓到墊片、膠膜擴散、氣泡壓縮／遷移／排出與靜置後回脹；可切換「前緣時序」著色。</li>
-  <li><b>上方工具列</b>：「自動最佳化」搜尋膠量 ±容差（預設 ±10%）內都達標、膠量最少的設定；膠量相差 3% 以內時，選膠條較好、週期較短、壓力有調整餘裕的。「情境比較」一次比較所有存下的情境。</li>
-  <li><b>搜尋變數</b>：自動最佳化的「搜尋變數」表裡，每個變數都可選「固定（用目前設定）」或「搜尋」——圖樣種類（蛇形、螺旋、米字形、單點、中心線，可勾選）、路徑間距、邊界內縮、螺旋起點（外向內／中心向外）、移動速度；範圍留空為自動，也可自己輸入。膠量一定搜尋。表下方顯示總組合數；每種圖樣的最佳組都會找膠量窗口，方便比較。</li>
+  <li><b>上方工具列</b>：「自動最佳化」搜尋膠量 ±容差（預設 ±10%）內都達標、膠量最少的設定；膠量相差 3% 以內時，最差溢膠離上限不到一個網格的標「邊緣達標」、排在後面，其餘選膠條較好、週期較短、壓力有調整餘裕的。「情境比較」一次比較所有存下的情境。</li>
+  <li><b>搜尋變數</b>：自動最佳化的「搜尋變數」表裡，每個變數都可選「固定（用目前設定）」或「搜尋」——圖樣種類（蛇形、螺旋、米字形、單點、中心線，可勾選）、路徑間距、邊界內縮、螺旋起點（外向內／中心向外）、移動速度；範圍留空為自動，也可自己輸入。膠量一定搜尋。表下方顯示總組合數；每種圖樣的最佳組都會找膠量窗口並複核，方便比較。</li>
   <li><b>針嘴與速度自動選</b>：針嘴選「自動」、速度選「搜尋」時，每組幾何先算好要用哪支針嘴、多快：在壓力（轉速）範圍內鋪得出整個膠量範圍、膠條最接近針嘴大小、週期不超過週期上限（未設定時以 30 s 為參考）。壓合結果主要由圖樣決定、幾乎不受速度與針嘴影響，所以速度不增加組數。出不了需要的膠量時，表格會標「設備上限 x×」，說明是針嘴、壓力或速度卡住。</li>
   <li><b>說明在「?」裡</b>：介面上的小圓圈問號，游標移過去（手機點一下）就會顯示該項的說明；表格裡的判定、膠條、覆蓋等格子也可以移過去看細節。</li>
   <li><b>夾氣顏色</b>：壓合畫面下方工具列可切換夾氣顏色（洋紅、藍、黃、黑），遇到和膠材相近的顏色時換一個；選擇會記在這台電腦。</li>
-  <li><b>最佳化精細度</b>：快速／標準／精細／極精細四級，越精細候選越多、找窗口與複核的組數越多、網格越細；選級時會依這台電腦試算一次估出時間。搜尋分散在多個執行緒並行；搜尋中可按「停止搜尋」，會保留已完成的部分結果（標示「未複核」者不能當最終建議）。只有在細網格、容差內多個膠量都達標的結果才算「達標」；套用時網格會設成該結果使用的網格。</li>
+  <li><b>最佳化精細度</b>：快速／標準／精細／極精細四級，越精細候選越多、找窗口與複核的組數越多、網格越細；選級時會依這台電腦試算一次估出時間。搜尋分散在多個執行緒並行；搜尋中可按「停止搜尋」，會保留已完成的部分結果（標示「未複核」者不能當最終建議）。只有在細網格、容差內多個膠量都達標的結果才算「達標」（最差溢膠離上限不到一個網格的標「邊緣達標」）；前幾名與每種圖樣最好的一組會複核；套用時網格會設成該結果使用的網格。</li>
   <li><b>情境</b>：覺得不錯的參數按結果卡的「存成情境」（未壓合會自動先算），再改參數繼續試；「情境比較」依「覆蓋 ≥ 目標、溢膠 ≤ 上限、膠量最少」排序，可載入、改名、刪除、匯出 CSV／JSON。情境存在這台電腦的瀏覽器。</li>
   <li><b>疊高</b>：路徑重複經過的地方（例如米字形每條來回、中心反覆經過、轉角）膠會疊起來。模擬依出膠順序一格一格把膠鋪上去：後面那趟落在先前的膠上；針嘴離下面的膠變近時，新出的膠會被針嘴壓扁、變寬；高出針嘴的膠會被針嘴推到兩側。3D 畫面、結果卡的「膠高 / 寬」與壓合都用這同一份膠形。疊到針嘴高度時警告「針嘴碰到前一道膠」（針頭沾膠、拖絲沒有算），自動最佳化也會當作埋針扣分。</li>
   <li><b>針嘴與膠條</b>：同樣每 mm 膠量下，膠條的高與寬由針嘴離面高度決定；針嘴內徑決定出膠量與膠條品質。結果卡的拉細倍率（針嘴內孔截面 ÷ 膠條截面）0.7–1.5 視為良好，偏大代表膠條被拉細，偏小代表堆疊；匹配內徑 ≈ √(4 × 每 mm 膠量 / π)。間隙很薄、膠又很黏時，細針嘴出膠慢、粗針嘴膠條被拉細，需要在膠條與週期之間取捨。</li>

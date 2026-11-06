@@ -136,6 +136,19 @@ export function processCost(c, cycleRef = CYCLE_REFERENCE) {
   return beadDeviation(c.bead) + cycle + (c.headroom === false ? 0.5 : 0);
 }
 
+/**
+ * How far a checked result's worst point sits from each goal, against the calculation's own noise there.
+ * Overflow is read at cell centres, so it moves in steps of about one cell: a worst overflow closer than one
+ * cell to the limit may exceed it in reality, and the pass is marginal. Coverage does not mark a pass
+ * marginal: the nominal dose puts the low end of the band on the coverage goal by construction (left window
+ * edge ÷ (1 − tolerance)), so every pass sits within the grid noise of it (about 0.5 point per mm of cell)
+ * and ranking on it would rank on noise.
+ */
+export function passMargin(worst, goals, cell) {
+  const overflow = goals.overflow - worst.squeezeOutMm;
+  return { overflow, coverage: worst.coveredPercent - goals.coverage, overflowNoise: cell, coverageNoise: 0.5 * cell, marginal: overflow < cell - 1e-9 };
+}
+
 export function judge(m, goals = GOAL_DEFAULTS) {
   const short = Math.max(0, goals.coverage - m.coveredPercent);
   const over = Math.max(0, m.squeezeOutMm - goals.overflow);
@@ -422,12 +435,17 @@ export function planSearch(config, heat, options = {}) {
   const o = resolve(heat, options);
   const space = searchSpace(config, heat, o.candidates, o.vars, o.knob);
   const geometries = space.geometries.length;
-  // Besides the overall leaders, the best geometry of every path type gets a dose window.
-  const keep = Math.min(geometries, o.keep + Math.max(0, space.types.length - 1));
-  const verify = Math.min(o.verify, keep);
+  // Besides the overall leaders, the best geometry of every other path type gets a dose window and, when the
+  // window is wide enough, the final check (`keep` and `verify` count those at most; `leaders` and `checked`
+  // are the overall leaders alone).
+  const others = Math.max(0, space.types.length - 1);
+  const leaders = Math.min(geometries, o.keep);
+  const keep = Math.min(geometries, o.keep + others);
+  const checked = Math.min(o.verify, leaders);
+  const verify = o.verify > 0 ? Math.min(keep, o.verify + others) : 0;
   const screen = geometries * (o.screenDoses >= 2 ? 2 : 1);
   const window = keep * (3 + 2 * o.bisections);
-  return { level: o.level, geometries, types: space.types, keep, verify, band: o.band, screenDoses: o.screenDoses >= 2 ? 2 : 1, bisections: o.bisections, screen, window, coarse: screen + window, fine: verify * o.band, searchCell: o.searchCell, verifyCell: o.verifyCell };
+  return { level: o.level, geometries, types: space.types, leaders, keep, checked, verify, band: o.band, screenDoses: o.screenDoses >= 2 ? 2 : 1, bisections: o.bisections, screen, window, coarse: screen + window, fine: verify * o.band, searchCell: o.searchCell, verifyCell: o.verifyCell };
 }
 
 /**
@@ -501,6 +519,33 @@ export function estimateWindow(points, goals, tol) {
 // sort), and process cost in 0.15 steps.
 const bandOf = (v, least, width) => (least > 0 && v > 0 ? Math.floor(Math.log(v / least) / Math.log(1 + width) + 1e-9) : 0);
 const costStep = (cost) => Math.round((cost ?? 0) / 0.15);
+/**
+ * Order of searched results (a comparator for `list`). Passing ones — a window as wide as the tolerance (on
+ * the final grid once checked), the dose reached, the cycle within its limit — first: 3 % material bands from
+ * the least material passing; with `settled` (the final list) a checked pass whose worst overflow is within
+ * one cell of the limit (marginal) after the others of its band; then the more practical process (bead near
+ * the nozzle size, nozzle clear of stacked glue, cycle near the reference, drive with room to correct a
+ * drifting dose) in 0.15 steps, then the shorter cycle, then the wider window. The rest by how far they miss.
+ */
+export function resultOrder(list, { goals = GOAL_DEFAULTS, cycleRef = CYCLE_REFERENCE, settled = false } = {}) {
+  const ok = (c) => Boolean(c.robust && c.reached && c.cycleOk);
+  const passing = list.filter(ok).map((c) => c.depositedMl);
+  const least = passing.length ? Math.min(...passing) : 0;
+  return (a, b) => {
+    const pa = ok(a);
+    const pb = ok(b);
+    if (pa !== pb) return pa ? -1 : 1;
+    if (pa)
+      return (
+        bandOf(a.depositedMl, least, MATERIAL_TIE) - bandOf(b.depositedMl, least, MATERIAL_TIE) ||
+        (settled ? Number(Boolean(a.marginal)) - Number(Boolean(b.marginal)) : 0) ||
+        costStep(processCost(a, cycleRef)) - costStep(processCost(b, cycleRef)) ||
+        a.cycle - b.cycle ||
+        (b.margin ?? 0) - (a.margin ?? 0)
+      );
+    return compareRanked(a, b, goals);
+  };
+}
 // Screening order: feasible estimates in 2 % bands of nominal dose, then process (bead, cycle), then dose.
 const screenOrderFor = (list) => {
   const feasible = list.filter((s) => s.est.feasible).map((s) => s.est.nominal);
@@ -627,31 +672,12 @@ export async function optimizeSettings(config, heat, options = {}) {
   const geoOf = (c) => geometries.find((g) => gid(g) === gid(c));
 
   const feasible = (r) => r.reached && r.cycleOk;
-  // Passing results: 3 % material bands from the least material passing, then the more practical process
-  // (bead near the nozzle size, nozzle clear of stacked glue, cycle near the reference, drive with room to
-  // correct a drifting dose) in 0.15 steps, then the shorter cycle, then the wider window. The rest by how far
-  // they miss.
-  const orderFor = (list) => {
-    const passing = list.filter((c) => c.robust && feasible(c)).map((c) => c.depositedMl);
-    const least = passing.length ? Math.min(...passing) : 0;
-    return (a, b) => {
-      const pa = a.robust && feasible(a);
-      const pb = b.robust && feasible(b);
-      if (pa !== pb) return pa ? -1 : 1;
-      if (pa)
-        return (
-          bandOf(a.depositedMl, least, MATERIAL_TIE) - bandOf(b.depositedMl, least, MATERIAL_TIE) ||
-          costStep(processCost(a, cycleRef)) - costStep(processCost(b, cycleRef)) ||
-          a.cycle - b.cycle ||
-          (b.margin ?? 0) - (a.margin ?? 0)
-        );
-      return compareRanked(a, b, goals);
-    };
-  };
+  // Which results get checked does not look at marginal passes, so a check never triggers further checks.
+  const orderFor = (list, settled = false) => resultOrder(list, { goals, cycleRef, settled });
   // Only a result re-run on the final grid across the tolerance band can pass.
   const isPass = (c) => Boolean(c.verified && c.robust && feasible(c));
   const assemble = (candidates, rest, complete) => {
-    const order = orderFor(candidates);
+    const order = orderFor(candidates, true);
     const list = [...[...candidates].sort((a, b) => isPass(b) - isPass(a) || order(a, b)), ...rest].map((c) => {
       const j = judge(c.worst || c, goals);
       return { ...c, ...j, pass: isPass(c), coarsePass: !c.verified && Boolean(c.robust) && feasible(c) };
@@ -770,6 +796,18 @@ export async function optimizeSettings(config, heat, options = {}) {
 
   // 3. Re-run the leaders on the final grid across the tolerance band, until the top ones are all checked:
   //    a leader that fails moves down and the next one is checked, so the recommendation is never unchecked.
+  //    The best window of every other path type is checked as well (its next one when it fails), so each
+  //    type in the table ends with a checked verdict: adding path types to a search never leaves a type
+  //    unchecked only because another one ranks ahead of it. `verify: 0` checks nothing.
+  const due = (list) => {
+    if (!(o.verify > 0)) return [];
+    const lead = list.slice(0, o.verify);
+    for (const t of space.types) {
+      const first = list.find((c) => c.type === t && c.robust && feasible(c));
+      if (first && !lead.includes(first)) lead.push(first);
+    }
+    return lead.filter((c) => !c.verified);
+  };
   const verifyOne = async (c) => {
     const g = geoOf(c);
     const band = (await Promise.all(bandFactors.map((s) => evaluate(g, c.factor * (1 + s * tol), fine, '複核')))).filter(Boolean);
@@ -786,11 +824,12 @@ export async function optimizeSettings(config, heat, options = {}) {
     const bandPoints = band.map((r) => ({ shift: r.factor / c.factor - 1, factor: r.factor, laid: r.depositedMl / required, depositedMl: r.depositedMl, coveredPercent: r.coveredPercent, squeezeOutMm: r.squeezeOutMm, voidAreaMm2: r.voidAreaMm2, reached: r.reached, capped: !r.reached && r.depositedMl < required * r.factor, fallback: Boolean(r.fallback) }));
     const capped = bandPoints.filter((p) => p.capped);
     const capFactor = capped.length ? Math.max(...capped.map((p) => p.laid)) : c.capFactor;
-    return { ...c, ...nominal, fCov: c.fCov, fOvf: c.fOvf, margin: c.margin, supportedTol: c.supportedTol, fCovAtMin: c.fCovAtMin, worst, bandPoints, capFactor, headroom: band.every((r) => !r.fallback), verified: true, robust: ok };
+    const passMarginOf = passMargin(worst, goals, o.verifyCell);
+    return { ...c, ...nominal, fCov: c.fCov, fOvf: c.fOvf, margin: c.margin, supportedTol: c.supportedTol, fCovAtMin: c.fCovAtMin, worst, bandPoints, capFactor, headroom: band.every((r) => !r.fallback), verified: true, robust: ok, passMargin: passMarginOf, marginal: ok && passMarginOf.marginal };
   };
   for (;;) {
     candidates.sort(orderFor(candidates));
-    const todo = candidates.slice(0, o.verify).filter((c) => !c.verified);
+    const todo = due(candidates);
     if (!todo.length) break;
     const checked = await Promise.all(todo.map(verifyOne));
     candidates = candidates.map((c) => (todo.includes(c) ? checked[todo.indexOf(c)] : c));
