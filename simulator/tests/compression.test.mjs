@@ -79,6 +79,21 @@ test('squeeze animation frames run from the bead crest down to the gap',()=>{
   const air=estimateCompression(pattern('n'),{...opts,gap:.5,cellSize:.5,frames:12});
   assert.ok(air.grid.frames.length<=12);near(air.grid.frames.at(-1).gap,.5,1e-12);
 });
+test('frames record the air share of every cell, so a squeezed bubble can be drawn',()=>{
+  const run=pattern('perimeter');
+  for(const airMode of ['rigid','compressible']){
+    const r=estimateCompression(run,{...opts,gap:.5,cellSize:.5,airMode,frames:6});
+    const g=r.grid;const last=g.frames.at(-1);
+    assert.equal(last.air.length,last.coverage.length);
+    let frameAir=0,finalAir=0;
+    for(let i=0;i<last.air.length;i++){
+      if(last.trapped[i])assert.ok(last.air[i]>=127,'a trapped cell is mostly air');
+      frameAir+=last.air[i]/255;finalAir+=g.airFraction[i];
+    }
+    if(airMode==='rigid')assert.ok(finalAir>10,'the ring keeps rigid air in the middle');
+    near(frameAir,finalAir,0.01*finalAir+0.5);
+  }
+});
 test('a sub-cell dot from a near-zero pressure stays bounded in cost and conserves volume',()=>{
   const run=simulate({...fromRegistry(registry),mode:'point',pressure:0.001});
   assert.ok(run.summary.deposited>0&&run.summary.deposited<1e-12);
