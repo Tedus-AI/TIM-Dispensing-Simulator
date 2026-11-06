@@ -18,6 +18,30 @@ export const PARAMETER_UPDATES = Object.freeze([
     supersedes: 'v0.3 value 1 (engineering_assumption)',
   },
   {
+    id: 'grease_proxy.flow_index',
+    value: 0.4,
+    unit: '1',
+    evidence: 'engineering_assumption',
+    since: '2.0',
+    role: 'Tgrease 2500 剪切變稀指數 n（τ = K·γ̇ⁿ；n = 1 為牛頓流體）',
+    basis:
+      'AI 初估：Tgrease 2500 未公開流變曲線。Laird 同類高填充膏體的流量—氣壓曲線（Tputty 910 指南第 5 頁，300 dpi 數位讀圖）：Tputty 910 Q ∝ P^2.67、Tputty 607 Q ∝ P^2.38，即 n ≈ 0.37、0.42；取 0.4。DOWSIL TC-5550 在 0.01–15 s⁻¹ 量得 n = 0.85（Nagrani 2023），屬低剪切率、較低黏度的膏體，不採用。請用兩種壓力實測出膠量擬合（設備頁「用實測出膠量校正」）。取代 v0.3–v1.9 的常黏度（n = 1）。',
+    source_refs: [GUIDE, NAGRANI],
+    supersedes: 'v0.3–v1.9 n = 1 (constant viscosity)',
+  },
+  {
+    id: 'grease_proxy.constant_viscosity',
+    value: 2500,
+    unit: 'Pa·sⁿ',
+    evidence: 'derived',
+    since: '2.0',
+    role: 'Tgrease 2500 稠度 K（剪切率 1 s⁻¹ 時的視黏度）',
+    basis:
+      'TDS 2,500,000 cP（23 °C、Brookfield TF spindle、2 rpm、Helipath）。T 型轉子的剪切率沒有明確定義，以約 1 s⁻¹ 計，K ≈ 2500 Pa·sⁿ。針嘴內剪切率約 10–1000 s⁻¹，n = 0.4 時視黏度只有 1 s⁻¹ 時的 1/4–1/60；舊版把 2500 Pa·s 當成所有剪切率都一樣。剪切率換算的不確定使絕對出膠量可能差數倍，請用實測出膠量校正。',
+    source_refs: [TDS2500],
+    supersedes: 'v0.3 constant viscosity 2500 Pa·s (engineering_assumption)',
+  },
+  {
     id: 'material.putty.conductivity',
     value: 9.1,
     unit: 'W/(m·K)',
@@ -114,6 +138,18 @@ export const PARAMETER_UPDATES = Object.freeze([
     role: '透明板定力壓合到墊片',
     basis: 'AI 初估：手壓或簡易治具量級。壓合時間與壓合中的氣泡壓縮隨之改變；墊片定位後的最終回脹主要由降伏應力決定，對此值較不敏感。下降速度上限另取 1 mm/s（AI 初估）。',
     source_refs: [],
+  },
+  {
+    id: 'squeeze.rheology',
+    value: 'power law (same K, n as the nozzle flow)',
+    unit: '',
+    evidence: 'derived',
+    since: '2.0',
+    role: '壓合膜的流變：與出膠同一條冪律 τ = K·γ̇ⁿ',
+    basis:
+      'v2.0 起壓合不再用單一等效牛頓黏度：每個格面的導流依局部壓力梯度大小 |∇p|^(1/n−1) 計算（Picard 迭代，以 n 為阻尼），因此校正出膠量也會一併改變壓合。以定體積圓盤定力壓合的解析解驗證：n = 0.6／0.4 時壓合時間誤差 0–3%。剪切變稀使高剪切的前段壓得更快，但接近墊片時膠流慢、視黏度高，最後一段更花時間。',
+    source_refs: ['Engmann, Servais & Burbidge, J. Non-Newton. Fluid Mech. 132 (2005) 1–27'],
+    supersedes: 'v1.1–v1.9 effective Newtonian viscosity',
   },
   {
     id: 'material.putty.squeeze_viscosity',

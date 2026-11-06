@@ -56,7 +56,7 @@ test('bead under a low nozzle keeps the deposited volume, flattens to the stando
 });
 
 test('simulation reports a pressed or buried bead and warns about a buried nozzle', () => {
-  const line = { ...fromRegistry(registry, 'grease'), mode: 'line', lineLength: 60, shutoffDistance: 0, speed: 10 };
+  const line = { ...fromRegistry(registry, 'grease'), mode: 'line', lineLength: 60, shutoffDistance: 0, speed: 10, diameter: 0.84 };
   const high = simulate({ ...line, standoff: 20 });
   assert.equal(high.summary.flattened, false);
   const low = simulate({ ...line, standoff: high.summary.maxHeight * 0.7 });

@@ -16,7 +16,13 @@ test('physical nozzle retains TCP at zero and its selectable bore, independent o
   }
 });
 test('three independent steady reference values and material density effect',()=>{
-  near(steadyFlow(cfg()),.390625);near(steadyFlow(cfg('grease')),.061906507721617925);near(steadyFlow(cfg('putty','P300')),.3);
+  near(steadyFlow(cfg()),.390625);near(steadyFlow(cfg('putty','P300')),.3);
+  // Grease (v2.0): power law with K = 2500 Pa·sⁿ, n = 0.4 through the virtual 3.175 × 10 mm tube at 90 psi; n = 1 is
+  // the v0.x–v1.9 Poiseuille value with 2500 Pa·s. P, d and L scale as P^(1/n), d^(3+1/n), L^(-1/n).
+  const g=cfg('grease'),R=3.175/2000,dp=90*6894.757293168,n=g.flowIndex;near(n,.4);
+  near(steadyFlow(g),Math.PI*n/(3*n+1)*(dp/(2*2500*.01))**(1/n)*R**(3+1/n)*1e6,1e-9);
+  near(steadyFlow({...g,flowIndex:1}),.061906507721617925,1e-12);
+  near(steadyFlow({...g,pressure:45}),steadyFlow(g)/2**(1/n),1e-9);near(steadyFlow({...g,diameter:g.diameter/2}),steadyFlow(g)/2**(3+1/n),1e-9);near(steadyFlow({...g,nozzleLength:20}),steadyFlow(g)/2**(1/n),1e-9);
   const a=simulate(cfg('putty','P300')),b=simulate(cfg('grease','P300'));near(a.summary.output,b.summary.output);near(a.summary.mass/a.summary.output,3.2);near(b.summary.mass/b.summary.output,3.4);
 });
 test('pressure and nozzle assumptions obey declared limiting cases',()=>{

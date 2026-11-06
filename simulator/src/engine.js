@@ -3,7 +3,7 @@ import { motionProfile, timeAtDistance, planPolylineMotion } from './motion.js';
 import { withUpdates } from './parameters.js';
 
 export { motionProfile, timeAtDistance };
-export const VERSION = '1.9.0';
+export const VERSION = '2.0.0';
 export const LABEL = '工程假設／未經實機校準';
 export const BEAD_SIDES = 32;
 
@@ -18,6 +18,7 @@ export const ENDING_DEFAULT = {
 };
 
 export const MOTION_DEFAULTS = [
+  ['startDwell', 0, 's', '起點出膠等待（機台的 Feed On Delay／Head Time）：開膠後針嘴停在起點這段時間再開始移動，補足起膠延遲；常見 0.05–0.1 s，預設 0 不等待。'],
   ['endMotion', 'vertical', '', '垂直抬針；提供斜退及先升再退，單點僅垂直。'],
   ['endDwell', 0.1, 's', '到達終點後停留 100 ms 再離開；不是從提前關膠時刻起算。'],
   ['backtrackDistance', 2, 'mm', '沿原直線反向回退 2 mm；垂直模式及單點不使用。'],
@@ -72,6 +73,7 @@ export function fromRegistry(registry, material = 'putty', architecture = 'R75')
       : `R75_${material === 'putty' ? 'PUTTY' : 'GREASE'}_ASSUMED`,
     density: g(`material.${material}.density`),
     viscosity: g('grease_proxy.constant_viscosity'),
+    flowIndex: g('grease_proxy.flow_index'),
     pressure: g('scenario.pressure'),
     referencePressure: g('scenario.reference_pressure'),
     referenceRate: g('putty_proxy.reference_rate'),
@@ -118,13 +120,27 @@ export function fromRegistry(registry, material = 'putty', architecture = 'R75')
   };
 }
 
+const PSI = 6894.757293168;
+
+/**
+ * Power-law (shear-thinning) flow through a straight round tube, mL/s: K in Pa·sⁿ, flow index n, ΔP in Pa,
+ * bore and length in mm. Q = πn/(3n+1) · (ΔP/(2KL))^(1/n) · R^(3+1/n); n = 1 is Hagen–Poiseuille with μ = K.
+ */
+export function powerLawTubeFlow(K, n, pressurePa, diameter, length) {
+  if (!(pressurePa > 0)) return 0;
+  const R = diameter / 2000;
+  const L = length / 1000;
+  return ((Math.PI * n) / (3 * n + 1)) * (pressurePa / (2 * K * L)) ** (1 / n) * R ** (3 + 1 / n) * 1e6;
+}
+
 /**
  * Steady volumetric flow, mL/s.
  * - P300: ideal positive displacement.
  * - R75 putty: TDS reference point scaled by a power-law tube law. With flow exponent m = 1/n,
  *   Q ∝ ΔP^m · d^(3+m) / L^m. m = 1 reproduces the Newtonian Poiseuille scaling of v0.x;
  *   v1.0 keeps d and L consistent with m instead of fixing them at 4 and 1.
- * - R75 grease: Hagen–Poiseuille with one constant viscosity.
+ * - R75 grease (v2.0): power-law tube law with consistency K (the TDS Brookfield viscosity, taken at about
+ *   1 s⁻¹) and flow index n; v0.x–v1.9 used Hagen–Poiseuille with that viscosity as a constant (n = 1).
  */
 export function steadyFlow(c) {
   if (c.architecture === 'P300') return (c.displacement * c.rpm * c.efficiency) / 60;
@@ -137,11 +153,23 @@ export function steadyFlow(c) {
       (c.referenceLength / c.nozzleLength) ** m
     );
   }
-  return (
-    ((Math.PI * (c.diameter / 1000) ** 4 * (Math.max(c.pressure, 0) * 6894.757293168)) /
-      ((128 * c.viscosity * c.nozzleLength) / 1000)) *
-    1e6
-  );
+  return powerLawTubeFlow(c.viscosity, c.flowIndex ?? 1, Math.max(c.pressure, 0) * PSI, c.diameter, c.nozzleLength);
+}
+
+/**
+ * The paste's shear-thinning law as one power law τ = K·γ̇ⁿ (Pa·sⁿ, n), shared by the nozzle flow and the
+ * squeeze: grease from its consistency and flow index; putty from its pressure exponent (n = 1/m) and the
+ * consistency that reproduces its reference flow through the reference tube.
+ */
+export function pasteRheology(c) {
+  if (c.material === 'putty') {
+    const n = 1 / c.pressureExponent;
+    const R = c.referenceDiameter / 2000;
+    const L = c.referenceLength / 1000;
+    const Q = (c.referenceRate * 1e-6) / ((Math.PI * n) / (3 * n + 1) * R ** (3 + 1 / n));
+    return { K: (c.referencePressure * PSI) / (2 * L * Q ** n), n };
+  }
+  return { K: c.viscosity, n: c.flowIndex ?? 1 };
 }
 
 // Analytic integral of a delayed rectangular command with nonnegative first-order response.
@@ -233,6 +261,7 @@ const RANGES = {
   efficiency: [0, 1],
   density: [0.1, 10],
   viscosity: [1, 100000],
+  flowIndex: [0.1, 1.2],
   referenceRate: [0, 10],
   pressureExponent: [0.1, 4],
   delay: [0, 2],
@@ -264,6 +293,7 @@ const RANGES = {
   reverseRpm: [0, 300],
   reverseDuration: [0, 2],
   junctionDeviation: [0.001, 5],
+  startDwell: [0, 5],
 };
 export const PARAMETER_RANGES = RANGES;
 
@@ -376,11 +406,35 @@ export function beadProfile(deposits, cellLength, ratio, standoff = Infinity, no
   return { widths, heights, volumeMm3: target, maxHeight, maxWidth, freeMaxHeight, flattened: freeMaxHeight > standoff };
 }
 
+// The nozzle waits at the start for `dwell` seconds with the dispenser already on, then follows `motion`.
+function withStartDwell(motion, dwell) {
+  if (!(dwell > 0)) return motion;
+  return {
+    ...motion,
+    duration: motion.duration + dwell,
+    travel: motion.duration,
+    at: (t) => (t <= dwell ? { x: 0, v: 0 } : motion.at(t - dwell)),
+    timeAt: (x) => (x <= 0 ? 0 : motion.timeAt(x) + dwell),
+  };
+}
+
 function buildMotion(c, path, pathLength) {
   if (c.mode === 'point') return null;
-  if (path && c.cornerMode === 'junction' && path.points.length > 2)
-    return planPolylineMotion(path.points, { speed: c.speed, acceleration: c.acceleration, deviation: c.junctionDeviation });
-  return motionProfile(pathLength, c.speed, c.acceleration);
+  const motion =
+    path && c.cornerMode === 'junction' && path.points.length > 2
+      ? planPolylineMotion(path.points, { speed: c.speed, acceleration: c.acceleration, deviation: c.junctionDeviation })
+      : motionProfile(pathLength, c.speed, c.acceleration);
+  return withStartDwell(motion, c.startDwell);
+}
+
+// R75 (air over a piston): the pressure behind the paste builds and decays through the air above the piston,
+// so the response time constants grow with that air volume as the cartridge empties. The set tauOn/tauOff
+// are for the reference fill; the air is the cartridge volume above the paste plus the adapter's dead volume.
+export const R75_AIR = Object.freeze({ cartridge: 75, dead: 5, referenceFill: 56 });
+export function airScale(c) {
+  if (c.architecture === 'P300') return 1;
+  const air = (fill) => Math.max(R75_AIR.dead, R75_AIR.cartridge - fill + R75_AIR.dead);
+  return air(c.fill) / air(R75_AIR.referenceFill);
 }
 
 export const RUN_LIMIT = 180; // s: the longest run the simulator steps through
@@ -399,8 +453,9 @@ function planRun(c) {
   const effectiveShutoffDistance = moving ? Math.min(c.shutoffDistance, pathLength) : 0;
   const gate = moving ? motion.timeAt(pathLength - effectiveShutoffDistance) : c.gateDuration;
   const meterGate = pcp && Q > 0 ? Math.min(gate, available / Q) : gate;
+  const scale = airScale(c);
   const movementEnd = moving ? motion.duration : gate;
-  const tailEnd = Math.max(movementEnd, gate + c.delay + 20 * Math.max(c.tauOn, c.tauOff));
+  const tailEnd = Math.max(movementEnd, gate + c.delay + 20 * Math.max(c.tauOn, c.tauOff) * airScale(c));
   // A reverse command may outlast both motion and the numerically settled flow.
   const reverseConfigured = pcp && c.reverseRpm > 0 && c.reverseDuration > 0;
   const reverseCommandEnd = reverseConfigured ? meterGate + c.reverseDuration : null;
@@ -412,10 +467,10 @@ function planRun(c) {
   const outputAt = (t) => {
     const raw = pcp
       ? pcpResponse(t, Q, meterGate, c.delay, c.tauOn, reverseRate, c.reverseDuration)
-      : pulse(t, Q, gate, c.delay, c.tauOn, c.tauOff);
+      : pulse(t, Q, gate, c.delay, c.tauOn * scale, c.tauOff * scale);
     return { raw, output: pcp ? raw.volume : Math.min(available, raw.volume) };
   };
-  return { Q, pcp, available, path, pathLength, moving, motion, effectiveShutoffDistance, gate, meterGate, movementEnd, tailEnd, reverseConfigured, reverseCommandEnd, reverseResponseEnd, reverseRate, trajectory, duration, outputAt };
+  return { Q, pcp, available, path, pathLength, moving, motion, effectiveShutoffDistance, gate, meterGate, movementEnd, tailEnd, reverseConfigured, reverseCommandEnd, reverseResponseEnd, reverseRate, trajectory, duration, outputAt, airScale: scale };
 }
 
 /**
@@ -435,23 +490,45 @@ export function runTiming(input) {
 
 /**
  * Fit the flow law to one measured steady output (grams over seconds at the current drive and nozzle):
- * R75 grease → equivalent viscosity, R75 putty → reference rate, P300 → volumetric efficiency. Returns the
- * setting to change; `ratio` is measured ÷ model flow.
+ * R75 grease → consistency K (Q ∝ K^(-1/n)), R75 putty → reference rate, P300 → volumetric efficiency.
+ * Returns the setting to change; `ratio` is measured ÷ model flow.
+ *
+ * With a second measurement at another pressure (`second` = { pressure psi, grams, seconds }), R75 also fits
+ * how flow grows with pressure: Q ∝ P^m gives the flow index n = 1/m (grease) or the pressure exponent m
+ * (putty), then the level from the first measurement. Returned as `fits` (all settings to change).
  */
-export function calibrateFlow(config, grams, seconds) {
+export function calibrateFlow(config, grams, seconds, second = null) {
   if (!(grams > 0) || !(seconds > 0)) throw new Error('請輸入大於 0 的重量與時間');
   const model = steadyFlow(config);
   if (!(model > 0)) throw new Error('目前設定的出膠量為 0，無法校正');
   const measured = grams / config.density / seconds; // mL/s
   const ratio = measured / model;
-  const fit =
-    config.architecture === 'P300'
-      ? { key: 'efficiency', value: config.efficiency * ratio }
-      : config.material === 'putty'
-        ? { key: 'referenceRate', value: config.referenceRate * ratio }
-        : { key: 'viscosity', value: config.viscosity / ratio };
-  const [lo, hi] = RANGES[fit.key];
-  return { ...fit, ratio, measured, model, inRange: fit.value >= lo && fit.value <= hi, range: [lo, hi] };
+  const pcp = config.architecture === 'P300';
+  const n = config.flowIndex ?? 1;
+  const check = (key, value) => {
+    const [lo, hi] = RANGES[key];
+    return { key, value, inRange: value >= lo && value <= hi, range: [lo, hi] };
+  };
+  if (second && !pcp) {
+    if (!(second.grams > 0) || !(second.seconds > 0) || !(second.pressure > 0)) throw new Error('第二組請輸入大於 0 的壓力、重量與時間');
+    if (Math.abs(second.pressure - config.pressure) < 0.05 * config.pressure) throw new Error('第二組的壓力要和目前壓力差 5% 以上，才看得出流量隨壓力的變化');
+    const q2 = second.grams / config.density / second.seconds;
+    const m = Math.log(q2 / measured) / Math.log(second.pressure / config.pressure);
+    if (!(m > 0)) throw new Error('壓力較高的那組出膠量沒有比較多，無法擬合；請檢查重量與時間');
+    const shape = config.material === 'putty' ? check('pressureExponent', m) : check('flowIndex', 1 / m);
+    const trial = { ...config, [shape.key]: shape.value };
+    const level =
+      config.material === 'putty'
+        ? check('referenceRate', (config.referenceRate * measured) / steadyFlow(trial))
+        : check('viscosity', config.viscosity * (steadyFlow(trial) / measured) ** shape.value);
+    return { ...level, fits: [shape, level], exponent: m, ratio, measured, model, second: q2 };
+  }
+  const fit = pcp
+    ? check('efficiency', config.efficiency * ratio)
+    : config.material === 'putty'
+      ? check('referenceRate', config.referenceRate * ratio)
+      : check('viscosity', config.viscosity * ratio ** -n);
+  return { ...fit, fits: [fit], ratio, measured, model };
 }
 
 export function simulate(input) {
@@ -621,7 +698,8 @@ export function simulate(input) {
         peak: motion.peak,
         corners: motion.corners || 0,
         slowestCorner: motion.slowestCorner ?? null,
-        averageSpeed: pathLength / motion.duration,
+        averageSpeed: pathLength / (motion.travel ?? motion.duration),
+        startDwell: c.startDwell || 0,
       }
     : null;
   if (last.offSurface > 1e-9)

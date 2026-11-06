@@ -1,5 +1,36 @@
 # 點膠研究室 · 機構與實作契約
 
+## v2.0.0（2026-11-06）
+
+- `engine.js`：
+  - `powerLawTubeFlow(K, n, ΔP, d, L)`：冪律圓管流量 Q = πn/(3n+1)·(ΔP/2KL)^(1/n)·R^(3+1/n)，n = 1 為 Hagen–Poiseuille。
+  - `steadyFlow`：R75 grease 改用 `powerLawTubeFlow(viscosity, flowIndex)`。`flowIndex` 預設 0.4（`grease_proxy.flow_index`），缺值時當 1。
+  - `pasteRheology(c)`：出膠與壓合共用的 {K, n}。
+    - grease：`viscosity` 與 `flowIndex`；
+    - putty：n = 1/m，K 由參考流率在參考管反推。
+  - `calibrateFlow(config, g, s, second)`：
+    - 單點：grease K × ratio^(−n)，putty 參考流率，P300 效率；
+    - 第二組不同壓力：m = ln(Q₂/Q₁)/ln(P₂/P₁)，grease n = 1/m、putty m，再由第一組定 K 或參考流率；
+    - 回傳 `fits`。
+  - `startDwell`（起點出膠等待，MOTION_DEFAULTS）：`withStartDwell(motion, d)` 包住運動，at、timeAt、duration 平移 d；`motion.travel` 為純移動時間，平均速度不含等待。
+  - `airScale(c)`：R75 的 tauOn、tauOff 乘以 (75 − fill + 5)/(75 − 56 + 5)，用在 `planRun` 的 `pulse` 與 tailEnd；P300 為 1。`R75_AIR` 匯出。
+- `compression.js`：
+  - `squeezeRaster` 新增 `flowIndex`。
+    - 冪律膜流的格面導流：κ = c·h^(2+1/n)·K^(−1/n)·Δt·Δx^(1−1/n)，c = 2n/(2n+1)·2^−(2+1/n)；乘上 φ = |∇p|^(1/n−1)。
+    - |∇p| 是格面法向差（含前緣 ghost 權重）與兩側格切向中央差平均的合成。只用法向差時，斜向膠流會慢約 25%。
+    - `reweight` 在每次 solve 內迭代 φ：先依暖啟動的壓力全量更新，之後以 β = n 做幾何混合；壓力相對變化 < 1e-2（`PICARD_TOL`）或 30 次即停。
+    - 單位解的壓力 ∝ κ^(−n)，所以 κ = (unitLoad/F)^(1/n)；暖啟動的倍率改為 κ^n；dt = κ/κ(h, 1)。
+    - n = 1 時不迭代，結果與 v1.9 逐位相同。
+  - `squeezeRheology`：預設改取 `pasteRheology`；選項可覆寫 `viscosity`（K）、`flowIndex`、`yieldStress`。
+  - 間隙 < 1.5 × 最小 BLT 時警告；壓合超過 120 s 的說明改為「最後一段最慢，膠層可能停在比墊片厚處」。
+- `main.js`：
+  - 設備頁：grease 顯示「稠度 K（1 s⁻¹ 視黏度）」與「剪切變稀指數 n」；校正可填第二組壓力；響應說明列出目前裝填下的實際時間常數。
+  - 路徑頁：「起點出膠等待」。
+  - 壓合條件：稠度 K、剪切變稀指數 n（預設與出膠相同）。
+  - 載入情境時，存檔後才新增的欄位取預設值。
+- `parameters.js`：`grease_proxy.flow_index`、`grease_proxy.constant_viscosity`（改為 K）、`squeeze.rheology`。
+- 驗證：定體積圓盤定力壓合的冪律解析解 t = (h₂^(1−a) − h₁^(1−a))/(C(a−1))，a = 5(n+1)/2n。
+
 ## v1.9.0（2026-11-06）
 
 - 新 `deposit.js`：一份鋪膠膠面（膠厚 height field），3D、疊高檢查、最佳化與壓合共用。
