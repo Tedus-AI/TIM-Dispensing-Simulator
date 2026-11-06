@@ -217,7 +217,7 @@ function startWorker() {
   }
 }
 startWorker();
-const slimRun = (run) => ({ config: run.config, summary: { deposits: run.summary.deposits }, path: run.path, gridStart: run.gridStart, cellLength: run.cellLength, maxHeight: run.maxHeight });
+const slimRun = (run) => ({ config: run.config, summary: { deposits: run.summary.deposits }, path: run.path, pathLength: run.pathLength, gridStart: run.gridStart, cellLength: run.cellLength, maxHeight: run.maxHeight });
 function compute(type, payload, progress) {
   if (worker)
     return new Promise((resolve, reject) => {
@@ -877,9 +877,10 @@ function beadKpi(run) {
 
 // Where stacked glue stands highest, in words.
 const STACK_WHERE = { centre: '中心', vertex: '轉角或尖端', path: '路徑上', point: '膠點', none: '' };
-// What a pile stacked above the standoff means, for the card, the warnings and the optimiser table.
-const stackText = (h, where, standoff) =>
-  `重複經過的地方膠會疊起來：最高約 ${fmt(h, 2)} mm（${STACK_WHERE[where] || '路徑上'}），高於針嘴離面 ${fmt(standoff, 1)} mm。針嘴下一次經過時會碰到前一道膠，可能刮膠、沾針、拖絲；模擬沒有算刮膠，覆蓋與夾氣結果可能偏樂觀。可提高針距、改用不重複走的圖樣，或減少膠量。`;
+// What it means when the needle tip meets glue of an earlier pass, for the card, the warnings and the
+// optimiser table. `st` is stackedBead(run) (or the optimiser's copy of it).
+const stackText = (st, standoff) =>
+  `重複經過的地方膠會疊起來，${STACK_WHERE[st.contactWhere || st.where] || '路徑上'}疊到針嘴高度（針嘴離面 ${fmt(standoff, 1)} mm），針嘴碰到前一道膠：新出的膠被針嘴壓扁往兩側攤開，高出針嘴的膠被推到旁邊，最高約 ${fmt(st.maxHeight, 2)} mm。這些已算進 3D 膠形與壓合；沒算的是針頭沾膠，沾上的膠可能被拖走、牽絲或之後掉落。可提高針距、改用不重複走的圖樣，或減少膠量。`;
 // Bead (dot) shape against the nozzle height: free, pressed flat to the standoff, burying the nozzle, or
 // glue stacked by passes that come back over it standing above the nozzle.
 function shapeKpi(s, c, run) {
@@ -887,11 +888,11 @@ function shapeKpi(s, c, run) {
   const buried = s.maxHeight > c.standoff + 1e-9;
   const contact = Boolean(st?.contact);
   const what = c.mode === 'point' ? '膠點' : '膠條';
-  const stacked = st?.overlap && !contact ? `\n重複經過的地方膠會疊起來：最高約 ${fmt(st.maxHeight, 2)} mm（${STACK_WHERE[st.where]}），仍低於針嘴離面 ${fmt(c.standoff, 1)} mm。` : '';
+  const stacked = st?.overlap && !contact ? `\n重複經過的地方膠會疊起來：最高約 ${fmt(st.maxHeight, 2)} mm（${STACK_WHERE[st.where]}），仍低於針嘴離面 ${fmt(c.standoff, 1)} mm；3D 膠形與壓合都已算進疊膠。` : '';
   const [hint, title] = buried
     ? [`埋針 · 針距 ${fmt(c.standoff, 1)}`, `${what}高 ${fmt(s.maxHeight, 2)} mm 高於針嘴離面 ${fmt(c.standoff, 1)} mm：針嘴埋在膠裡，易拖膠、沾針。提高針距或減少每 mm 膠量。`]
     : contact
-      ? [`疊高 ${fmt(st.maxHeight, 1)} mm > 針距 ${fmt(c.standoff, 1)}`, `單一趟${what}高 ${fmt(s.maxHeight, 2)} mm。${stackText(st.maxHeight, st.where, c.standoff)}`]
+      ? [`疊到針嘴 · 針距 ${fmt(c.standoff, 1)}`, `單一趟${what}高 ${fmt(s.maxHeight, 2)} mm。${stackText(st, c.standoff)}`]
       : s.flattened
         ? [`已壓平 · 針距 ${fmt(c.standoff, 1)}`, `${what}自然高度約 ${fmt(s.freeHeight, 2)} mm，被針嘴壓成 ${fmt(c.standoff, 1)} mm 高並變寬；膠量不變。${stacked}`]
         : [`針距 ${fmt(c.standoff, 1)} mm`, `${what}以自然形狀堆在面上（自然高度低於針嘴離面高度）。${stacked}`];
@@ -931,7 +932,7 @@ function renderResults() {
     return `<svg viewBox="0 0 84 84" class="ring ${coverClass(pct)}"><circle cx="42" cy="42" r="${r}" class="track"/><circle cx="42" cy="42" r="${r}" class="val" stroke-dasharray="${(Math.min(100, pct) / 100) * L} ${L}" transform="rotate(-90 42 42)"/><text x="42" y="46" text-anchor="middle">${fmt(pct, 1)}%</text></svg>`;
   };
   const pile = stackedBead(run);
-  const warnings = [...(pile.contact ? [stackText(pile.maxHeight, pile.where, c.standoff)] : []), ...run.warnings, ...(S.press && !stale ? S.press.result.warnings : [])];
+  const warnings = [...(pile.contact ? [stackText(pile, c.standoff)] : []), ...run.warnings, ...(S.press && !stale ? S.press.result.warnings : [])];
   $('#results').innerHTML = `
   <section class="card-sec">
     <div class="sec-head"><span class="eyebrow">完整試驗預估</span><span class="pill">${esc(c.profile)}</span></div>
@@ -1814,7 +1815,7 @@ function renderOptimize() {
     const warn = b.state !== 'ok' || b.drags;
     const buried = b.buried ?? (b.drags && !b.stack?.contact);
     const text = `${b.state === 'stretched' ? '被拉細' : b.state === 'piled' ? '堆疊' : '良好'} ×${fmt(b.speedRatio, 1)}${buried ? '・埋針' : ''}${b.stack?.contact ? '・疊膠碰針' : ''}`;
-    const note = `${beadTipText(b, x.diameter)}${b.stack?.contact ? `\n${stackText(b.stack.maxHeight, b.stack.where, b.standoff)}排序時當作埋針扣分。` : ''}`;
+    const note = `${beadTipText(b, x.diameter)}${b.stack?.contact ? `\n${stackText(b.stack, b.standoff)}排序時當作埋針扣分。` : ''}`;
     return `<span class="${warn ? 'warn' : ''}" tabindex="0" data-tip="${esc(note)}">${text}</span>`;
   };
   const geoCell = (x) => `<b>${typeText(x)}</b>${geoParts(x).length ? `<small>${geoParts(x).join(' · ')}</small>` : ''}`;
@@ -2192,7 +2193,7 @@ $('#help-body').innerHTML = `
   <li><b>夾氣顏色</b>：壓合畫面下方工具列可切換夾氣顏色（洋紅、藍、黃、黑），遇到和膠材相近的顏色時換一個；選擇會記在這台電腦。</li>
   <li><b>最佳化精細度</b>：快速／標準／精細／極精細四級，越精細候選越多、找窗口與複核的組數越多、網格越細；選級時會依這台電腦試算一次估出時間。搜尋分散在多個執行緒並行；搜尋中可按「停止搜尋」，會保留已完成的部分結果（標示「未複核」者不能當最終建議）。只有在細網格、容差內多個膠量都達標的結果才算「達標」；套用時網格會設成該結果使用的網格。</li>
   <li><b>情境</b>：覺得不錯的參數按結果卡的「存成情境」（未壓合會自動先算），再改參數繼續試；「情境比較」依「覆蓋 ≥ 目標、溢膠 ≤ 上限、膠量最少」排序，可載入、改名、刪除、匯出 CSV／JSON。情境存在這台電腦的瀏覽器。</li>
-  <li><b>疊高</b>：路徑重複經過的地方（例如米字形每條來回、中心反覆經過、轉角停頓）膠會疊起來。3D 畫面會把後面那趟的膠條畫在先前的膠上；結果卡的「膠高 / 寬」會顯示疊起來的最高點；高於針嘴離面高度時警告「針嘴會碰到前一道膠」，自動最佳化也會當作埋針扣分。</li>
+  <li><b>疊高</b>：路徑重複經過的地方（例如米字形每條來回、中心反覆經過、轉角）膠會疊起來。模擬依出膠順序一格一格把膠鋪上去：後面那趟落在先前的膠上；針嘴離下面的膠變近時，新出的膠會被針嘴壓扁、變寬；高出針嘴的膠會被針嘴推到兩側。3D 畫面、結果卡的「膠高 / 寬」與壓合都用這同一份膠形。疊到針嘴高度時警告「針嘴碰到前一道膠」（針頭沾膠、拖絲沒有算），自動最佳化也會當作埋針扣分。</li>
   <li><b>針嘴與膠條</b>：同樣每 mm 膠量下，膠條的高與寬由針嘴離面高度決定；針嘴內徑決定出膠量與膠條品質。結果卡的拉細倍率（針嘴內孔截面 ÷ 膠條截面）0.7–1.5 視為良好，偏大代表膠條被拉細，偏小代表堆疊；匹配內徑 ≈ √(4 × 每 mm 膠量 / π)。間隙很薄、膠又很黏時，細針嘴出膠慢、粗針嘴膠條被拉細，需要在膠條與週期之間取捨。</li>
   <li><b>曲線</b>：退離完成後的灰色區域是「尾膠結算」——模型繼續積分關膠後逐漸衰減的出膠，讓體積帳目完整，並非機台等待時間；週期時間以「動作完成」計。</li>
 </ol>

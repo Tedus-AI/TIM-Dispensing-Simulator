@@ -3,7 +3,7 @@ import { motionProfile, timeAtDistance, planPolylineMotion } from './motion.js';
 import { withUpdates } from './parameters.js';
 
 export { motionProfile, timeAtDistance };
-export const VERSION = '1.8.3';
+export const VERSION = '1.9.0';
 export const LABEL = '工程假設／未經實機校準';
 export const BEAD_SIDES = 32;
 
@@ -658,7 +658,7 @@ export function simulate(input) {
     if (outside) warnings.push('路徑或估算膠線可能超出工件範圍；尚未計算實際邊緣流失。');
     if (Math.abs(path.offsetX) + path.width / 2 > c.width / 2 || Math.abs(path.offsetY) + path.depth / 2 > c.depth / 2)
       warnings.push('設定的熱源超出工件矩形參考邊界；請核對熱源位置與尺寸。');
-    warnings.push('3D 彎角與重疊為幾何示意；沉積量分帳守恆，但顯示網格體積與融合形狀並非精確實物。');
+    warnings.push('3D 膠形依出膠順序一格一格鋪出（約 0.1 mm 網格），重複經過處疊在先前的膠上；疊高檢查與壓合用同一份膠形。融合細節為工程近似，並非精確實物。');
     if (motion.kind === 'polyline')
       warnings.push(
         `轉角依 junction deviation ${c.junctionDeviation} mm 降速（最低 ${motionSummary.slowestCorner === null ? '—' : motionSummary.slowestCorner.toFixed(1)} mm/s）；轉角較慢處膠量較多。規則為通用 CNC 近似，非特定機台控制器。`,

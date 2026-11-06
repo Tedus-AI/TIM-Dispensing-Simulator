@@ -90,8 +90,8 @@ export const MATCH_BAND = Object.freeze([0.7, 1.5]);
  * How well the nozzle suits the bead it lays: bead cross-section, matched bore, stretch ratio, height. The
  * ratio comes from the bead actually laid (deposit per mm of path), so acceleration and corners that keep
  * the nozzle below its set speed are included; the set speed alone overstates the stretch on short segments.
- * `drags` covers both a single pass taller than the standoff (`buried`) and glue stacked by passes that come
- * back over it standing above the standoff, which the nozzle meets on its next pass (`stack.contact`).
+ * `drags` covers both a single pass taller than the standoff (`buried`) and a needle that meets glue of an
+ * earlier pass at its tip, where a path comes back over itself (`stack.contact`, from the deposit field).
  */
 export function beadMatch(run) {
   const c = run.config;
@@ -113,7 +113,7 @@ export function beadMatch(run) {
     standoff: c.standoff,
     buried: run.summary.maxHeight > c.standoff + 1e-9, // one pass already taller than the standoff
     drags: run.summary.maxHeight > c.standoff + 1e-9 || stack.contact, // nozzle in the material
-    stack: { maxHeight: stack.maxHeight, where: stack.where, x: stack.x, y: stack.y, overlap: stack.overlap, contact: stack.contact },
+    stack: { maxHeight: stack.maxHeight, where: stack.where, contactWhere: stack.contactWhere, x: stack.x, y: stack.y, overlap: stack.overlap, contact: stack.contact },
     flattened: Boolean(run.summary.flattened),
   };
 }
