@@ -342,7 +342,7 @@ function renderEquipment() {
   ${group(
     '驅動與針嘴',
     (isPcp
-      ? num({ bind: 'c.rpm', label: '計量軸轉速', value: c.rpm, unit: 'rpm', min: 0, max: 300, tag: 'ai', hint: `針頭出口壓力約 ${fmt(needlePressure(c, q), 0)} psi（PCP 上限 ${PCP_MAX_PRESSURE} psi；這支針頭約 ${fmt(Math.min(pcpPressureRpm(c), 9999), 0)} rpm 以下）。超過時實機漏流或停機` }) + num({ bind: 'c.efficiency', label: '容積效率', value: c.efficiency, unit: '', min: 0, max: 1, tag: 'ai' })
+      ? num({ bind: 'c.rpm', label: '計量軸轉速', value: c.rpm, unit: 'rpm', min: 0, max: 300, tag: 'ai', hint: `針頭出口壓力約 ${fmt(needlePressure(c, q), 0)} psi（PCP 上限 ${PCP_MAX_PRESSURE} psi；這支針頭約 ${fmt(Math.min(pcpPressureRpm(c), 9999), pcpPressureRpm(c) < 10 ? 1 : 0)} rpm 以下）。超過時實機漏流或停機` }) + num({ bind: 'c.efficiency', label: '容積效率', value: c.efficiency, unit: '', min: 0, max: 1, tag: 'ai' })
       : `<div class="with-btn">${num({ bind: 'c.pressure', label: '驅動表壓', value: S.pressureUnit === 'bar' ? c.pressure * BAR : c.pressure, unit: S.pressureUnit, min: 0, max: S.pressureUnit === 'bar' ? 6.89475729 : 100, tag: 'ai', hint: '控制器上限 100 psi（Performus X100 額定）' })}<button class="chip-btn" id="pressure-unit">${S.pressureUnit === 'psi' ? 'bar' : 'psi'}</button></div>`) +
       nozzleFields(c, isPcp) +
       num({ bind: 'c.nozzleLength', label: '等效直管長', value: c.nozzleLength, unit: 'mm', min: 1, max: 100, tag: 'ai', hint: isPcp ? '影響持膠量與針頭出口壓力（v2.2：PCP 要把膠推過針頭，壓力不可超過 290 psi）' : '流量基準長度：請填實際針頭長度，再加約數個內徑的入口損失' }),

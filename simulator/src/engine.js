@@ -850,7 +850,7 @@ export function simulate(input) {
     const needle = needlePressure(c, Q);
     if (needle > PCP_MAX_PRESSURE)
       warnings.push(
-        `PCP 要把 ${(Q * 60).toFixed(2)} mL/min 推過 Ø${c.diameter} × ${c.nozzleLength} mm 針頭需約 ${needle.toFixed(0)} psi，超過 PCP 最高工作壓力 ${PCP_MAX_PRESSURE} psi：實機會漏流（容積效率下降）或停機報警，出不了這個量。請降轉速（約 ${pcpPressureRpm(c).toFixed(0)} rpm 以下）、換粗針頭或縮短針頭。`,
+        `PCP 要把 ${(Q * 60).toFixed(2)} mL/min 推過 Ø${c.diameter} × ${c.nozzleLength} mm 針頭需約 ${needle.toFixed(0)} psi，超過 PCP 最高工作壓力 ${PCP_MAX_PRESSURE} psi：實機會漏流（容積效率下降）或停機報警，出不了這個量。請降轉速（約 ${(() => { const r = pcpPressureRpm(c); return r < 10 ? r.toFixed(1) : r.toFixed(0); })()} rpm 以下）、換粗針頭或縮短針頭。`,
       );
     warnings.push(`理想 PCP 假設滿腔；針頭出口壓力約 ${needle.toFixed(0)} psi（冪律管流），管路壓降、供料不足與材料適配尚未計算。`);
   }
