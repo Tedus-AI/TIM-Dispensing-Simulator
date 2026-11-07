@@ -57,7 +57,9 @@ test('squeezed dot becomes a disc of area V/gap with no voids',()=>{
   near(v.summary.wetAreaMm2,run.summary.deposited*1000/.3,1e-6);assert.equal(v.summary.voidCount,0);
 });
 test('closed perimeter seals air in the middle; rigid air stays, compressible air pushes out; a single line traps none',()=>{
-  const run=pattern('perimeter');
+  // v2.2: the paste starts slower than the air pressure (Q ∝ P^m), so without a start dwell the ring's first
+  // millimetres are thin and leave a vent where the stroke closes on itself; the usual 0.1 s Feed On Delay seals it.
+  const run=pattern('perimeter',{startDwell:.1});
   const rigid=estimateCompression(run,{...opts,gap:.5,cellSize:.5,airMode:'rigid'});
   assert.ok(rigid.summary.voidCount>=1);assert.ok(rigid.summary.voidAreaMm2>50);
   near(rigid.summary.conservationErrorMl,0,1e-9);
@@ -80,7 +82,7 @@ test('squeeze animation frames run from the bead crest down to the gap',()=>{
   assert.ok(air.grid.frames.length<=12);near(air.grid.frames.at(-1).gap,.5,1e-12);
 });
 test('frames record the air share of every cell, so a squeezed bubble can be drawn',()=>{
-  const run=pattern('perimeter');
+  const run=pattern('perimeter',{startDwell:.1});
   for(const airMode of ['rigid','compressible']){
     const r=estimateCompression(run,{...opts,gap:.5,cellSize:.5,airMode,frames:6});
     const g=r.grid;const last=g.frames.at(-1);

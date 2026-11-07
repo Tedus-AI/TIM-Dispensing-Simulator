@@ -1,6 +1,6 @@
 import './style.css';
 import registry from '../../data/engineering_defaults_v0.3.json';
-import { fromRegistry, simulate, frameAt, calibrateFlow, airScale, R75_AIR, LABEL, VERSION, ENDING_DEFAULT, MOTION_DEFAULTS, CORNER_DEFAULTS } from './engine.js';
+import { fromRegistry, simulate, frameAt, calibrateFlow, airScale, R75_AIR, LABEL, VERSION, ENDING_DEFAULT, MOTION_DEFAULTS, CORNER_DEFAULTS, needlePressure, pcpPressureRpm, PCP_MAX_PRESSURE } from './engine.js';
 import { PARAMETER_UPDATES, parameterValue } from './parameters.js';
 import { MATERIALS } from './materials.js';
 import { DispenseScene, VIEW_LABELS } from './scene.js';
@@ -55,7 +55,7 @@ const DEFAULT_HEAT = () => ({
   yieldStress: null,
 });
 // Heat-panel keys that only affect the squeeze estimate (no dispensing re-run).
-const PRESS_KEYS = ['gap', 'cellSize', 'power', 'airMode', 'pressKgf', 'pressSpeed', 'settleTime', 'viscosity', 'flowIndex', 'yieldStress'];
+const PRESS_KEYS = ['gap', 'cellSize', 'power', 'airMode', 'pressKgf', 'pressSpeed', 'settleTime', 'holdTime', 'viscosity', 'flowIndex', 'yieldStress'];
 const AIR_MODE_NAMES = { compressible: '可壓縮氣泡', rigid: '剛性牆（v1.0）', vent: '全部排出' };
 const AIR_MODE_SHORT = { compressible: '可壓縮', rigid: '剛性牆', vent: '全排出' };
 const DEFAULT_PATTERN = () => ({ pattern: 'n', spacing: 5, edgeInset: 2, spiralShape: 'auto', spiralDirection: 'outside-in' });
@@ -342,10 +342,10 @@ function renderEquipment() {
   ${group(
     '驅動與針嘴',
     (isPcp
-      ? num({ bind: 'c.rpm', label: '計量軸轉速', value: c.rpm, unit: 'rpm', min: 0, max: 300, tag: 'ai' }) + num({ bind: 'c.efficiency', label: '容積效率', value: c.efficiency, unit: '', min: 0, max: 1, tag: 'ai' })
+      ? num({ bind: 'c.rpm', label: '計量軸轉速', value: c.rpm, unit: 'rpm', min: 0, max: 300, tag: 'ai', hint: `針頭出口壓力約 ${fmt(needlePressure(c, q), 0)} psi（PCP 上限 ${PCP_MAX_PRESSURE} psi；這支針頭約 ${fmt(Math.min(pcpPressureRpm(c), 9999), pcpPressureRpm(c) < 10 ? 1 : 0)} rpm 以下）。超過時實機漏流或停機` }) + num({ bind: 'c.efficiency', label: '容積效率', value: c.efficiency, unit: '', min: 0, max: 1, tag: 'ai' })
       : `<div class="with-btn">${num({ bind: 'c.pressure', label: '驅動表壓', value: S.pressureUnit === 'bar' ? c.pressure * BAR : c.pressure, unit: S.pressureUnit, min: 0, max: S.pressureUnit === 'bar' ? 6.89475729 : 100, tag: 'ai', hint: '控制器上限 100 psi（Performus X100 額定）' })}<button class="chip-btn" id="pressure-unit">${S.pressureUnit === 'psi' ? 'bar' : 'psi'}</button></div>`) +
       nozzleFields(c, isPcp) +
-      num({ bind: 'c.nozzleLength', label: '等效直管長', value: c.nozzleLength, unit: 'mm', min: 1, max: 100, tag: 'ai', hint: isPcp ? '只影響持膠量' : '流量基準長度，非針嘴總長' }),
+      num({ bind: 'c.nozzleLength', label: '等效直管長', value: c.nozzleLength, unit: 'mm', min: 1, max: 100, tag: 'ai', hint: isPcp ? '影響持膠量與針頭出口壓力（v2.2：PCP 要把膠推過針頭，壓力不可超過 290 psi）' : '流量基準長度：請填實際針頭長度，再加約數個內徑的入口損失' }),
   )}
   ${group(
     '用實測出膠量校正',
@@ -374,7 +374,7 @@ function renderEquipment() {
         : ''),
     {
       open: false,
-      note: `起停常數為 AI 初估${isPcp ? '' : `，指膠筒裝填 ${R75_AIR.referenceFill} mL 時；氣壓式的壓力經活塞上方的空氣建立，膠越少空氣越多、反應越慢，目前裝填 ${fmt(c.fill, 1)} mL 的實際時間常數為 ${fmt(c.tauOn * airScale(c), 3)} / ${fmt(c.tauOff * airScale(c), 3)} s`}。未含溫度效應（指南：低於 23 °C 流率下降，60–80 °C 加熱可改善）。`,
+      note: `起停常數為 AI 初估${isPcp ? '' : `。氣壓式（v2.2）：時間常數指膠筒內「氣壓」的上升與卸壓，出膠量跟著壓力的 m 次方（Q ∝ P^m，m = ${fmt(c.material === 'putty' ? c.pressureExponent : 1 / (c.flowIndex ?? 1), 2)}），所以起膠比氣壓慢（起頭少出約 H_m × τ 秒的量，m = 2.5 時 H_m ≈ 1.7）、關膠後殘壓出膠只有 τ ÷ m；指膠筒裝填 ${R75_AIR.referenceFill} mL 時；氣壓式的壓力經活塞上方的空氣建立，膠越少空氣越多、反應越慢，目前裝填 ${fmt(c.fill, 1)} mL 的實際時間常數為 ${fmt(c.tauOn * airScale(c), 3)} / ${fmt(c.tauOff * airScale(c), 3)} s`}。未含溫度效應（指南：低於 23 °C 流率下降，60–80 °C 加熱可改善）。`,
     },
   )}
   ${group(
@@ -431,8 +431,11 @@ function pressFields(h) {
     ${num({ bind: 'h.viscosity', label: '稠度 K', value: rh.viscosity, unit: 'Pa·sⁿ', min: 1, max: 1e7, tag: grease ? 'tds' : 'derived', hint: grease ? '1 s⁻¹ 視黏度，與設備頁的出膠模型相同' : '由出膠冪律（參考流率與壓力冪次）推算，與出膠模型相同' })}
     ${num({ bind: 'h.flowIndex', label: '剪切變稀指數 n', value: rh.flowIndex, unit: '', min: 0.1, max: 1.2, tag: grease ? 'ai' : 'derived', hint: '與出膠模型相同；1 = 牛頓流體（v1.9 以前的壓合）' })}
   </div>
-  ${num({ bind: 'h.yieldStress', label: '降伏應力', value: rh.yieldStress, unit: 'Pa', min: 0, max: 1e6, tag: 'ai', hint: '公開散熱膏實測約 7–30 Pa' })}
-  ${num({ bind: 'h.settleTime', label: '靜置觀察時間', value: h.settleTime, unit: 's', min: 0, max: 3600, tag: 'ai', hint: '壓到墊片後氣泡回脹的時間；建議與透明板拍照時間一致' })}
+  ${num({ bind: 'h.yieldStress', label: '降伏應力', value: rh.yieldStress, unit: 'Pa', min: 0, max: 1e6, tag: 'ai', hint: '公開散熱膏實測約 7–30 Pa。v2.2 起壓合中也計入：膠層越薄、攤得越大，推動它的力越大；力不夠時壓板停在墊片上方' })}
+  <div class="pair">
+    ${num({ bind: 'h.settleTime', label: '靜置觀察時間', value: h.settleTime, unit: 's', min: 0, max: 3600, tag: 'ai', hint: '壓到墊片後氣泡回脹的時間；建議與透明板拍照時間一致' })}
+    ${num({ bind: 'h.holdTime', label: '保壓時間上限', value: h.holdTime ?? 0, unit: 's', min: 0, max: 86400, tag: 'ai', hint: '0 = 不限，一直壓到墊片。設定後壓板只壓這麼久，膠層停在當時的厚度（例如透明板手壓 60 s）；覆蓋、夾氣、熱阻都以那個厚度計算' })}
+  </div>
   ${h.viscosity != null || h.yieldStress != null || h.flowIndex != null ? '<button class="chip-btn" id="rheo-reset">恢復與出膠相同的流變</button>' : ''}`;
 }
 
@@ -533,7 +536,7 @@ function renderEnding() {
 function renderPressTab() {
   const h = S.heat;
   return `
-  ${group('壓合條件（透明板＋墊片）', pressFields(h), { open: true, note: `透明板以定力壓到墊片（組裝間隙 ${fmt(h.gap, 2)} mm，在「熱源工件」設定）即停，估算覆蓋、夾氣、溢膠與熱阻；設定好後按結果卡的「模擬壓合」。\n到墊片後膠壓消退，被壓縮的氣泡回脹到降伏應力擋住為止。實際手壓若先快後慢，壓合中的氣泡壓縮程度不同，最終回脹結果影響較小。\n模型：平行板 Hele-Shaw 擠壓；被膠包圍的空氣依所選方式處理（預設可壓縮：pV＝常數、可隨膠流移動、膠牆變薄時排出）。熱阻＝（間隙 ÷ k＋TDS 推算接觸熱阻）÷ 濕潤面積。皆未經透明板實測校準。` })}
+  ${group('壓合條件（透明板＋墊片）', pressFields(h), { open: true, note: `透明板以定力壓到墊片（組裝間隙 ${fmt(h.gap, 2)} mm，在「熱源工件」設定）即停，估算覆蓋、夾氣、溢膠與熱阻。v2.2：降伏應力在壓合中也計入，膠攤得越大越難推，力不夠時壓板停在墊片上方；設了保壓時間則壓到那時為止。熱阻以實際停住的膠層計算；設定好後按結果卡的「模擬壓合」。\n到墊片後膠壓消退，被壓縮的氣泡回脹到降伏應力擋住為止。實際手壓若先快後慢，壓合中的氣泡壓縮程度不同，最終回脹結果影響較小。\n模型：平行板 Hele-Shaw 擠壓；被膠包圍的空氣依所選方式處理（預設可壓縮：pV＝常數、可隨膠流移動、膠牆變薄時排出）。熱阻＝（實際膠層 ÷ k＋TDS 推算接觸熱阻）÷ 濕潤面積。皆未經透明板實測校準。` })}
   ${group('估算網格', num({ bind: 'h.cellSize', label: '網格解析度', value: h.cellSize, unit: 'mm', min: 0.2, max: 5, tag: 'ai', hint: '越小越細，計算時間增加；上限 90,000 格。夾氣數量對網格敏感，比較圖樣請用相同網格' }), { open: false })}
 `;
 }
@@ -926,8 +929,11 @@ function pressKpis(pr) {
   const relax = air
     ? kpi('靜置回脹', fmt(pr.relaxTime, pr.relaxTime < 10 ? 1 : 0), 's', pr.volumeRatio != null ? `剩餘氣泡 = 1 atm 體積 ${fmt(pr.volumeRatio * 100, 0)}%${pr.settled ? '' : ' · 仍在回脹'}` : '無剩餘氣泡', pr.settled ? '' : 'warn')
     : kpi('靜置回脹', '—', '', '此模式不計');
+  const stop = pr.stalled
+    ? kpi(pr.stalled === 'yield' ? '壓不到墊片' : '保壓結束', fmt(pr.finalGapMm, 3), 'mm', `${pr.stalled === 'yield' ? `降伏應力撐住 ${fmt(pr.forceKgf, 1)} kgf` : `${fmt(pr.pressTime, 0)} s 時的膠層厚度`} · 熱阻以此計算`, 'warn')
+    : kpi('壓到墊片', fmt(pr.pressTime, pr.pressTime < 10 ? 1 : 0), 's', `最大 ${fmt(pr.peakForceKgf ?? pr.forceKgf, 1)} / ${fmt(pr.forceKgf, 1)} kgf · 座落 ${fmt(pr.seatPressureKPa, 0)} kPa`);
   return `<div class="kpis three">
-    ${kpi('壓到墊片', fmt(pr.pressTime, pr.pressTime < 10 ? 1 : 0), 's', `${fmt(pr.forceKgf, 1)} kgf · 座落 ${fmt(pr.seatPressureKPa, 0)} kPa`)}
+    ${stop}
     ${bubbles}
     ${relax}
   </div>`;

@@ -87,12 +87,16 @@ test('all four isometric corners preserve equal XYZ projection and differ in qua
 
 test('distance shutoff follows inverse acceleration profile, not cruise-speed multiplication',()=>{
   for(const [L,v,a]of [[100,100,500],[1,800,500]]){const p=motionProfile(L,v,a);for(const f of [0,.01,.2,.5,.8,.99,1])near(p.at(timeAtDistance(p,L,a,L*f)).x,L*f,1e-10);}
-  const r=simulate(cfg());near(r.gate,1);near(r.ending.movementEnd,1.2);near(r.ending.leadTime,.2);near(r.summary.output,.3711186061289325,1e-10);near(r.ending.afterStopVolume,.007126993547854621,1e-10);
+  // v2.2: the R75 flow follows the air pressure as Q ∝ P^m (m = 2.7), so the shot starts slower and the residual
+  // tail after the stop is m times shorter; m = 1 keeps the v0.2–v2.1 linear response and its values.
+  const r=simulate(cfg());near(r.gate,1);near(r.ending.movementEnd,1.2);near(r.ending.leadTime,.2);near(r.summary.output,.3030350268041662,1e-10);near(r.ending.afterStopVolume,.00014638324289739657,1e-10);
+  const linear=simulate({...cfg(),pressureExponent:1});near(linear.summary.output,.3711186061289325,1e-10);near(linear.ending.afterStopVolume,.007126993547854621,1e-10);
   const f=frameAt(r,1.1);assert.equal(f.command,0);assert.ok(f.speed>0&&f.q>0);assert.match(f.phase,/收尾移動/);near(f.z,r.config.surfaceZ+r.config.standoff);
 });
 
 test('uncompensated reference retains old dose; early shutoff reduces tail without hiding total loss',()=>{
-  const a=simulate({...cfg(),shutoffDistance:0}),b=simulate(cfg());near(a.summary.output,.44922530200445093,1e-10);near(a.ending.afterStopVolume,.05076379409552623,1e-10);
+  const a=simulate({...cfg(),shutoffDistance:0}),b=simulate(cfg());near(a.summary.output,.3810484229294848,1e-10);near(a.ending.afterStopVolume,.026161495922919498,1e-10);
+  const a1=simulate({...cfg(),shutoffDistance:0,pressureExponent:1});near(a1.summary.output,.44922530200445093,1e-10);near(a1.ending.afterStopVolume,.05076379409552623,1e-10);
   assert.ok(b.summary.output<a.summary.output);assert.ok(b.ending.afterStopVolume<a.ending.afterStopVolume*.15);assert.ok(b.maxHeight<a.maxHeight);assert.ok(a.warnings.some(w=>w.includes('積膠')));
   const tooEarly=simulate({...cfg(),shutoffDistance:60});assert.ok(tooEarly.warnings.some(w=>w.includes('欠膠')));
 });
@@ -123,7 +127,8 @@ test('continuous bead is volume-correct and has no internal transverse caps, inc
 });
 
 test('legacy motion preserves the v0.2 continuous output and volume result',()=>{
-  const r=simulate({...cfg(),endMotion:'legacy'});
+  // v0.2 was linear in pressure (m = 1).
+  const r=simulate({...cfg(),endMotion:'legacy',pressureExponent:1});
   near(r.summary.output,.3711186061289325,1e-10);near(r.summary.offSurface,0);
   near(r.duration,4.28,1e-10);near(r.ending.liftStart,4.03,1e-10);
   for(const f of r.frames)near(f.deposited,f.output,1e-10);

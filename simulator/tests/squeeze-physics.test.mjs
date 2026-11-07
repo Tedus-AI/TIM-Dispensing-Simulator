@@ -143,7 +143,12 @@ test('frames carry the press and relaxation phases with time; options are valida
     assert.ok(f[k].gap <= f[k - 1].gap + 1e-12);
     if (f[k].phase === 'press') assert.ok(f[k - 1].phase === 'press');
   }
-  assert.equal(f.at(-1).gap, 0.5);
+  // The last frame is the final film: the spacer gap, or where the press stopped. This run lays ~12 mL (the
+  // 0.54 mL target is out of reach at the top speed) over ~25,000 mm²: with τy = 50 Pa the plastic limit
+  // (2π/3)·τy·R³/h ≈ 150 N exceeds 10 kgf before 0.5 mm, so the plate stops a little above the spacers (v2.2).
+  assert.equal(f.at(-1).gap, v.summary.press.finalGapMm);
+  assert.equal(v.summary.press.stalled, 'yield');
+  assert.ok(v.summary.press.finalGapMm > 0.5 && v.summary.press.finalGapMm < 0.7);
   if (v.summary.press.sealed && v.summary.press.relaxTime > 0) assert.ok(f.some((k) => k.phase === 'relax'));
   assert.throws(() => estimateCompression(run, { ...heat, airMode: 'magic' }), /夾氣/);
   assert.throws(() => estimateCompression(run, { ...heat, pressKgf: 0 }), /壓合力/);
@@ -157,7 +162,9 @@ test('a thin bond line with a tight spiral still reaches the spacers: more mater
   // steps here and jumped to the gap, leaving most material unspread. v2.0: a 16G needle at 70 psi lays about
   // 2–3 × the requirement with the shear-thinning flow law (the original Ø2 mm at 90 psi now lays ~60 ×).
   const { simulate } = await import('../src/engine.js');
-  const heat = { shape: 'rectangle', width: 30, depth: 30, offsetX: 0, offsetY: 0, gap: 0.05, cellSize: 0.75, power: 25 };
+  // Pure power law (no yield stress, v2.2): the closing-time scaling below holds without the plastic part, which
+  // takes a growing share of the force as the film spreads (physics-v22.test.mjs checks that part).
+  const heat = { shape: 'rectangle', width: 30, depth: 30, offsetX: 0, offsetY: 0, gap: 0.05, cellSize: 0.75, power: 25, yieldStress: 0 };
   const base = { ...fromRegistry(registry, 'grease'), mode: 'pattern', diameter: 1.19, pressure: 70, pathSettings: { ...heat, pattern: 'spiral', spacing: 1.5, edgeInset: 3, spiralShape: 'square', spiralDirection: 'inside-out' } };
   const [fast, slow] = [
     { speed: 100, acceleration: 500 },

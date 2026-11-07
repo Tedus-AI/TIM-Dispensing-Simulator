@@ -184,6 +184,41 @@ export const PARAMETER_UPDATES = Object.freeze([
     source_refs: [NAGRANI],
   },
   {
+    id: 'r75.dynamic.flow_coupling',
+    value: 'q = Q·(p/P)^m',
+    unit: '',
+    evidence: 'derived',
+    since: '2.2',
+    role: '氣壓式起停：時間常數是膠筒氣壓的，出膠跟著壓力的 m 次方',
+    basis:
+      '氣閥開關後一階上升／下降的是活塞上方的氣壓（充氣時間 ∝ 氣室體積，v2.0 膠筒空氣放大的依據）。膏體穩態 Q ∝ ΔP^m（putty m = 2.7、grease m = 1/n = 2.5），準穩態下出膠 q = Q·(p/P)^m：起膠損失 τ·H_m（m = 2.5 時 1.68τ，舊版 τ），殘壓出膠 τ/m（舊版 τ）。m = 1 回到 v0.2–v2.1。時間常數仍為 AI 初估，請以短線／長線秤重校正。',
+    source_refs: ['34_v2.2二次全面複查_物理修正與效率.md', GUIDE],
+    supersedes: 'v0.2–v2.1 flow itself first-order (m = 1)',
+  },
+  {
+    id: 'p300.needle_back_pressure',
+    value: 290,
+    unit: 'psi',
+    evidence: 'published_limit',
+    since: '2.2',
+    role: 'PCP 要把膠推過針頭所需的壓力上限',
+    basis:
+      '針頭出口壓力以與出膠相同的冪律管流 ΔP = 2KL·(Q(3n+1)/(πnR^(3+1/n)))ⁿ 計算；Graco PCP 最高流體工作壓力 290 psi（3A5364L）。超過時警告，膠量反推與最佳化的轉速上限取 min(150 rpm, 壓力上限轉速)。未計軟管與計量頭壓降、容積效率隨背壓下降。',
+    source_refs: ['sources/Equipment/Graco_PCP_Repair_3A5364EN_L.pdf'],
+  },
+  {
+    id: 'squeeze.yield_in_press',
+    value: 'Bingham plastic limit',
+    unit: '',
+    evidence: 'derived',
+    since: '2.2',
+    role: '壓合中的降伏應力：力不夠時壓板停在墊片上方',
+    basis:
+      'Bingham 狹縫只在 |∇p| > 2τy/h 處流動；撐住壓板需 F_y = (2τy/h)·∫ 到膠緣距離 dA（圓盤 (2π/3)τy R³/h，定體積時 ∝ h^(−5/2)）。每步以 3–4 倒角距離計算 F_y，剩下的力推動冪律膜流（Herschel–Bulkley 加成近似，流動中略低估），F_y 達到壓合力時停住；圓盤解析解驗證 < 6%。降伏應力本身仍為 AI 初估。',
+    source_refs: ['34_v2.2二次全面複查_物理修正與效率.md'],
+    supersedes: 'v1.1–v2.1 yield stress only after seating',
+  },
+  {
     id: 'thermal.power',
     value: 25,
     unit: 'W',

@@ -56,11 +56,11 @@ test('bead match: matched bore from the bead cross-section, speed ratio against 
   assert.ok(Math.abs(b.beadArea - area) < 1e-12 && Math.abs(b.matchedId - Math.sqrt((4 * area) / Math.PI)) < 1e-12);
   const bore = (Math.PI * run.config.diameter ** 2) / 4;
   const exit = (run.Q * 1000) / bore;
-  // Stretch = bore area ÷ laid bead cross-section = average travel speed ÷ exit speed: on a line it is a
-  // little below set speed ÷ exit speed (acceleration and deceleration at the ends).
+  // Stretch = bore area ÷ laid bead cross-section = average travel speed ÷ exit speed: on a line it is close to
+  // set speed ÷ exit speed (acceleration at the ends lowers it; the slower pressure-driven start, v2.2, raises it).
   assert.ok(Math.abs(b.speedRatio - bore / area) < 1e-12);
   const nominal = run.config.speed / exit;
-  assert.ok(b.speedRatio < nominal * 1.02 && b.speedRatio > nominal * 0.6, `${b.speedRatio} vs ${nominal}`);
+  assert.ok(b.speedRatio < nominal * 1.08 && b.speedRatio > nominal * 0.6, `${b.speedRatio} vs ${nominal}`);
   // On short spiral segments the nozzle never reaches a high set speed: the stretch stays the same.
   const spiral = (speed) => simulate({ ...fromRegistry(registry, 'putty'), mode: 'pattern', speed, pathSettings: { shape: 'rectangle', width: 30, depth: 30, offsetX: 0, offsetY: 0, pattern: 'spiral', spacing: 2.5, edgeInset: 3.5, spiralShape: 'auto', spiralDirection: 'inside-out' } });
   const [s100, s200] = [beadMatch(spiral(100)), beadMatch(spiral(200))];
