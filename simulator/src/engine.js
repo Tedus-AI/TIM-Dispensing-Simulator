@@ -3,7 +3,7 @@ import { motionProfile, timeAtDistance, planPolylineMotion } from './motion.js';
 import { withUpdates } from './parameters.js';
 
 export { motionProfile, timeAtDistance };
-export const VERSION = '2.1.1';
+export const VERSION = '2.2.0';
 export const LABEL = '工程假設／未經實機校準';
 export const BEAD_SIDES = 32;
 
@@ -172,6 +172,27 @@ export function pasteRheology(c) {
   return { K: c.viscosity, n: c.flowIndex ?? 1 };
 }
 
+/**
+ * P300 (v2.2): a positive-displacement pump meters the volume, but it must push that flow through the needle.
+ * Pressure (psi) at the needle inlet for a flow Q (mL/s) of this paste, from the same power law as the R75:
+ * ΔP = 2KL·(Q·(3n+1)/(πn·R^(3+1/n)))ⁿ. The Graco PCP's maximum fluid working pressure is 290 psi (2.0 MPa,
+ * 3A5364L); above it the real pump stalls or slips (its volumetric efficiency falls) instead of metering.
+ */
+export const PCP_MAX_PRESSURE = 290; // psi
+export function needlePressure(c, Q) {
+  if (!(Q > 0)) return 0;
+  const { K, n } = pasteRheology(c);
+  const R = c.diameter / 2000;
+  const L = c.nozzleLength / 1000;
+  return (2 * K * L * ((Q * 1e-6 * (3 * n + 1)) / (Math.PI * n * R ** (3 + 1 / n))) ** n) / PSI;
+}
+/** The fastest P300 shaft speed (rpm) whose flow the needle takes within the pump's working pressure. */
+export function pcpPressureRpm(c) {
+  const { K, n } = pasteRheology(c);
+  const Q = powerLawTubeFlow(K, n, PCP_MAX_PRESSURE * PSI, c.diameter, c.nozzleLength);
+  return c.displacement > 0 && c.efficiency > 0 ? (Q * 60) / (c.displacement * c.efficiency) : Infinity;
+}
+
 // Analytic integral of a delayed rectangular command with nonnegative first-order response.
 export function pulse(t, Q, duration, delay, tauOn, tauOff) {
   const u = t - delay;
@@ -187,6 +208,71 @@ export function pulse(t, Q, duration, delay, tauOn, tauOff) {
   }
   return { q, volume };
 }
+
+// 20-point Gauss–Legendre nodes and weights on [0, 1], computed once (Newton on the Legendre polynomial).
+const GL = (() => {
+  const N = 20;
+  const x = [];
+  const w = [];
+  for (let i = 1; i <= N; i++) {
+    let z = Math.cos((Math.PI * (i - 0.25)) / (N + 0.5));
+    let dp = 0;
+    for (let it = 0; it < 100; it++) {
+      let p0 = 1;
+      let p1 = z;
+      for (let k = 2; k <= N; k++) [p0, p1] = [p1, ((2 * k - 1) * z * p1 - (k - 1) * p0) / k];
+      dp = (N * (z * p1 - p0)) / (z * z - 1);
+      const dz = p1 / dp;
+      z -= dz;
+      if (Math.abs(dz) < 1e-15) break;
+    }
+    x.push((1 - z) / 2);
+    w.push(1 / ((1 - z * z) * dp * dp));
+  }
+  return { x, w };
+})();
+
+/**
+ * Start-up deficit of a power-law flow behind a first-order pressure: D(U) = ∫₀^U (1 − u^m)/(1 − u) du, so that
+ * ∫₀^t (1 − e^(−s/τ))^m ds = t − τ·D(1 − e^(−t/τ)). D(U) = U for m = 1; D(1) is the harmonic number H_m
+ * (1.75 for m = 2.7). The integrand is smooth on [0, 1] (it ends at m), so one 20-point rule is exact to ~1e-7.
+ */
+export function startDeficit(U, m) {
+  if (!(U > 0)) return 0;
+  if (Math.abs(m - 1) < 1e-12) return U;
+  let s = 0;
+  for (let k = 0; k < GL.x.length; k++) {
+    const u = U * GL.x[k];
+    const lu = Math.log(u);
+    s += GL.w[k] * (u < 1 ? Math.expm1(m * lu) / Math.expm1(lu) : m);
+  }
+  return U * s;
+}
+
+/**
+ * R75 (v2.2): the dispenser sets the air pressure, and the pressure behind the paste follows a first-order
+ * rise (τ on) and decay (τ off) after the delay. The paste flow follows that pressure through its own flow law,
+ * q = Q·(p/P)^m with m = 1/n (Q ∝ ΔP^m in the tube): the shear-thinning paste starts slower than the pressure
+ * (start-up loss τ·H_m instead of τ) and stops m times faster (tail τ/m instead of τ). m = 1 is `pulse`.
+ */
+export function pneumaticPulse(t, Q, duration, delay, tauOn, tauOff, m = 1) {
+  if (Math.abs(m - 1) < 1e-12) return pulse(t, Q, duration, delay, tauOn, tauOff);
+  const u = t - delay;
+  if (u <= 0 || Q === 0 || duration <= 0) return { q: 0, volume: 0 };
+  const on = Math.min(u, duration);
+  const gain = -Math.expm1(-on / tauOn); // p / P at the end of the on phase (so far)
+  let volume = Q * Math.max(0, on - tauOn * startDeficit(gain, m));
+  let q = Q * gain ** m;
+  if (u > duration) {
+    const tail = u - duration;
+    volume += ((q * tauOff) / m) * -Math.expm1((-m * tail) / tauOff);
+    q *= Math.exp((-m * tail) / tauOff);
+  }
+  return { q, volume };
+}
+
+/** Exponent of flow against drive pressure, Q ∝ ΔP^m: the putty's fitted m, or 1/n for the grease. */
+export const flowExponent = (c) => (c.material === 'putty' ? c.pressureExponent : 1 / (c.flowIndex ?? 1));
 
 // B is a lumped forward-delivery inventory, not nozzle pressure or a material rheology law.
 // During reverse: dB/dt = -B/tau - R. Only B can be recovered; deposited glue is never removed.
@@ -467,7 +553,7 @@ function planRun(c) {
   const outputAt = (t) => {
     const raw = pcp
       ? pcpResponse(t, Q, meterGate, c.delay, c.tauOn, reverseRate, c.reverseDuration)
-      : pulse(t, Q, gate, c.delay, c.tauOn * scale, c.tauOff * scale);
+      : pneumaticPulse(t, Q, gate, c.delay, c.tauOn * scale, c.tauOff * scale, flowExponent(c));
     return { raw, output: pcp ? raw.volume : Math.min(available, raw.volume) };
   };
   return { Q, pcp, available, path, pathLength, moving, motion, effectiveShutoffDistance, gate, meterGate, movementEnd, tailEnd, reverseConfigured, reverseCommandEnd, reverseResponseEnd, reverseRate, trajectory, duration, outputAt, airScale: scale };
@@ -723,6 +809,12 @@ export function simulate(input) {
     );
   else if (flattened)
     warnings.push(`針嘴離面 ${c.standoff} mm 低於${shapeName}自然高度 ${freeHeight.toFixed(2)} mm：已按膠量守恆壓平成 ${c.standoff} mm 高、變寬。`);
+  // v2.2: a nozzle far above its bead lets the paste fall as a rope before it lands; the model lays it under the
+  // nozzle. Usual practice keeps the standoff within about one bead height (or one bore for a dot).
+  else if (freeHeight > 0 && c.standoff > 2 * Math.max(freeHeight, moving ? 0 : c.diameter / 2))
+    warnings.push(
+      `針嘴離面 ${c.standoff} mm 是${shapeName}自然高度 ${freeHeight.toFixed(2)} mm 的 ${(c.standoff / freeHeight).toFixed(1)} 倍：膏體離開針孔後要先懸空約 ${(c.standoff - freeHeight).toFixed(1)} mm 才落到面上，實際會落在針嘴後方、轉角被拉向內側（切角），移動太慢時膠柱可能盤繞，起點與終點位置也較不準。模型假設膠落在針嘴正下方；一般取離面高度約一個膠條高（單點約一個針孔內徑）。`,
+    );
   if (c.material === 'putty' && !pcp && Math.abs(c.pressureExponent - 1) > 1e-9)
     warnings.push(`putty 流動指數 m=${c.pressureExponent}：針嘴內徑與長度依冪律 d^(3+m)/L^m 一併換算；仍是單點映射假設。`);
   const maxWidth = profile ? profile.maxWidth : dotDimensions(last.deposited, c.dotRatio, c.standoff, c.diameter).radius * 2;
@@ -754,7 +846,14 @@ export function simulate(input) {
     warnings.push('工件／針嘴高度超出參考 Z 行程；尚未確認真實機台的裝夾與工具偏置。');
   if (c.workpieceKind !== 'plate') warnings.push('匯入工件只作實尺寸顯示；膠形使用上方水平參考面，未驗證孔洞、曲面或完整碰撞。');
   if (last.remaining <= c.residual + 1e-9) warnings.push('可用膠量已耗盡；固定預填流道未吹空。');
-  if (pcp) warnings.push('理想 PCP 假設滿腔；管路壓降、供料不足與材料適配尚未計算。');
+  if (pcp) {
+    const needle = needlePressure(c, Q);
+    if (needle > PCP_MAX_PRESSURE)
+      warnings.push(
+        `PCP 要把 ${(Q * 60).toFixed(2)} mL/min 推過 Ø${c.diameter} × ${c.nozzleLength} mm 針頭需約 ${needle.toFixed(0)} psi，超過 PCP 最高工作壓力 ${PCP_MAX_PRESSURE} psi：實機會漏流（容積效率下降）或停機報警，出不了這個量。請降轉速（約 ${pcpPressureRpm(c).toFixed(0)} rpm 以下）、換粗針頭或縮短針頭。`,
+      );
+    warnings.push(`理想 PCP 假設滿腔；針頭出口壓力約 ${needle.toFixed(0)} psi（冪律管流），管路壓降、供料不足與材料適配尚未計算。`);
+  }
   return {
     version: VERSION,
     label: LABEL,

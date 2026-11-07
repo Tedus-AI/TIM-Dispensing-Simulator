@@ -357,8 +357,11 @@ export function chooseProcess(config, { speeds = [config.speed], needles = [conf
     const q0 = steadyFlow({ ...top, diameter: needles[0] });
     if (!(q0 > 0)) continue;
     for (const d of needles) {
-      const capTop = (timing.deposited * steadyFlow({ ...top, diameter: d })) / q0;
-      const capLow = knob === 'drive' ? (timing.deposited * steadyFlow({ ...c, [drive.key]: drive.lo, diameter: d })) / q0 : 0;
+      // P300: a fine needle may cap the pump speed at the pump's working pressure (v2.2).
+      const hi = driveOf({ ...c, diameter: d }).hi;
+      if (knob !== 'drive' && c.architecture === 'P300' && c.rpm > hi * (1 + 1e-9)) continue;
+      const capTop = (timing.deposited * steadyFlow(knob === 'drive' ? { ...top, [drive.key]: hi, diameter: d } : { ...top, diameter: d })) / q0;
+      const capLow = knob === 'drive' ? (timing.deposited * steadyFlow({ ...c, [drive.key]: Math.min(drive.lo, hi), diameter: d })) / q0 : 0;
       const ratio = moving && nominalMl > 0 ? (Math.PI * d * d) / 4 / ((nominalMl * 1000) / timing.pathLength) : null;
       const cost = beadDeviation({ speedRatio: ratio }) + Math.max(0, Math.log(timing.cycle / cycleRef));
       options.push({ speed, diameter: d, capTop, capLow, cycle: timing.cycle, ratio, cost, reach: capTop >= needMl * (1 - 1e-9), band: capTop >= needMl * (1 - 1e-9) && capLow <= lowMl });

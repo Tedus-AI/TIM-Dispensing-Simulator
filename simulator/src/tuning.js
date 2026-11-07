@@ -1,4 +1,4 @@
-import { simulate, runTiming } from './engine.js';
+import { simulate, runTiming, pcpPressureRpm } from './engine.js';
 
 // Deposited volume falls with travel speed and rises with gate time, drive pressure and pump speed.
 const RISING = new Set(['gateDuration', 'pressure', 'rpm']);
@@ -115,7 +115,21 @@ export const DRIVES = Object.freeze({
   R75: { key: 'pressure', lo: 10, hi: 100, label: '驅動壓力', unit: 'psi' },
   P300: { key: 'rpm', lo: 10, hi: 150, label: 'PCP 轉速', unit: 'rpm' },
 });
-export const driveOf = (config) => DRIVES[config.architecture === 'P300' ? 'P300' : 'R75'];
+/**
+ * Drive range for this config. On the P300 (v2.2) the top speed is also capped where the needle needs the
+ * pump's maximum working pressure (290 psi) to take the flow: a fine needle cannot be fed at 150 rpm.
+ */
+export const driveOf = (config) => {
+  if (config.architecture !== 'P300') return DRIVES.R75;
+  let cap = Infinity;
+  try {
+    cap = pcpPressureRpm(config);
+  } catch {
+    /* incomplete config */
+  }
+  if (!(cap < DRIVES.P300.hi)) return DRIVES.P300;
+  return { ...DRIVES.P300, hi: Math.max(DRIVES.P300.lo, cap), pressureLimited: true };
+};
 /** Motion setting that sets the dose without touching the drive: travel speed, or gate time for a point. */
 export const motionKeyOf = (config) => (config.mode === 'point' ? 'gateDuration' : 'speed');
 
