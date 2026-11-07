@@ -97,8 +97,10 @@ export function createCompressionScene(config, settings, result, { plateMargin =
     x1 = Math.min(grid.cols - 1, x1 + 1);
     y1 = Math.min(grid.rows - 1, y1 + 1);
   }
-  const vx = hasFilm ? x1 - x0 + 2 : 0;
-  const vy = hasFilm ? y1 - y0 + 2 : 0;
+  // One film vertex at every cell centre, so a step between two cells (the film's rim, a hole's wall) sits on
+  // the boundary between them.
+  const vx = hasFilm ? x1 - x0 + 1 : 0;
+  const vy = hasFilm ? y1 - y0 + 1 : 0;
   const filmGeometry = new THREE.BufferGeometry();
   const positions = new Float32Array(vx * vy * 3);
   const colors = new Float32Array(vx * vy * 3);
@@ -106,8 +108,8 @@ export function createCompressionScene(config, settings, result, { plateMargin =
   for (let j = 0; j < vy; j++)
     for (let i = 0; i < vx; i++) {
       const v = j * vx + i;
-      positions[3 * v] = grid.originX + (x0 + i) * grid.cellSize;
-      positions[3 * v + 1] = grid.originY + (y0 + j) * grid.cellSize;
+      positions[3 * v] = grid.originX + (x0 + i + 0.5) * grid.cellSize;
+      positions[3 * v + 1] = grid.originY + (y0 + j + 0.5) * grid.cellSize;
     }
   filmGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
   filmGeometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
@@ -156,34 +158,36 @@ export function createCompressionScene(config, settings, result, { plateMargin =
   let colorMode = 'material';
   let current = frames.length - 1;
   const shade = new THREE.Color();
-  // Trapped air tints the film in the chosen colour by the air share of its cells, so a squeezed bubble that
-  // still holds some glue shows as well as one that is all air; the quads below show through film holes.
+  // Trapped air spans the gap: glue around it, the plate above it, the part below. A cell that is mostly air is
+  // a hole through the film down to the part, coloured in the chosen colour (the quads below); its vertex drops
+  // to the floor, so the hole has a steep glue wall on the cell boundary, like the meniscus, shaded down to the
+  // air colour so the hole reads from any angle and its opening matches the bubble's area. A cell with some air
+  // but mostly glue (a bubble's edge) stays on the film, lightly tinted by its air share.
   const voidTint = new THREE.Color(voidColor);
   const airSmooth = new Float32Array(vx * vy);
+  const hole = new Uint8Array(vx * vy);
   const raw = new Float32Array(vx * vy);
-  // Vertex field = mean of the four touching cells, then one 3×3 box pass so an edge is interpolated across a
-  // cell instead of following the cell staircase.
-  const vertexField = (cell, out) => {
-    for (let j = 0; j < vy; j++)
-      for (let i = 0; i < vx; i++) {
-        const gx = x0 + i;
-        const gy = y0 + j;
-        raw[j * vx + i] = (cell(gx - 1, gy - 1) + cell(gx, gy - 1) + cell(gx - 1, gy) + cell(gx, gy)) / 4;
-      }
-    for (let j = 0; j < vy; j++)
-      for (let i = 0; i < vx; i++) {
-        let sum = 0;
-        let count = 0;
-        for (let dj = -1; dj <= 1; dj++)
-          for (let di = -1; di <= 1; di++) {
-            const a = i + di;
-            const b = j + dj;
-            if (a < 0 || b < 0 || a >= vx || b >= vy) continue;
-            sum += raw[b * vx + a];
-            count++;
-          }
-        out[j * vx + i] = sum / count;
-      }
+  // Vertex field = the cell's value, then 3×3 box passes so an edge is interpolated across cells instead of
+  // following the cell staircase.
+  const vertexField = (cell, out, passes = 1) => {
+    for (let j = 0; j < vy; j++) for (let i = 0; i < vx; i++) out[j * vx + i] = cell(x0 + i, y0 + j);
+    for (let p = 0; p < passes; p++) {
+      raw.set(out);
+      for (let j = 0; j < vy; j++)
+        for (let i = 0; i < vx; i++) {
+          let sum = 0;
+          let count = 0;
+          for (let dj = -1; dj <= 1; dj++)
+            for (let di = -1; di <= 1; di++) {
+              const a = i + di;
+              const b = j + dj;
+              if (a < 0 || b < 0 || a >= vx || b >= vy) continue;
+              sum += raw[b * vx + a];
+              count++;
+            }
+          out[j * vx + i] = sum / count;
+        }
+    }
   };
   function setFrame(index) {
     current = Math.max(0, Math.min(frames.length - 1, index));
@@ -191,35 +195,32 @@ export function createCompressionScene(config, settings, result, { plateMargin =
     const gap = f.gap;
     plate.position.set((minX + maxX) / 2, (minY + maxY) / 2, z + gap + plateThickness / 2);
     outline.position.z = z + gap + 0.02;
+    // The air cells' colour sits half way up the film: seen through the plate it fills each hole up to the
+    // middle of its walls, i.e. exactly the bubble's footprint; from the side it shows inside the hole.
+    voidMesh.position.z = z + 0.5 * gap;
     if (hasFilm) {
       const inside = (x, y) => x >= 0 && y >= 0 && x < grid.cols && y < grid.rows;
-      vertexField((x, y) => (inside(x, y) ? f.coverage[y * grid.cols + x] / 255 : 0), smooth);
-      // Air share per cell: the squeeze's own (frames since v2.1), else the trapped mask of older results.
-      const air = f.air || f.trapped;
-      const scaleAir = f.air ? 1 / 255 : 1;
-      if (air) vertexField((x, y) => (inside(x, y) ? air[y * grid.cols + x] * scaleAir : 0), airSmooth);
+      vertexField((x, y) => (inside(x, y) ? f.coverage[y * grid.cols + x] / 255 : 0), smooth, 2);
+      // Mostly-air cells (holes) and the air share of the others (frames before v2.1 carry no air share).
+      const core = f.trapped || grid.voidMask;
+      const coreAt = (x, y) => (core && inside(x, y) ? core[y * grid.cols + x] : 0);
+      if (f.air) vertexField((x, y) => (inside(x, y) && !coreAt(x, y) ? f.air[y * grid.cols + x] / 255 : 0), airSmooth);
       else airSmooth.fill(0);
       for (let j = 0; j < vy; j++)
         for (let i = 0; i < vx; i++) {
           const v = j * vx + i;
           const value = smooth[v];
-          // Below ~¼ the film dips under the workpiece face, so the visible rim is the smooth contour.
-          positions[3 * v + 2] = z + gap * Math.min(1, 2.2 * (value - 0.22)) - (value < 0.22 ? 0.02 : 0);
+          hole[v] = coreAt(x0 + i, y0 + j) ? 1 : 0;
+          // Below ~¼ the film dips under the workpiece face, so the visible rim is the smooth contour; at a hole
+          // it drops to the floor.
+          positions[3 * v + 2] = hole[v] ? z - 0.02 : z + gap * Math.min(1, 2.2 * (value - 0.22)) - (value < 0.22 ? 0.02 : 0);
           if (colorMode === 'front') {
-            const gx = x0 + i;
-            const gy = y0 + j;
-            let t = -1;
-            for (const [cx, cy] of [
-              [gx - 1, gy - 1],
-              [gx, gy - 1],
-              [gx - 1, gy],
-              [gx, gy],
-            ])
-              if (cx >= 0 && cy >= 0 && cx < grid.cols && cy < grid.rows) t = Math.max(t, arrival[cy * grid.cols + cx]);
+            const t = inside(x0 + i, y0 + j) ? arrival[(y0 + j) * grid.cols + x0 + i] : -1;
             const rgb = rampColor(t < 0 ? 1 : t);
             shade.setRGB(rgb[0], rgb[1], rgb[2], THREE.SRGBColorSpace);
           } else shade.copy(glue).multiplyScalar(0.7 + 0.2 * Math.min(1, value));
-          if (airSmooth[v] > 0.02) shade.lerp(voidTint, Math.min(1, 1.8 * airSmooth[v]));
+          if (hole[v]) shade.copy(voidTint);
+          else if (airSmooth[v] > 0.02) shade.lerp(voidTint, Math.min(0.6, 1.5 * airSmooth[v]));
           colors[3 * v] = shade.r;
           colors[3 * v + 1] = shade.g;
           colors[3 * v + 2] = shade.b;
@@ -229,6 +230,7 @@ export function createCompressionScene(config, settings, result, { plateMargin =
         for (let i = 0; i < vx - 1; i++) {
           const v = j * vx + i;
           if (Math.max(smooth[v], smooth[v + 1], smooth[v + vx], smooth[v + vx + 1]) < 0.22) continue;
+          if (hole[v] && hole[v + 1] && hole[v + vx] && hole[v + vx + 1]) continue;
           index.push(v, v + 1, v + vx + 1, v, v + vx + 1, v + vx);
         }
       filmGeometry.setIndex(index);
@@ -237,16 +239,16 @@ export function createCompressionScene(config, settings, result, { plateMargin =
       filmGeometry.computeVertexNormals();
       filmGeometry.computeBoundingSphere();
     }
+    // Hole colour: every mostly-air cell.
     const quads = [];
     const trapped = f.trapped || grid.voidMask;
-    if (trapped)
-      for (let i = 0; i < n; i++)
-        if (trapped[i]) {
-          const gx = grid.originX + (i % grid.cols) * grid.cellSize;
-          const gy = grid.originY + Math.floor(i / grid.cols) * grid.cellSize;
-          const s = grid.cellSize;
-          quads.push(gx, gy, 0, gx + s, gy, 0, gx + s, gy + s, 0, gx, gy, 0, gx + s, gy + s, 0, gx, gy + s, 0);
-        }
+    for (let i = 0; i < n; i++)
+      if (trapped && trapped[i]) {
+        const gx = grid.originX + (i % grid.cols) * grid.cellSize;
+        const gy = grid.originY + Math.floor(i / grid.cols) * grid.cellSize;
+        const s = grid.cellSize;
+        quads.push(gx, gy, 0, gx + s, gy, 0, gx + s, gy + s, 0, gx, gy, 0, gx + s, gy + s, 0, gx, gy + s, 0);
+      }
     voidMesh.geometry.dispose();
     voidMesh.geometry = new THREE.BufferGeometry();
     voidMesh.geometry.setAttribute('position', new THREE.Float32BufferAttribute(quads, 3));
