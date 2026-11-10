@@ -75,6 +75,7 @@ export function drawChart(svg, run, type, time, baseline) {
     base +
     `<path class="area" d="${path} L${x(frames.at(-1).t)},${y(min)} L${L},${y(min)} Z"/><path class="series" d="${path}"/>` +
     command +
+    `<line class="hover" id="chart-hover" x1="${L}" x2="${L}" y1="${T}" y2="${H - B}" style="display:none"/>` +
     `<line class="cursor" id="chart-cursor" x1="${x(time)}" x2="${x(time)}" y1="${T - 4}" y2="${H - B}"/>`;
   return { x, duration, toTime: (px) => ((px - L) / (W - L - R)) * duration };
 }

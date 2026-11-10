@@ -20,8 +20,15 @@ test('round spiral on a rectangle travels from exactly the center or the same ou
  const inFinal=frameAt(inward,inward.ending.movementEnd+.011),outFinal=frameAt(outward,outward.ending.movementEnd+.011);
  near(inFinal.x,end.x,1e-5);near(inFinal.y,end.y,1e-5);
  near(outFinal.x,start.x,1e-5);near(outFinal.y,start.y,1e-5);
- near(inward.pathLength,outward.pathLength,1e-7);near(inward.summary.output,outward.summary.output,1e-7);
- // The same length and timing distribute transient start/stop output at opposite
+ near(inward.pathLength,outward.pathLength,1e-7);
+ // v3.0: the tight turns at the centre are slower (centripetal limit), so the two directions no longer share
+ // their timing. The travel time is the same either way, but the early shut-off stretch (4 mm before the end)
+ // lies at the slow centre for the inward spiral: its gate closes earlier in time and it lays a little less.
+ near(inward.motion.duration,outward.motion.duration,1e-7);
+ assert.ok(inward.gate<outward.gate,'the inward spiral spends longer in its shut-off stretch');
+ assert.ok(inward.summary.output<outward.summary.output&&inward.summary.output>outward.summary.output*.9,
+  `${inward.summary.output} a little below ${outward.summary.output}`);
+ // The same length distributes transient start/stop output at opposite
  // physical points: the start/end arc-length bin volume profiles are not mirror symmetric.
  const a=inward.summary.deposits,b=outward.summary.deposits;
  assert.equal(a.length,b.length);

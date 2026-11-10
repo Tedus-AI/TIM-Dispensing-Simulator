@@ -14,17 +14,26 @@ const slim = (run) => ({
   maxHeight: run.maxHeight,
 });
 
-function compress(run, heat, frames) {
-  return estimateCompression(slim(run), { ...heat, frames });
+// Progress of a squeeze, at most every 120 ms.
+function compress(run, heat, frames, id) {
+  let last = 0;
+  const progress = (fraction, gap) => {
+    const now = Date.now();
+    if (now - last < 120) return;
+    last = now;
+    self.postMessage({ id, progress: fraction, label: `膠層 ${gap < 1 ? gap.toFixed(3) : gap.toFixed(2)} mm` });
+  };
+  return estimateCompression(slim(run), { ...heat, frames, progress });
 }
 
 self.onmessage = (event) => {
   const { id, type, payload } = event.data;
   try {
     if (type === 'compress') {
-      const result = compress(payload.run, payload.heat, payload.frames ?? 24);
+      const result = compress(payload.run, payload.heat, payload.frames ?? 24, id);
+      delete result.options.progress; // functions cannot be posted
       const transfer = [];
-      for (const f of result.grid.frames) transfer.push(f.coverage.buffer, f.trapped.buffer);
+      for (const f of result.grid.frames) transfer.push(f.coverage.buffer, f.trapped.buffer, f.air.buffer);
       self.postMessage({ id, ok: true, result }, transfer);
       return;
     }

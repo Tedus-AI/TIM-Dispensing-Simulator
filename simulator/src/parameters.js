@@ -219,6 +219,40 @@ export const PARAMETER_UPDATES = Object.freeze([
     supersedes: 'v1.1–v2.1 yield stress only after seating',
   },
   {
+    id: 'material.putty.flow_activation_energy',
+    value: 16,
+    unit: 'kJ/mol',
+    evidence: 'engineering_assumption',
+    since: '3.0',
+    role: '膠溫對稠度的影響：K(T) = K(23 °C) · exp(Ea/R · (1/T − 1/296.15 K))',
+    basis:
+      'AI 初估：Tputty 910 為陶瓷填充矽系，高填充膏體的溫度相依性主要來自基礎油；聚二甲基矽氧烷（PDMS）的流動活化能約 14–16 kJ/mol，取 16。相當於每升 1 °C 稠度降約 2.2%，氣壓式出膠量（∝ K^(−m)，m = 2.7）增加約 6%。Laird 點膠指南只定性提到低於 23 °C 流率下降、60–80 °C 加熱可改善。請在兩個膠溫各秤一次出膠量校正。',
+    source_refs: [GUIDE],
+  },
+  {
+    id: 'material.grease.flow_activation_energy',
+    value: 30,
+    unit: 'kJ/mol',
+    evidence: 'engineering_assumption',
+    since: '3.0',
+    role: '膠溫對稠度的影響：K(T) = K(23 °C) · exp(Ea/R · (1/T − 1/296.15 K))',
+    basis:
+      'AI 初估：Tgrease 2500 為非矽系，烴類／酯類基礎油的流動活化能常見 25–45 kJ/mol，取 30。相當於每升 1 °C 稠度降約 4%，氣壓式出膠量（∝ K^(−1/n)，n = 0.4）增加約 10%：氣壓時間式的膠量對室溫很敏感，這是量產膠量漂移的主要來源之一。廠商未公開，請在兩個膠溫各秤一次出膠量校正。',
+    source_refs: [TDS2500],
+  },
+  {
+    id: 'motion.centripetal_limit',
+    value: 'v² / r ≤ a',
+    unit: '',
+    evidence: 'derived',
+    since: '3.0',
+    role: '圓弧路徑（圓螺旋、圓外框）的速度上限',
+    basis:
+      '圓弧以短弦近似時，每個頂點只轉一個小角度，單靠 junction deviation 規則幾乎不減速：設定 150 mm/s、半徑 13 mm 的圓外框需要 1,730 mm/s² 的向心加速度，是加速度上限 500 mm/s² 的 3.5 倍，實機走不到。v3.0 以相鄰三點的外接圓半徑加上向心加速度上限 v ≤ √(a·r)；尖角仍由 junction deviation 決定。',
+    source_refs: ['35_v3.0三次全面複查_物理介面與機台.md'],
+    supersedes: 'v1.0–v2.2 junction deviation only',
+  },
+  {
     id: 'thermal.power',
     value: 25,
     unit: 'W',

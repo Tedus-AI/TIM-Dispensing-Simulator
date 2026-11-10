@@ -52,8 +52,22 @@ export function junctionSpeed(u1, u2, acceleration, deviation, speed) {
 }
 
 /**
+ * Radius (mm) of the circle through the three points of a junction (two consecutive segments). A curve drawn as
+ * short chords (a round spiral, a circular outline) turns a little at every vertex; the junction-deviation rule
+ * alone treats each small turn as nearly straight, so the speed came out several times above what the
+ * acceleration allows on that radius (v² / r ≤ a). The circumradius is the curve's own radius there; at a real
+ * corner between long segments it is large and the corner rule decides.
+ */
+export function curveRadius(a, b) {
+  const sin = Math.abs(a.u.x * b.u.y - a.u.y * b.u.x);
+  if (sin < 1e-9) return Infinity;
+  return Math.hypot(a.length * a.u.x + b.length * b.u.x, a.length * a.u.y + b.length * b.u.y) / (2 * sin);
+}
+
+/**
  * Look-ahead planner along a polyline: every segment is a trapezoid between junction speeds that
- * respect the corner rule and the shared acceleration limit (backward + forward pass).
+ * respect the corner rule, the centripetal limit on curved stretches (v3.0) and the shared acceleration
+ * limit (backward + forward pass).
  * This is a generic engineering approximation, not a particular robot controller.
  */
 export function planPolylineMotion(points, { speed, acceleration, deviation }) {
@@ -69,7 +83,16 @@ export function planPolylineMotion(points, { speed, acceleration, deviation }) {
   if (n === 1) return motionProfile(segments[0].length, speed, acceleration);
   // Junction limits; v[i] is the speed at the start of segment i, v[n] the final stop.
   const v = new Float64Array(n + 1);
-  for (let i = 1; i < n; i++) v[i] = junctionSpeed(segments[i - 1].u, segments[i].u, acceleration, deviation, speed);
+  // Which rule holds each junction: 'corner' (junction deviation), 'curve' (centripetal) or none.
+  const held = new Uint8Array(n + 1);
+  for (let i = 1; i < n; i++) {
+    const a = segments[i - 1];
+    const b = segments[i];
+    const corner = junctionSpeed(a.u, b.u, acceleration, deviation, speed);
+    const curve = Math.min(speed, Math.sqrt(acceleration * curveRadius(a, b)));
+    v[i] = Math.min(corner, curve);
+    held[i] = v[i] >= speed - 1e-9 ? 0 : curve < corner ? 2 : 1;
+  }
   v[0] = 0;
   v[n] = 0;
   for (let i = n - 1; i >= 0; i--) v[i] = Math.min(v[i], Math.sqrt(v[i + 1] ** 2 + 2 * acceleration * segments[i].length));
@@ -79,6 +102,7 @@ export function planPolylineMotion(points, { speed, acceleration, deviation }) {
   let distance = 0;
   let slowest = speed;
   let corners = 0;
+  let curveSlowest = null; // lowest speed on a curved stretch (centripetal limit)
   for (let i = 0; i < n; i++) {
     const s = segments[i];
     const v0 = v[i];
@@ -98,10 +122,11 @@ export function planPolylineMotion(points, { speed, acceleration, deviation }) {
     s.duration = s.t1 + s.t2 + s.t3;
     start += s.duration;
     distance += s.length;
-    if (i > 0 && v0 < speed - 1e-9) {
+    // Corners are the junctions the corner rule slows down; a curve's vertices are not counted one by one.
+    if (i > 0 && held[i] === 1) {
       corners++;
       slowest = Math.min(slowest, v0);
-    }
+    } else if (i > 0 && held[i] === 2) curveSlowest = curveSlowest === null ? v0 : Math.min(curveSlowest, v0);
   }
   const duration = start;
   const length = distance;
@@ -122,6 +147,7 @@ export function planPolylineMotion(points, { speed, acceleration, deviation }) {
     peak: Math.max(...segments.map((s) => s.vp)),
     corners,
     slowestCorner: corners ? slowest : null,
+    curveSlowest,
     junctions: Array.from(v),
     at(t) {
       if (t <= 0) return { x: 0, v: 0 };

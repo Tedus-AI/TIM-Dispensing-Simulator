@@ -3,7 +3,7 @@ import { motionProfile, timeAtDistance, planPolylineMotion } from './motion.js';
 import { withUpdates } from './parameters.js';
 
 export { motionProfile, timeAtDistance };
-export const VERSION = '2.2.0';
+export const VERSION = '3.0.0';
 export const LABEL = '工程假設／未經實機校準';
 export const BEAD_SIDES = 32;
 
@@ -74,6 +74,8 @@ export function fromRegistry(registry, material = 'putty', architecture = 'R75')
     density: g(`material.${material}.density`),
     viscosity: g('grease_proxy.constant_viscosity'),
     flowIndex: g('grease_proxy.flow_index'),
+    temperature: g('scenario.temperature'),
+    activationEnergy: g(`material.${material}.flow_activation_energy`),
     pressure: g('scenario.pressure'),
     referencePressure: g('scenario.reference_pressure'),
     referenceRate: g('putty_proxy.reference_rate'),
@@ -134,6 +136,22 @@ export function powerLawTubeFlow(K, n, pressurePa, diameter, length) {
 }
 
 /**
+ * Temperature shift of the paste's consistency (v3.0): K(T) = K(23 °C) · a_T with the Arrhenius factor
+ * a_T = exp(Ea/R · (1/T − 1/T_ref)). All flow data (TDS, guideline curve, a flow calibration) are taken as
+ * measured at the reference temperature, 23 °C. Warmer paste is thinner: a_T < 1. The flow through a needle
+ * goes as K^(−1/n), so with n ≈ 0.4 a 1 °C change moves a time-pressure dose 2.5 times as much as it moves
+ * the viscosity. Without a temperature (configs saved before v3.0) the factor is 1.
+ */
+export const REFERENCE_TEMPERATURE = 23; // °C
+const GAS_CONSTANT = 8.314462618; // J/(mol·K)
+export function thermalShift(c) {
+  const T = c.temperature;
+  const Ea = c.activationEnergy;
+  if (!Number.isFinite(T) || !(Ea > 0)) return 1;
+  return Math.exp(((Ea * 1000) / GAS_CONSTANT) * (1 / (T + 273.15) - 1 / (REFERENCE_TEMPERATURE + 273.15)));
+}
+
+/**
  * Steady volumetric flow, mL/s.
  * - P300: ideal positive displacement.
  * - R75 putty: TDS reference point scaled by a power-law tube law. With flow exponent m = 1/n,
@@ -146,20 +164,22 @@ export function steadyFlow(c) {
   if (c.architecture === 'P300') return (c.displacement * c.rpm * c.efficiency) / 60;
   if (c.material === 'putty') {
     const m = c.pressureExponent;
+    // Q ∝ K^(−1/n) = K^(−m): the reference rate was measured at 23 °C.
     return (
       c.referenceRate *
+      thermalShift(c) ** -m *
       (Math.max(c.pressure, 0) / c.referencePressure) ** m *
       (c.diameter / c.referenceDiameter) ** (3 + m) *
       (c.referenceLength / c.nozzleLength) ** m
     );
   }
-  return powerLawTubeFlow(c.viscosity, c.flowIndex ?? 1, Math.max(c.pressure, 0) * PSI, c.diameter, c.nozzleLength);
+  return powerLawTubeFlow(c.viscosity * thermalShift(c), c.flowIndex ?? 1, Math.max(c.pressure, 0) * PSI, c.diameter, c.nozzleLength);
 }
 
 /**
  * The paste's shear-thinning law as one power law τ = K·γ̇ⁿ (Pa·sⁿ, n), shared by the nozzle flow and the
  * squeeze: grease from its consistency and flow index; putty from its pressure exponent (n = 1/m) and the
- * consistency that reproduces its reference flow through the reference tube.
+ * consistency that reproduces its reference flow through the reference tube. K is at the paste temperature.
  */
 export function pasteRheology(c) {
   if (c.material === 'putty') {
@@ -167,9 +187,9 @@ export function pasteRheology(c) {
     const R = c.referenceDiameter / 2000;
     const L = c.referenceLength / 1000;
     const Q = (c.referenceRate * 1e-6) / ((Math.PI * n) / (3 * n + 1) * R ** (3 + 1 / n));
-    return { K: (c.referencePressure * PSI) / (2 * L * Q ** n), n };
+    return { K: ((c.referencePressure * PSI) / (2 * L * Q ** n)) * thermalShift(c), n };
   }
-  return { K: c.viscosity, n: c.flowIndex ?? 1 };
+  return { K: c.viscosity * thermalShift(c), n: c.flowIndex ?? 1 };
 }
 
 /**
@@ -348,6 +368,8 @@ const RANGES = {
   density: [0.1, 10],
   viscosity: [1, 100000],
   flowIndex: [0.1, 1.2],
+  temperature: [0, 120],
+  activationEnergy: [0, 120],
   referenceRate: [0, 10],
   pressureExponent: [0.1, 4],
   delay: [0, 2],
@@ -743,6 +765,12 @@ export function simulate(input) {
   const flattened = profile ? profile.flattened : dotShape.flattened;
   const last = frames.at(-1);
   const warnings = [];
+  // The warnings that call for a change of settings; the others describe what the model leaves out.
+  const issues = [];
+  const flag = (text) => {
+    warnings.push(text);
+    issues.push(text);
+  };
   const afterStopVolume = Math.max(0, last.output - evaluate(movementEnd).output);
   const windowMean = (a, b) => {
     let volume = 0;
@@ -784,6 +812,7 @@ export function simulate(input) {
         peak: motion.peak,
         corners: motion.corners || 0,
         slowestCorner: motion.slowestCorner ?? null,
+        curveSlowest: motion.curveSlowest ?? null,
         averageSpeed: pathLength / (motion.travel ?? motion.duration),
         startDwell: c.startDwell || 0,
       }
@@ -796,15 +825,15 @@ export function simulate(input) {
   if (pcp && c.reverseDuration > 0)
     warnings.push('PCP 反轉僅為暫存回收近似，回收量獨立記帳；不移除已沉積材料、不保證真實斷絲。');
   if (ending.reverseRequestedVolume > last.recovered + 1e-9)
-    warnings.push('反轉指令超過可回收暫存量，剩餘指令不再移除材料；負壓、吸氣與下一次開膠尚未計算。');
-  if (moving && c.shutoffDistance >= pathLength) warnings.push('提前關膠距離達到或超過路徑長度，本次不開膠；請縮短提前距離。');
+    flag('反轉指令超過可回收暫存量，剩餘指令不再移除材料；負壓、吸氣與下一次開膠尚未計算。');
+  if (moving && c.shutoffDistance >= pathLength) flag('提前關膠距離達到或超過路徑長度，本次不開膠；請縮短提前距離。');
   if (moving && endRatio !== null && endRatio < 0.5)
-    warnings.push('末段平均截面低於中段一半，可能欠膠；此比較門檻為 AI 初估，不是產品驗收標準。');
+    flag('末段平均截面低於中段一半，可能欠膠；此比較門檻為 AI 初估，不是產品驗收標準。');
   if (moving && endRatio !== null && endRatio > 1.5)
-    warnings.push('末段平均截面高於中段 1.5 倍，可能積膠；此比較門檻為 AI 初估，不是產品驗收標準。');
+    flag('末段平均截面高於中段 1.5 倍，可能積膠；此比較門檻為 AI 初估，不是產品驗收標準。');
   const shapeName = moving ? '膠條' : '膠點';
   if (maxHeight > c.standoff + 1e-9)
-    warnings.push(
+    flag(
       `${shapeName}高 ${maxHeight.toFixed(2)} mm 高於針嘴離面 ${c.standoff} mm：膠量超過針嘴口能刮平的範圍，針嘴埋入膠內，可能拖膠、沾針；請提高針距或減少每 mm 膠量。`,
     );
   else if (flattened)
@@ -812,7 +841,7 @@ export function simulate(input) {
   // v2.2: a nozzle far above its bead lets the paste fall as a rope before it lands; the model lays it under the
   // nozzle. Usual practice keeps the standoff within about one bead height (or one bore for a dot).
   else if (freeHeight > 0 && c.standoff > 2 * Math.max(freeHeight, moving ? 0 : c.diameter / 2))
-    warnings.push(
+    flag(
       `針嘴離面 ${c.standoff} mm 是${shapeName}自然高度 ${freeHeight.toFixed(2)} mm 的 ${(c.standoff / freeHeight).toFixed(1)} 倍：膏體離開針孔後要先懸空約 ${(c.standoff - freeHeight).toFixed(1)} mm 才落到面上，實際會落在針嘴後方、轉角被拉向內側（切角），移動太慢時膠柱可能盤繞，起點與終點位置也較不準。模型假設膠落在針嘴正下方；一般取離面高度約一個膠條高（單點約一個針孔內徑）。`,
     );
   if (c.material === 'putty' && !pcp && Math.abs(c.pressureExponent - 1) > 1e-9)
@@ -825,31 +854,36 @@ export function simulate(input) {
         outside = true;
         break;
       }
-    if (outside) warnings.push('路徑或估算膠線可能超出工件範圍；尚未計算實際邊緣流失。');
+    if (outside) flag('路徑或估算膠線可能超出工件範圍；尚未計算實際邊緣流失。');
     if (Math.abs(path.offsetX) + path.width / 2 > c.width / 2 || Math.abs(path.offsetY) + path.depth / 2 > c.depth / 2)
-      warnings.push('設定的熱源超出工件矩形參考邊界；請核對熱源位置與尺寸。');
+      flag('設定的熱源超出工件矩形參考邊界；請核對熱源位置與尺寸。');
     warnings.push('3D 膠形依出膠順序一格一格鋪出（約 0.1 mm 網格），重複經過處疊在先前的膠上；疊高檢查與壓合用同一份膠形。融合細節為工程近似，並非精確實物。');
-    if (motion.kind === 'polyline')
+    if (motion.kind === 'polyline') {
       warnings.push(
         `轉角依 junction deviation ${c.junctionDeviation} mm 降速（最低 ${motionSummary.slowestCorner === null ? '—' : motionSummary.slowestCorner.toFixed(1)} mm/s）；轉角較慢處膠量較多。規則為通用 CNC 近似，非特定機台控制器。`,
       );
+      if (motionSummary.curveSlowest !== null)
+        flag(
+          `圓弧段受向心加速度限制（v² ÷ 半徑 ≤ 加速度 ${c.acceleration} mm/s²）：最低降到 ${motionSummary.curveSlowest.toFixed(1)} mm/s，設定速度 ${c.speed} mm/s 在這個半徑上達不到；圓弧上每 mm 的膠量會比直線段多。要更快需要更高的加速度或更大的圓。`,
+        );
+    }
     else warnings.push('圖樣使用整條路徑的弧長加減速，轉角不減速（v0.7 對照）；不是機台運動控制器或真實轉角積膠預測。');
     if (bins < requestedBins) warnings.push('為避免記憶體不足，沿路徑的沉積取樣已放粗；局部精度下降。');
   } else if (
     (c.mode === 'line' ? (c.lineLength + c.diameter) / 2 : maxWidth / 2) + Math.abs(c.offsetX) > c.width / 2 ||
     maxWidth / 2 + Math.abs(c.offsetY) > c.depth / 2
   )
-    warnings.push('路徑或膠形超出工件範圍；沉積位置仍按水平參考面外推。');
+    flag('路徑或膠形超出工件範圍；沉積位置仍按水平參考面外推。');
   const workspace = pcp ? [254, 277] : [300, 300];
-  if (c.width > workspace[0] || c.depth > workspace[1]) warnings.push('工件超出所選設備的參考工作範圍；未自動縮小。');
+  if (c.width > workspace[0] || c.depth > workspace[1]) flag('工件超出所選設備的參考工作範圍；未自動縮小。');
   if (c.surfaceZ + c.standoff + c.liftDistance > (pcp ? 70 : 100))
-    warnings.push('工件／針嘴高度超出參考 Z 行程；尚未確認真實機台的裝夾與工具偏置。');
+    flag('工件／針嘴高度超出參考 Z 行程；尚未確認真實機台的裝夾與工具偏置。');
   if (c.workpieceKind !== 'plate') warnings.push('匯入工件只作實尺寸顯示；膠形使用上方水平參考面，未驗證孔洞、曲面或完整碰撞。');
-  if (last.remaining <= c.residual + 1e-9) warnings.push('可用膠量已耗盡；固定預填流道未吹空。');
+  if (last.remaining <= c.residual + 1e-9) flag('可用膠量已耗盡；固定預填流道未吹空。');
   if (pcp) {
     const needle = needlePressure(c, Q);
     if (needle > PCP_MAX_PRESSURE)
-      warnings.push(
+      flag(
         `PCP 要把 ${(Q * 60).toFixed(2)} mL/min 推過 Ø${c.diameter} × ${c.nozzleLength} mm 針頭需約 ${needle.toFixed(0)} psi，超過 PCP 最高工作壓力 ${PCP_MAX_PRESSURE} psi：實機會漏流（容積效率下降）或停機報警，出不了這個量。請降轉速（約 ${(() => { const r = pcpPressureRpm(c); return r < 10 ? r.toFixed(1) : r.toFixed(0); })()} rpm 以下）、換粗針頭或縮短針頭。`,
       );
     warnings.push(`理想 PCP 假設滿腔；針頭出口壓力約 ${needle.toFixed(0)} psi（冪律管流），管路壓降、供料不足與材料適配尚未計算。`);
@@ -868,6 +902,7 @@ export function simulate(input) {
     gridStart,
     frames,
     warnings,
+    issues,
     maxHeight,
     maxWidth,
     freeHeight,
