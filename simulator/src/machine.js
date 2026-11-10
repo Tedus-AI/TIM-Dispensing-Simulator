@@ -128,7 +128,7 @@ export function buildRobot(S, k, pcp) {
   const tickMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(0.5, 1, 0.12), k.palette.black, ticks.length);
   ticks.forEach((x, i) => tickMesh.setMatrixAt(i, new THREE.Matrix4().compose(new THREE.Vector3(x, -157 + (x % 25 === 0 ? 2.5 : 1.25), 0.06), new THREE.Quaternion(), new THREE.Vector3(1, x % 25 === 0 ? 5 : 2.5, 1))));
   base.add(tickMesh);
-  for (const x of [-150, 150]) for (const y of [-150, 150]) k.screw(x, y, 0.3, base, 3.2);
+  for (const x of [-150, 150]) for (const y of [-150, 150]) k.screw(x, y, -1.3, base, 3.2); // countersunk
 
   // ── Y modules: enclosed actuators with a steel cover band, running into the rear hood ──
   const yLength = rear - 74 - (front + 24);
@@ -166,7 +166,9 @@ export function buildRobot(S, k, pcp) {
     for (const dy of [-44, 44]) for (const dx of [-22, 22]) k.screw(x + dx, beamY + dy, 26.2, b, 1.8);
     const col = frame(b, x, beamY, saddleTop, 'x', 'z');
     const top = beamZ - saddleTop;
-    k.prism(col, [[-46, 0], [46, 0], [46, 12], [26, top - 24], [26, top], [-20, top], [-20, top - 24], [-46, 12]], 40, 'paint');
+    // The front edge stays behind the Z axis at every height, so the carriage clears the uprights at both ends
+    // of its travel; the casting widens toward the rear instead.
+    k.prism(col, [[-30, 0], [52, 0], [52, 12], [26, top - 24], [26, top], [-20, top], [-20, top - 24], [-30, 12]], 40, 'paint');
     // Machined pad and bolts where the beam lands, a rib on the outer face.
     const out = Math.sign(x);
     k.box(3, 30, top - 60, x + out * 20.5, beamY + 3, saddleTop + 24, 'paintAccent', b, 1);
@@ -181,7 +183,7 @@ export function buildRobot(S, k, pcp) {
   k.box(470, 46, 2, 0, beamY + 3, beamZ + beamHeight, 'anodizedDark', b, 0.5);
   const railZ = [beamMid - 16, beamMid + 16];
   for (const z of railZ) k.linearRail(frame(b, 0, beamY - 20, z, 'x', '-y'), 440, { width: 12, height: 8 });
-  k.ballScrew(frame(b, 0, beamY - 29, beamMid, 'x', '-y'), 404, { r: 5, nut: null, support: [16, 20, 18] });
+  k.ballScrew(frame(b, 0, beamY - 29, beamMid, 'x', '-y'), 416, { r: 5, nut: null, support: [16, 20, 18] });
   // X drive: coupling housing and stepper beyond the right end plate.
   k.box(26, 40, 40, 261, beamY - 29, beamMid - 20, 'anodizedDark', b, 2);
   const xMotor = k.stepper(frame(b, 274, beamY - 29, beamMid, '-x', 'z'), { size: 42, length: 50 });
@@ -225,8 +227,9 @@ export function buildRobot(S, k, pcp) {
   k.pin(nut, 10, 24, 'x', 0, 0, 0, 'steelDark', 24);
   k.pin(nut, 14, 5, 'x', -12, 0, 0, 'steel', 24);
   k.slab(nut, 20, 22, 6, 6, 0, 4, 'anodizedDark', 1);
-  k.box(108, 6, 96, 0, beamY - 37, beamMid - 48, 'anodized', cr, 2);
-  for (const x of [-46, 46]) for (const z of [beamMid - 40, beamMid + 40]) k.screw(x, beamY - 40.4, z, cr, 1.8, 'y');
+  // 100 mm wide: at ±150 mm of travel its edge stops 6 mm short of the screw's bearing supports.
+  k.box(100, 6, 96, 0, beamY - 37, beamMid - 48, 'anodized', cr, 2);
+  for (const x of [-43, 43]) for (const z of [beamMid - 40, beamMid + 40]) k.screw(x, beamY - 40.4, z, cr, 1.8, 'y');
   // Z axis: U-shaped body, two rails, ball screw, top bearing plate, coupling housing and stepper.
   const zLen = zTop - 60;
   const zMid = 60 + zLen / 2;
@@ -292,9 +295,9 @@ export function buildAccessories(S, k, c) {
 // Bench: laminate top with an ESD mat, the air dispenser, its foot switch, a filter-regulator and the pendant.
 export function buildBench(S, k) {
   const env = S.environment;
-  k.box(1300, 880, 40, -90, 60, DECK - 42, 'bench', env, 4);
-  k.box(1300, 6, 40, -90, -383, DECK - 42, 'wood', env, 1);
-  k.box(1120, 720, 2, -90, 60, DECK - 2, 'mat', env, 1);
+  k.box(1300, 900, 40, -90, 40, DECK - 42, 'bench', env, 4);
+  k.box(1300, 6, 40, -90, -413, DECK - 42, 'wood', env, 1);
+  k.box(1120, 760, 2, -90, 40, DECK - 2, 'mat', env, 1);
   // Mat ground snap and earthing lead are routine ESD bench details.
   k.cyl(6, 3, 420, -260, DECK, 'steel', env);
   k.cable(env, [new THREE.Vector3(420, -260, DECK + 2), new THREE.Vector3(470, -300, DECK + 4), new THREE.Vector3(500, -372, DECK + 2)], 1.4, 'green');
@@ -361,12 +364,12 @@ export function buildController(S, k) {
   const airIn = new THREE.Vector3(60, d / 2 + 12, 44);
   // Foot switch on the bench with its lead to the socket under the panel.
   const pedal = new THREE.Group();
-  pedal.position.set(120, -170, 0);
+  pedal.position.set(-70, -185, 0);
   g.add(pedal);
   k.box(74, 112, 8, 0, 0, 0, 'motor', pedal, 2);
   const top = k.box(66, 100, 6, 0, -4, 16, 'paintAccent', pedal, 2);
   top.rotation.x = -0.14;
-  k.cable(g, [new THREE.Vector3(120, -114, 8), new THREE.Vector3(118, -80, 3), new THREE.Vector3(70, -70, 3), new THREE.Vector3(40, -d / 2 - 14, 12), new THREE.Vector3(34, -d / 2 - 3, 24)], 1.8);
+  k.cable(g, [new THREE.Vector3(-70, -129, 8), new THREE.Vector3(-58, -120, 4), new THREE.Vector3(0, -117, 6), new THREE.Vector3(30, -113, 14), new THREE.Vector3(34, -d / 2 - 3, 24)], 1.8);
   // Filter-regulator on a bench post at the rear, feeding the controller.
   const frl = new THREE.Group();
   frl.position.set(-40, 250, 0);
@@ -392,7 +395,7 @@ export function buildController(S, k) {
 export function buildPendant(S, k) {
   const g = new THREE.Group();
   g.name = 'teach pendant (illustrative)';
-  g.position.set(-240, -300, DECK);
+  g.position.set(-205, -310, DECK);
   S.machine.add(g);
   S.pendant = g;
   const tilt = new THREE.Group();

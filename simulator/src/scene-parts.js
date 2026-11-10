@@ -9,7 +9,7 @@ export function createPalette() {
     graphite: std(0x2b3139, 0.5, 0.35),
     // v3.0 machine finishes: warm white powder coat on castings and covers, clear and black anodised aluminium,
     // matt black motor bodies, polymer seals and cable jackets.
-    paint: new THREE.MeshPhysicalMaterial({ color: 0xe9e7e1, roughness: 0.5, metalness: 0, clearcoat: 0.25, clearcoatRoughness: 0.55 }),
+    paint: new THREE.MeshPhysicalMaterial({ color: 0xdcd9d2, roughness: 0.55, metalness: 0, clearcoat: 0.25, clearcoatRoughness: 0.55 }),
     paintAccent: new THREE.MeshPhysicalMaterial({ color: 0x2c4f86, roughness: 0.45, metalness: 0.05, clearcoat: 0.3, clearcoatRoughness: 0.5 }),
     anodized: std(0xcfd3d6, 0.34, 0.86),
     anodizedDark: std(0x2a2d31, 0.4, 0.75),

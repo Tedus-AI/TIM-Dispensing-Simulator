@@ -439,42 +439,77 @@ export function squeezeRaster(raster, settings) {
 
   // Plastic-limit load of the film (N) at plate height h (v2.2): in a Bingham slit the paste only flows where
   // |∇p| > 2τy/h, so holding the plate at h takes p = 2τy/h × distance to the nearest open front everywhere in
-  // the film. Distances follow the film (and the pockets it encloses) with a 3–4 chamfer metric (within 6 % of
-  // Euclidean), so the load of a disc of radius R comes out close to (2π/3)·τy·R³/h.
-  const chamfer = new Int32Array(n);
-  const bucket = [];
+  // the film. The straight line from a film cell to its nearest front lies in the film, so that distance is the
+  // Euclidean one: an exact two-pass distance transform (Felzenszwalb & Huttenlocher) from every open cell.
+  // The front itself lies inside that open cell, as far in as the cell is filled (the same ghost-front position
+  // the flow solver uses), so the distance is: centre to centre − ½ cell + the open cell's fill. The load of a
+  // disc of radius R then comes out at (2π/3)·τy·R³/h. (v2.2 used a 3–4 chamfer metric and put the front at the
+  // open cell's near edge, which let the plate stop about 4 % too thin.)
+  const BIG = 1e18;
+  const span = Math.max(cols, rows);
+  const edt = new Float64Array(n); // squared distance to the nearest open cell, in cells
+  const lineIn = new Float64Array(span);
+  const lineOut = new Float64Array(span);
+  const hullAt = new Int32Array(span);
+  const hullFrom = new Float64Array(span + 1);
+  const lineArg = new Int32Array(span); // which sample each result came from
+  const nearestX = new Int32Array(n); // column of the nearest open cell within the row (first pass)
+  // Lower envelope of the parabolas f[q] + (x − q)²: the 1-D squared-distance transform.
+  function transform(len) {
+    let k = 0;
+    hullAt[0] = 0;
+    hullFrom[0] = -Infinity;
+    hullFrom[1] = Infinity;
+    for (let q = 1; q < len; q++) {
+      let s;
+      for (;;) {
+        const p = hullAt[k];
+        s = (lineIn[q] + q * q - (lineIn[p] + p * p)) / (2 * q - 2 * p);
+        if (s <= hullFrom[k] && k > 0) k--;
+        else break;
+      }
+      k++;
+      hullAt[k] = q;
+      hullFrom[k] = s;
+      hullFrom[k + 1] = Infinity;
+    }
+    k = 0;
+    for (let q = 0; q < len; q++) {
+      while (hullFrom[k + 1] < q) k++;
+      const p = hullAt[k];
+      lineOut[q] = (q - p) * (q - p) + lineIn[p];
+      lineArg[q] = p;
+    }
+  }
   function yieldLoad(h) {
     if (!(tauY > 0)) return 0;
-    chamfer.fill(0x3fffffff);
-    bucket.length = 0;
-    const push = (i, d) => {
-      chamfer[i] = d;
-      (bucket[d] || (bucket[d] = [])).push(i);
-    };
-    for (let i = 0; i < n; i++) if (state[i] === OPEN) push(i, 0);
-    for (let d = 0; d < bucket.length; d++) {
-      const list = bucket[d];
-      if (!list) continue;
-      for (let q = 0; q < list.length; q++) {
-        const i = list[q];
-        if (chamfer[i] !== d) continue;
-        const x = i % cols;
-        for (let dy = -1; dy <= 1; dy++)
-          for (let dx = -1; dx <= 1; dx++) {
-            if (!dx && !dy) continue;
-            const xx = x + dx;
-            const j = i + dy * cols + dx;
-            if (xx < 0 || xx >= cols || j < 0 || j >= n) continue;
-            const sj = state[j];
-            if (sj !== FILLED && sj !== POCKET) continue;
-            const nd = d + (dx && dy ? 4 : 3);
-            if (nd < chamfer[j]) push(j, nd);
-          }
+    let open = false;
+    for (let y = 0; y < rows; y++) {
+      const row = y * cols;
+      for (let x = 0; x < cols; x++) {
+        const o = state[row + x] === OPEN;
+        lineIn[x] = o ? 0 : BIG;
+        open = open || o;
+      }
+      transform(cols);
+      for (let x = 0; x < cols; x++) {
+        edt[row + x] = lineOut[x];
+        nearestX[row + x] = lineArg[x];
       }
     }
+    if (!open) return 0;
+    const cap = h * area;
     let sum = 0;
-    for (let i = 0; i < n; i++) if (state[i] === FILLED && chamfer[i] < 0x3fffffff) sum += chamfer[i] - 1.5; // interface sits ½ cell out
-    return ((2 * tauY) / h) * Math.max(0, sum / 3) * cellSize * area * 1e-6;
+    for (let x = 0; x < cols; x++) {
+      for (let y = 0; y < rows; y++) lineIn[y] = edt[y * cols + x];
+      transform(rows);
+      for (let y = 0; y < rows; y++) {
+        if (state[y * cols + x] !== FILLED) continue;
+        const front = lineArg[y] * cols + nearestX[lineArg[y] * cols + x]; // the nearest open cell
+        sum += Math.max(0, Math.sqrt(lineOut[y]) - 0.5 + Math.min(1, Math.max(0, volume[front] / cap)));
+      }
+    }
+    return ((2 * tauY) / h) * sum * cellSize * area * 1e-6;
   }
 
   // ── linear system for one step ──
