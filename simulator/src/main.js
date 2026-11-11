@@ -1,6 +1,6 @@
 import './style.css';
 import registry from '../../data/engineering_defaults_v0.3.json';
-import { fromRegistry, simulate, frameAt, calibrateFlow, airScale, R75_AIR, LABEL, VERSION, ENDING_DEFAULT, MOTION_DEFAULTS, CORNER_DEFAULTS, needlePressure, pcpPressureRpm, PCP_MAX_PRESSURE } from './engine.js';
+import { fromRegistry, simulate, frameAt, calibrateFlow, airScale, R75_AIR, LABEL, VERSION, ENDING_DEFAULT, MOTION_DEFAULTS, CORNER_DEFAULTS, needlePressure, pcpPressureRpm, PCP_MAX_PRESSURE, thermalShift, flowExponent, REFERENCE_TEMPERATURE } from './engine.js';
 import { PARAMETER_UPDATES, parameterValue } from './parameters.js';
 import { MATERIALS } from './materials.js';
 import { DispenseScene, VIEW_LABELS } from './scene.js';
@@ -10,6 +10,9 @@ import { GOAL_DEFAULTS, OPTIMIZE_DEFAULTS, SEARCH_LEVELS, SEARCH_PATTERNS, VARS_
 import { tuneDose, driveOf } from './tuning.js';
 import { pageTemplate, ICONS, PATTERN_ICONS, PATTERN_NAMES } from './ui/template.js';
 import { stackedBead } from './stacking.js';
+import { fitSqueeze, plasticLimitMm } from './calibration.js';
+import { TOLERANCE_DEFAULTS, toleranceCases, scaledRun, toleranceRow, toleranceVerdict, defaultGapTolerance } from './tolerance.js';
+import { buildReport } from './ui/report.js';
 import { drawChart, moveCursor, CHARTS } from './ui/chart.js';
 
 // ───────────────────────── helpers ─────────────────────────
@@ -39,7 +42,7 @@ const store = {
 };
 
 // Per-material/architecture parameters; everything else carries over when switching scenario.
-const PROFILE_KEYS = ['pressure', 'rpm', 'efficiency', 'delay', 'tauOn', 'tauOff', 'fill', 'residual', 'referenceRate', 'pressureExponent', 'viscosity', 'flowIndex', 'hoseId', 'hoseLength', 'reverseRpm', 'reverseDuration', 'density'];
+const PROFILE_KEYS = ['pressure', 'rpm', 'efficiency', 'delay', 'tauOn', 'tauOff', 'fill', 'residual', 'referenceRate', 'pressureExponent', 'viscosity', 'flowIndex', 'hoseId', 'hoseLength', 'reverseRpm', 'reverseDuration', 'density', 'activationEnergy'];
 const DEFAULT_HEAT = () => ({
   shape: 'rectangle',
   width: 30,
@@ -99,6 +102,11 @@ const S = {
   optOptions: migrateOptOptions(readJson('tim-opt')),
   optCal: null,
   optSpeed: readJson('tim-opt-speed') || { ratio: 1, runs: 0 },
+  // Tolerance check (dose ± fraction, gap ± mm; null gap = 10 % of the gap) and its last result.
+  tol: { ...TOLERANCE_DEFAULTS, ...(readJson('tim-tol') || {}) },
+  tolCheck: null,
+  // Undo / redo: snapshots of { config, heat, pattern } as JSON, `at` the current one.
+  history: { list: [], at: -1 },
 };
 
 function readJson(key) {
@@ -179,6 +187,34 @@ function toast(text, kind = '') {
   toast.timer = setTimeout(() => (t.className = ''), 4200);
 }
 
+// One busy indicator on the stage for every background calculation: what is running, how far, and a way out.
+function beginBusy(text, { cancel = null } = {}) {
+  S.busy = true;
+  document.body.classList.add('busy');
+  $('#busy-text').textContent = text;
+  $('#busy-bar').style.width = '0%';
+  $('#busy .progress').hidden = true;
+  $('#busy-cancel').hidden = !cancel;
+  $('#busy-cancel').disabled = false;
+  $('#busy-cancel').onclick = cancel
+    ? () => {
+        $('#busy-cancel').disabled = true;
+        cancel();
+      }
+    : null;
+  $('#busy').hidden = false;
+}
+function busyProgress(fraction, label) {
+  $('#busy .progress').hidden = false;
+  $('#busy-bar').style.width = `${Math.round(Math.min(1, Math.max(0, fraction)) * 100)}%`;
+  if (label) $('#busy-text').textContent = label;
+}
+function endBusy() {
+  S.busy = false;
+  document.body.classList.remove('busy');
+  $('#busy').hidden = true;
+}
+
 let scene;
 try {
   scene = new DispenseScene($('#viewport'), {
@@ -212,11 +248,25 @@ function startWorker() {
       if (data.ok) job.resolve(data.result);
       else job.reject(new Error(data.error));
     };
-    worker.onerror = () => (worker = null);
+    // A worker that fails (out of memory, a script error) must not leave its jobs waiting forever.
+    worker.onerror = (e) => {
+      e.preventDefault?.();
+      resetWorker(new Error('背景計算失敗，已重新啟動；請再試一次'));
+    };
   } catch {
     worker = null;
   }
 }
+/** Stop the worker, fail its pending jobs with `error` and start a fresh one. */
+function resetWorker(error) {
+  worker?.terminate();
+  worker = null;
+  const pending = [...jobs.values()];
+  jobs.clear();
+  for (const job of pending) job.reject(error);
+  startWorker();
+}
+const CANCELLED = '已取消';
 startWorker();
 const slimRun = (run) => ({ config: run.config, summary: { deposits: run.summary.deposits }, path: run.path, pathLength: run.pathLength, gridStart: run.gridStart, cellLength: run.cellLength, maxHeight: run.maxHeight });
 function compute(type, payload, progress) {
@@ -267,13 +317,14 @@ function initialConfig(material = 'putty', architecture = 'R75') {
 }
 
 /** Simulate a candidate; on success it becomes the current configuration. */
-function tryRecompute(candidate, { silent = false } = {}) {
+function tryRecompute(candidate, { silent = false, record = true } = {}) {
   try {
     const next = materialize(candidate);
     const run = simulate(next);
     S.config = next;
     S.overrides.set(next.profile, Object.fromEntries(PROFILE_KEYS.map((k) => [k, next[k]])));
     applyRun(run);
+    if (record) remember();
     return true;
   } catch (e) {
     if (!silent) toast(e.message, 'error');
@@ -281,6 +332,68 @@ function tryRecompute(candidate, { silent = false } = {}) {
     return false;
   }
 }
+
+// ───────────────────────── session: undo / redo and auto-save ─────────────────────────
+// Every accepted change of the settings (dispensing, heat source, pattern, press conditions) is one step.
+const HISTORY_LIMIT = 80;
+const snapshotNow = () => JSON.stringify({ config: S.config, heat: S.heat, pattern: S.pattern });
+function remember() {
+  const h = S.history;
+  const snap = snapshotNow();
+  if (h.list[h.at] !== snap) {
+    h.list.length = h.at + 1; // a new change drops what could have been redone
+    h.list.push(snap);
+    if (h.list.length > HISTORY_LIMIT) h.list.shift();
+    h.at = h.list.length - 1;
+  }
+  renderHistory();
+  persistSession();
+}
+function renderHistory() {
+  const h = S.history;
+  $('#undo').disabled = h.at <= 0;
+  $('#redo').disabled = h.at >= h.list.length - 1;
+}
+/** The settings as they are saved between visits. An imported workpiece mesh is not stored: its box remains. */
+function persistSession() {
+  const config = S.config.workpieceKind === 'plate' ? S.config : { ...S.config, workpieceKind: 'plate', workpieceFile: null };
+  store.set('tim-session', JSON.stringify({ version: VERSION, config, heat: S.heat, pattern: S.pattern, tab: S.tab }));
+  const note = $('#saved-note');
+  if (note) {
+    note.classList.remove('pulse');
+    void note.offsetWidth; // restart the animation
+    note.classList.add('pulse');
+  }
+}
+/** Apply saved settings (a session, a history step, an exported configuration). Returns whether it worked. */
+function applySettings(x, { record = true, silent = false } = {}) {
+  const before = { heat: S.heat, pattern: S.pattern };
+  const c = x.config;
+  if (!c || !['putty', 'grease'].includes(c.material) || !['R75', 'P300'].includes(c.architecture)) return false;
+  S.heat = { ...DEFAULT_HEAT(), ...(x.heat || x.heatSource || {}) };
+  S.pattern = { ...DEFAULT_PATTERN(), ...(x.pattern || {}) };
+  // Settings added after it was saved take their defaults; a mesh that is no longer loaded becomes its box.
+  const base = { ...fromRegistry(registry, c.material, c.architecture), ...structuredClone(c) };
+  if (base.workpieceKind !== 'plate' && !scene.imported) Object.assign(base, { workpieceKind: 'plate', workpieceFile: null });
+  if (tryRecompute(base, { record, silent })) return true;
+  S.heat = before.heat;
+  S.pattern = before.pattern;
+  return false;
+}
+function stepHistory(delta) {
+  const h = S.history;
+  const at = h.at + delta;
+  if (at < 0 || at >= h.list.length || S.busy) return;
+  const was = h.at;
+  h.at = at;
+  if (applySettings(JSON.parse(h.list[at]), { record: false })) {
+    persistSession();
+    toast(delta < 0 ? '已復原' : '已重做');
+  } else h.at = was;
+  renderHistory();
+}
+$('#undo').onclick = () => stepHistory(-1);
+$('#redo').onclick = () => stepHistory(1);
 
 function switchProfile(material, architecture) {
   const fresh = fromRegistry(registry, material, architecture);
@@ -319,6 +432,21 @@ function nozzleFields(c, isPcp) {
 const group = (title, body, { open = true, note } = {}) =>
   `<details class="group" ${open ? 'open' : ''}><summary><span>${title}${tip(note)}</span></summary><div class="group-body">${body}</div></details>`;
 
+// Paste temperature: what it does to the consistency and, on a time-pressure dispenser, to the dose.
+function temperatureField(c, isPcp) {
+  const aT = thermalShift(c);
+  const m = flowExponent(c);
+  const perDegree = (Math.exp(((c.activationEnergy * 1000) / 8.314462618) / (c.temperature + 273.15) ** 2) - 1) * 100;
+  const off = Math.abs(c.temperature - REFERENCE_TEMPERATURE) > 1e-9 && c.activationEnergy > 0;
+  const effect = off ? `稠度 ×${fmt(aT, 2)}${isPcp ? '' : `・出膠 ×${fmt(aT ** -m, 2)}`}` : `每 ±1 °C：${isPcp ? `針頭壓力 ∓${fmt(perDegree, 1)}%` : `出膠量 ±${fmt(perDegree * m, 0)}%`}`;
+  const note = `膠在針筒裡的溫度。資料表、指南曲線與實測校正都當作 23 °C 的值；溫度高，膏體變稀：K(T) = K(23 °C) × exp(Ea/R × (1/T − 1/296 K))，活化能 Ea = ${fmt(c.activationEnergy, 0)} kJ/mol（AI 初估，在「響應與材料模型」可改）。\n${
+    isPcp
+      ? 'P300 是容積計量，膠量不隨溫度變，只有針頭壓力與壓合會變。'
+      : `氣壓式的出膠量 ∝ K^(−${fmt(m, 1)})：在目前溫度每差 1 °C，稠度約差 ${fmt(perDegree, 1)}%、膠量約差 ${fmt(perDegree * m, 0)}%。這是時間壓力式量產膠量漂移的主要來源之一，車間溫度或膠筒剛從冷藏拿出來都會影響。`
+  }\n壓合用同一個溫度的膏體。熱傳導率不隨溫度變。`;
+  return `<div class="pair temp-row">${num({ bind: 'c.temperature', label: '膠溫', value: c.temperature, unit: '°C', min: 0, max: 120, tag: 'ai', hint: note })}<div class="temp-effect ${off ? 'on' : ''}"><span>相對 23 °C</span><b>${effect}</b></div></div>`;
+}
+
 function renderEquipment() {
   const c = S.config;
   const isPcp = pcp();
@@ -339,6 +467,7 @@ function renderEquipment() {
     <i></i><div><b>${mat.name}</b><span>${mat.kind}</span><span>k ${mat.conductivity} W/m·K · 最小 BLT ${mat.minBondLine * 1000} µm · ${mat.density} g/cc · ${mat.colorName}</span></div>
   </div>
   <div class="method"><span>${method}${tip(methodNote)}</span><strong>${fmt(q, 3)} <small>mL/s 穩態</small></strong></div>
+  ${temperatureField(c, isPcp)}
   ${group(
     '驅動與針嘴',
     (isPcp
@@ -364,6 +493,7 @@ function renderEquipment() {
     num({ bind: 'c.delay', label: '起膠延遲', value: c.delay, unit: 's', min: 0, max: 2, tag: 'ai' }) +
       num({ bind: 'c.tauOn', label: isPcp ? '起停時間常數' : '上升時間常數', value: c.tauOn, unit: 's', min: 0.001, max: 2, tag: 'ai' }) +
       (isPcp ? '' : num({ bind: 'c.tauOff', label: '卸壓下降時間常數', value: c.tauOff, unit: 's', min: 0.001, max: 2, tag: 'ai' })) +
+      num({ bind: 'c.activationEnergy', label: '流動活化能 Ea', value: c.activationEnergy, unit: 'kJ/mol', min: 0, max: 120, tag: 'ai', hint: '膠溫對稠度的影響程度；0 = 不隨溫度變。矽系膏體約 14–20、非矽系油約 25–45（AI 初估）。可在兩個膠溫各秤一次出膠量：Ea = R·ln(Q₂/Q₁) ÷ (m·(1/T₁ − 1/T₂))，m 為流量對壓力的冪次' }) +
       (!isPcp && c.material === 'putty'
         ? num({ bind: 'c.pressureExponent', label: '壓力冪次 m', value: c.pressureExponent, unit: '', min: 0.1, max: 4, tag: 'derived', hint: '指南曲線 20–100 psi 擬合 2.73；設 1 回到 v0.x 線性' }) +
           num({ bind: 'c.referenceRate', label: '90 psi 參考流率', value: c.referenceRate, unit: 'mL/s', min: 0, max: 10, tag: 'tds', hint: '75 g/min ÷ 3.2 g/cc；指南圖讀約 75 cc/min，單位待 Laird 確認' })
@@ -374,7 +504,7 @@ function renderEquipment() {
         : ''),
     {
       open: false,
-      note: `起停常數為 AI 初估${isPcp ? '' : `。氣壓式（v2.2）：時間常數指膠筒內「氣壓」的上升與卸壓，出膠量跟著壓力的 m 次方（Q ∝ P^m，m = ${fmt(c.material === 'putty' ? c.pressureExponent : 1 / (c.flowIndex ?? 1), 2)}），所以起膠比氣壓慢（起頭少出約 H_m × τ 秒的量，m = 2.5 時 H_m ≈ 1.7）、關膠後殘壓出膠只有 τ ÷ m；指膠筒裝填 ${R75_AIR.referenceFill} mL 時；氣壓式的壓力經活塞上方的空氣建立，膠越少空氣越多、反應越慢，目前裝填 ${fmt(c.fill, 1)} mL 的實際時間常數為 ${fmt(c.tauOn * airScale(c), 3)} / ${fmt(c.tauOff * airScale(c), 3)} s`}。未含溫度效應（指南：低於 23 °C 流率下降，60–80 °C 加熱可改善）。`,
+      note: `起停常數與流動活化能為 AI 初估${isPcp ? '' : `。氣壓式（v2.2）：時間常數指膠筒內「氣壓」的上升與卸壓，出膠量跟著壓力的 m 次方（Q ∝ P^m，m = ${fmt(c.material === 'putty' ? c.pressureExponent : 1 / (c.flowIndex ?? 1), 2)}），所以起膠比氣壓慢（起頭少出約 H_m × τ 秒的量，m = 2.5 時 H_m ≈ 1.7）、關膠後殘壓出膠只有 τ ÷ m；指膠筒裝填 ${R75_AIR.referenceFill} mL 時；氣壓式的壓力經活塞上方的空氣建立，膠越少空氣越多、反應越慢，目前裝填 ${fmt(c.fill, 1)} mL 的實際時間常數為 ${fmt(c.tauOn * airScale(c), 3)} / ${fmt(c.tauOff * airScale(c), 3)} s`}。膠溫的影響見上方「膠溫」（指南：低於 23 °C 流率下降，60–80 °C 加熱可改善）。`,
     },
   )}
   ${group(
@@ -537,6 +667,17 @@ function renderPressTab() {
   const h = S.heat;
   return `
   ${group('壓合條件（透明板＋墊片）', pressFields(h), { open: true, note: `透明板以定力壓到墊片（組裝間隙 ${fmt(h.gap, 2)} mm，在「熱源工件」設定）即停，估算覆蓋、夾氣、溢膠與熱阻。v2.2：降伏應力在壓合中也計入，膠攤得越大越難推，力不夠時壓板停在墊片上方；設了保壓時間則壓到那時為止。熱阻以實際停住的膠層計算；設定好後按結果卡的「模擬壓合」。\n到墊片後膠壓消退，被壓縮的氣泡回脹到降伏應力擋住為止。實際手壓若先快後慢，壓合中的氣泡壓縮程度不同，最終回脹結果影響較小。\n模型：平行板 Hele-Shaw 擠壓；被膠包圍的空氣依所選方式處理（預設可壓縮：pV＝常數、可隨膠流移動、膠牆變薄時排出）。熱阻＝（實際膠層 ÷ k＋TDS 推算接觸熱阻）÷ 濕潤面積。皆未經透明板實測校準。` })}
+  ${group(
+    '用透明板實測校正壓合',
+    `<div class="pair"><label class="field"><span class="lbl">膠點重量</span><span class="input"><input type="number" id="sq-grams" min="0" step="any" placeholder="秤重" aria-label="膠點重量"><b>g</b></span></label><label class="field"><span class="lbl">壓合力</span><span class="input"><input type="number" id="sq-kgf" min="0" step="any" value="${clean(h.pressKgf)}" aria-label="壓合力"><b>kgf</b></span></label></div>
+    <div class="pair"><label class="field"><span class="lbl">保壓時間</span><span class="input"><input type="number" id="sq-seconds" min="0" step="any" value="60" aria-label="保壓時間"><b>s</b></span></label><label class="field"><span class="lbl">攤開直徑</span><span class="input"><input type="number" id="sq-diameter" min="0" step="any" placeholder="量測" aria-label="攤開直徑"><b>mm</b></span></label></div>
+    ${select({ id: 'sq-mode', label: '擬合', value: 'viscosity', options: [['viscosity', '稠度 K（量的時候膠還在慢慢變大）'], ['yield', '降伏應力（已經壓到不再變大）']], hint: '稠度 K：決定膠被壓開得多快。壓一段固定時間（例如 60 s）就量。\n降伏應力：決定這個力最薄能壓到多少。壓到直徑不再變大（通常數分鐘）才量。\n建議先用較長的時間擬合降伏應力，再用較短的時間擬合稠度。' })}
+    <button class="chip-btn" id="sq-apply">校正壓合流變</button>`,
+    {
+      open: false,
+      note: `壓合用的稠度是從出膠（針嘴內剪切率 10–1000 s⁻¹）外推到壓合（約 0.001–1 s⁻¹）的，相差 3–5 個數量級，壓合時間可能差很多；降伏應力更是 AI 初估。用一顆膠點就能校正：\n1. 在透明板上點一顆膠，秤重（扣掉板重）。\n2. 蓋上另一片透明板，不放墊片，用已知的力（砝碼最準）壓一段時間。\n3. 量膠攤開成圓的直徑（兩個方向取平均）。\n輸入後會換算膠層厚度（體積 ÷ 圓面積），並用定體積圓盤壓合的解析解反推。剪切變稀指數 n 沿用目前的值（${fmt(squeezeRheology(S.config, h).flowIndex, 2)}）。`,
+    },
+  )}
   ${group('估算網格', num({ bind: 'h.cellSize', label: '網格解析度', value: h.cellSize, unit: 'mm', min: 0.2, max: 5, tag: 'ai', hint: '越小越細，計算時間增加；上限 90,000 格。夾氣數量對網格敏感，比較圖樣請用相同網格' }), { open: false })}
 `;
 }
@@ -564,6 +705,7 @@ $$('[data-tab]').forEach((b) =>
     S.tab = b.dataset.tab;
     $('#tab-body').scrollTop = 0;
     renderTab();
+    persistSession();
   }),
 );
 
@@ -599,6 +741,7 @@ $('#tab-body').addEventListener('change', (e) => {
   if (scope === 'h' && PRESS_KEYS.includes(key)) {
     markPressStale();
     renderDose();
+    remember();
     return renderTab();
   }
   if (!tryRecompute(S.config)) {
@@ -631,7 +774,10 @@ $('#tab-body').addEventListener('click', (e) => {
     case 'rheo-reset':
       S.heat = { ...S.heat, viscosity: null, flowIndex: null, yieldStress: null };
       markPressStale();
+      remember();
       return renderTab();
+    case 'sq-apply':
+      return applySqueezeCalibration();
     case 'cal-apply': {
       // Fit the flow law to a measured steady output at the current drive and nozzle.
       try {
@@ -655,6 +801,38 @@ $('#tab-body').addEventListener('click', (e) => {
       return tryRecompute({ ...S.config, width: 150, depth: 100, thickness: 5, workpieceKind: 'plate', workpieceFile: null });
   }
 });
+
+// Fit the squeeze rheology to a pressed-dot test (press tab): the consistency K, or the yield stress.
+function applySqueezeCalibration() {
+  try {
+    const rh = squeezeRheology(S.config, S.heat);
+    const mode = $('#sq-mode').value;
+    const fit = fitSqueeze({
+      mode,
+      grams: Number($('#sq-grams').value),
+      density: S.config.density,
+      kgf: Number($('#sq-kgf').value),
+      seconds: Number($('#sq-seconds').value),
+      diameterMm: Number($('#sq-diameter').value),
+      n: rh.flowIndex,
+      tauY: rh.yieldStress,
+      K: rh.viscosity,
+    });
+    const value = Number(fit.value.toPrecision(3));
+    const [lo, hi] = fit.key === 'viscosity' ? [1, 1e7] : [0, 1e6];
+    if (!(value >= lo && value <= hi)) return toast(`算出的${fit.key === 'viscosity' ? '稠度 K' : '降伏應力'} ${fmt(value, 1)} 超出允許範圍（${lo}–${hi.toExponential(0)}）；請檢查重量、力、時間與直徑`, 'error');
+    const before = fit.key === 'viscosity' ? rh.viscosity : rh.yieldStress;
+    S.heat = { ...S.heat, [fit.key]: value };
+    markPressStale();
+    remember();
+    renderTab();
+    const what = fit.key === 'viscosity' ? `稠度 K ${fmt(before, 0)} → ${fmt(value, 0)} Pa·sⁿ（n ${fmt(rh.flowIndex, 2)} 不變）` : `降伏應力 ${fmt(before, 0)} → ${fmt(value, 0)} Pa`;
+    const caution = fit.key === 'yieldStress' && fit.yieldLimited === false ? '；依目前的稠度，這段時間內膠可能還在變薄，這個降伏應力是上限，建議壓久一點再量' : '';
+    toast(`已校正壓合：膠層 ${fmt(fit.thicknessMm, 3)} mm，${what}${caution}`, caution ? '' : 'ok');
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+}
 
 // ───────────────────────── dose bar ─────────────────────────
 // Pinned above the tabs: the material requirement of the heat source, the current dose, a target in
@@ -761,18 +939,16 @@ async function applyDose() {
   const before = S.config;
   const run = S.run;
   const button = $('#dose-apply');
-  S.busy = true;
-  document.body.classList.add('busy');
+  beginBusy('反推膠量設定…', { cancel: () => resetWorker(new Error(CANCELLED)) });
   button.textContent = '計算中…';
   try {
     const t = await compute('tune', { config: before, target, knob: knobFor(before.mode) });
     if (run !== S.run) return toast('計算期間設定已變更，請再按一次「套用」');
     if (tryRecompute(t.config)) toast(doseMessage(t, before, target), t.reached ? 'ok' : 'error');
   } catch (e) {
-    toast(e.message, 'error');
+    if (e.message !== CANCELLED) toast(e.message, 'error');
   } finally {
-    S.busy = false;
-    document.body.classList.remove('busy');
+    endBusy();
     button.textContent = '套用';
   }
 }
@@ -796,12 +972,13 @@ $('#defaults').onclick = () => {
   S.pattern = DEFAULT_PATTERN();
   S.overrides.delete(S.config.profile);
   tryRecompute(initialConfig(S.config.material, S.config.architecture));
-  toast('已恢復此情境的研究預設');
+  toast('已恢復此情境的研究預設（可按「復原」回到剛才的設定）');
 };
 
 // ───────────────────────── run & results ─────────────────────────
 function applyRun(run) {
   exitPress(false);
+  if (S.tolCheck) S.tolCheck.stale = true;
   S.playing = false;
   S.time = 0;
   S.run = run;
@@ -862,6 +1039,28 @@ $$('[data-chart]').forEach((b) =>
     renderChart();
   }),
 );
+// Hover: the value of the curve under the pointer (and what the machine was doing then).
+$('#chart').addEventListener('pointermove', (e) => {
+  const r = $('#chart').getBoundingClientRect();
+  const t = Math.max(0, Math.min(S.run.duration, S.chart.toTime(((e.clientX - r.left) / r.width) * 1000)));
+  const f = frameAt(S.run, t);
+  const spec = CHARTS[S.chartType];
+  const out = $('#chart-readout');
+  out.hidden = false;
+  out.textContent = `t ${fmt(f.t, 2)} s　${spec.label} ${fmt(f[spec.key], spec.digits)} ${spec.unit}　${f.phase}`;
+  const line = $('#chart-hover');
+  if (line) {
+    const x = S.chart.x(t);
+    line.setAttribute('x1', x);
+    line.setAttribute('x2', x);
+    line.style.display = '';
+  }
+});
+$('#chart').addEventListener('pointerleave', () => {
+  $('#chart-readout').hidden = true;
+  const line = $('#chart-hover');
+  if (line) line.style.display = 'none';
+});
 $('#chart').addEventListener('click', (e) => {
   const r = $('#chart').getBoundingClientRect();
   const t = S.chart.toTime(((e.clientX - r.left) / r.width) * 1000);
@@ -956,7 +1155,11 @@ function renderResults() {
     return `<svg viewBox="0 0 84 84" class="ring ${coverClass(pct)}"><circle cx="42" cy="42" r="${r}" class="track"/><circle cx="42" cy="42" r="${r}" class="val" stroke-dasharray="${(Math.min(100, pct) / 100) * L} ${L}" transform="rotate(-90 42 42)"/><text x="42" y="46" text-anchor="middle">${fmt(pct, 1)}%</text></svg>`;
   };
   const pile = stackedBead(run);
-  const warnings = [...(pile.contact ? [stackText(pile, c.standoff)] : []), ...run.warnings, ...(S.press && !stale ? S.press.result.warnings : [])];
+  // What needs a change of settings comes first; what the model leaves out is folded away below it.
+  const pressed = S.press && !stale ? S.press.result : null;
+  const issues = [...(pile.contact ? [stackText(pile, c.standoff)] : []), ...(run.issues || []), ...(pressed?.issues || [])];
+  const flagged = new Set(issues);
+  const notes = [...run.warnings, ...(pressed?.warnings || [])].filter((w) => !flagged.has(w));
   $('#results').innerHTML = `
   <section class="card-sec">
     <div class="sec-head"><span class="eyebrow">完整試驗預估</span><span class="pill">${esc(c.profile)}</span></div>
@@ -981,6 +1184,7 @@ function renderResults() {
         </div>
         ${pressKpis(p.press)}
         <div class="press-actions"><button class="chip-btn" id="press-replay">${ICONS.play}重播壓合</button><button class="chip-btn" id="press-save">保存壓合基準</button><button class="chip-btn" id="scenario-save">${ICONS.save}存成情境</button></div>
+        ${toleranceHtml()}
         ${S.pressBaseline ? `<div class="compare-box"><b>壓合基準 → 目前</b><p>覆蓋 ${fmt(S.pressBaseline.summary.coveredPercent, 1)}% → ${fmt(p.coveredPercent, 1)}%　夾氣 ${S.pressBaseline.summary.voidCount} → ${p.voidCount}　溫升 ${fmt(S.pressBaseline.summary.thermal.rise, 2)} → ${fmt(p.thermal.rise, 2)} °C</p><small>${esc(S.pressBaseline.describe)}</small></div>` : ''}`
         : `<div class="cta">${stale ? '<p>熱源或點膠設定已變更，請重新模擬。</p>' : ''}<button class="primary" id="press-cta">${ICONS.press}<span>模擬壓合</span></button><button class="secondary" id="scenario-save-cta">${ICONS.save}<span>存成情境（自動壓合）</span></button></div>`
     }
@@ -1008,15 +1212,24 @@ function renderResults() {
     </ol>
     <p class="note inline-note">停移後流出 ${fmt(e.afterStopVolume * 1000, 2)} µL（${fmt(e.afterStopPercent, 1)}%）${tip(`針嘴停止移動後仍流出的膠。其中離開工件表面後的 ${fmt(s.offSurface * 1000, 2)} µL 形狀不定，只記帳、不加入膠形。${pcp() && e.reverseStart !== null ? `PCP 反轉回收暫存 ${fmt(s.recovered * 1000, 2)} µL。` : ''}`)}</p>
   </section>
-  <details class="card-sec warnings" ${warnings.length > 4 ? '' : 'open'}><summary><span class="eyebrow">提醒與模型界線</span><span class="count">${warnings.length}</span></summary>${warnings.map((w) => `<p>${esc(w)}</p>`).join('')}</details>
+  <section class="card-sec issues ${issues.length ? '' : 'clear'}">
+    <div class="sec-head"><span class="eyebrow">${ICONS.alert}需要注意${tip('這些項目建議調整設定後再看結果（例如埋針、膠條被拉細、壓不到墊片、熱源內夾氣）。模型本身沒算到的部分列在下方「模型界線」。')}</span><span class="count ${issues.length ? '' : 'zero'}">${issues.length}</span></div>
+    ${issues.length ? issues.map((w) => `<p>${esc(w)}</p>`).join('') : `<p class="none">${pressed ? '點膠與壓合' : '點膠'}設定沒有需要處理的項目${pressed ? '' : '；壓合後會再檢查夾氣、膠層與溢膠'}。</p>`}
+  </section>
+  <details class="card-sec warnings"><summary><span class="eyebrow">模型界線與說明</span><span class="count">${notes.length}</span></summary>${notes.map((w) => `<p>${esc(w)}</p>`).join('')}</details>
   <section class="card-sec">
     <div class="sec-head"><span class="eyebrow">基準比較${tip('保存基準後再調整參數，可比較沉積量與配置差異；流量曲線會疊上基準。')}</span><button class="chip-btn" id="save-baseline">保存目前為基準</button></div>
     ${baselineHtml()}
   </section>
   <section class="card-sec exports">
-    <button class="chip-btn" id="export-json">${ICONS.download}配置 JSON</button>
-    <button class="chip-btn" id="export-csv">${ICONS.download}結果 CSV</button>
-    <button class="chip-btn" id="export-image">${ICONS.download}畫面 PNG</button>
+    <div class="sec-head"><span class="eyebrow">匯出與匯入${tip('報告：一頁 HTML，含目前設定、結果、壓合與公差檢查、3D 畫面，可列印成 PDF。\n配置 JSON：完整設定與來源，可用「匯入配置」讀回。\n結果 CSV：每 10 ms 的時間序列。')}</span></div>
+    <div class="export-row">
+      <button class="chip-btn" id="export-report">${ICONS.report}報告</button>
+      <button class="chip-btn" id="export-json">${ICONS.download}配置 JSON</button>
+      <button class="chip-btn" id="export-csv">${ICONS.download}結果 CSV</button>
+      <button class="chip-btn" id="export-image">${ICONS.download}畫面 PNG</button>
+      <label class="chip-btn">${ICONS.upload}匯入配置<input type="file" id="import-config" accept=".json,application/json" hidden></label>
+    </div>
   </section>
 `;
 }
@@ -1058,6 +1271,10 @@ $('#results').addEventListener('click', (e) => {
       toast('已保存完整試驗結果為基準', 'ok');
       renderChart();
       return renderResults();
+    case 'tol-run':
+      return runTolerance();
+    case 'export-report':
+      return exportReport();
     case 'export-json':
       return download(JSON.stringify(exportRecord(), null, 2), 'TIM_工程假設_試驗配置.json', 'application/json');
     case 'export-csv':
@@ -1066,6 +1283,92 @@ $('#results').addEventListener('click', (e) => {
       return exportImage();
   }
 });
+
+// Tolerance inputs and a configuration file dropped into the results panel.
+$('#results').addEventListener('change', async (e) => {
+  const el = e.target;
+  if (el.dataset.tol) {
+    const v = Number(el.value);
+    if (el.dataset.tol === 'dose') {
+      if (!el.value.trim() || !(v >= 0 && v <= 40)) return toast('膠量公差需介於 0 與 40%', 'error');
+      S.tol = { ...S.tol, dose: v / 100 };
+    } else {
+      if (el.value.trim() && !(v >= 0 && v <= 5)) return toast('間隙公差需介於 0 與 5 mm', 'error');
+      S.tol = { ...S.tol, gap: el.value.trim() ? v : null };
+    }
+    store.set('tim-tol', JSON.stringify(S.tol));
+    if (S.tolCheck) S.tolCheck.stale = true;
+    return renderResults();
+  }
+  if (el.id === 'import-config' && el.files?.[0]) {
+    try {
+      const data = JSON.parse(await el.files[0].text());
+      if (!data?.config) throw new Error('檔案裡沒有配置（需要本工具匯出的「配置 JSON」）');
+      if (!applySettings(data)) throw new Error('配置無法套用，請確認是本工具匯出的檔案');
+      toast(`已匯入配置${data.version && data.version !== VERSION ? `（由 v${data.version} 匯出，新增的欄位取預設值）` : ''}`, 'ok');
+    } catch (err) {
+      toast(`匯入失敗：${err.message}`, 'error');
+    }
+    el.value = '';
+  }
+});
+
+// ───────────────────────── tolerance check ─────────────────────────
+// Worst case over the dose and gap tolerances: three squeezes (nominal, lean, rich) on a small worker pool.
+const tolGap = () => S.tol.gap ?? defaultGapTolerance(S.heat.gap);
+function toleranceHtml() {
+  const t = S.tolCheck;
+  const g = S.goals;
+  const dosePct = Math.round(S.tol.dose * 1000) / 10;
+  const head = `<div class="tol-head"><b>公差檢查${tip(`量產時膠量和間隙都會變動，兩者一起決定需要的膠量（熱源面積 × 間隙）：\n・膠少・間隙大：覆蓋最差、膠層最厚，熱阻最高；\n・膠多・間隙小：溢膠最多。\n這裡用目前的點膠設定，把每一段的膠量同比例增減（點膠機流量漂移），在三種間隙各壓一次，和目標（覆蓋 ≥ ${g.coverage}%、溢膠 ≤ ${g.overflow} mm，可在「情境比較」或「自動最佳化」修改）比較。\n間隙公差留空時取間隙的 10%（目前 ±${fmt(defaultGapTolerance(S.heat.gap), 2)} mm）：請填墊片、凸台與平面度的公差疊加。`)}</b><button class="chip-btn" id="tol-run">${ICONS.ruler}${t && !t.stale ? '重新檢查' : '檢查'}</button></div><div class="tol-inputs"><label>膠量 ± <input type="number" data-tol="dose" value="${dosePct}" min="0" max="40" step="any" aria-label="膠量公差"> %</label><label>間隙 ± <input type="number" data-tol="gap" value="${S.tol.gap ?? ''}" placeholder="${fmt(defaultGapTolerance(S.heat.gap), 2)}" min="0" max="5" step="any" aria-label="間隙公差"> mm</label></div>`;
+  if (!t || t.stale) return `<div class="tol-box">${head}${t?.stale ? '<p class="note">設定已變更，請重新檢查。</p>' : ''}</div>`;
+  const v = t.verdict;
+  const cell = (ok, text) => `<td class="${ok ? '' : 'bad'}">${text}</td>`;
+  const rows = t.rows
+    .map(
+      (r) =>
+        `<tr><th scope="row">${r.label}<small>${fmt(r.dose * 100, 0)}%・${fmt(r.gap, r.gap < 0.1 ? 3 : 2)} mm</small></th>${cell(r.short <= 1e-9, fmt(r.coveredPercent, 1))}${cell(r.over <= 1e-9, fmt(r.squeezeOutMm, 1))}<td class="${r.voidCount ? 'warn' : ''}">${r.voidCount}</td><td class="${r.stalled ? 'warn' : ''}" ${r.stalled ? `data-tip="${r.stalled === 'yield' ? '壓不到墊片：降伏應力撐住了壓合力' : '保壓時間內還沒壓到墊片'}" tabindex="0"` : ''}>${fmt(r.bondLineMm, r.bondLineMm < 0.1 ? 3 : 2)}</td><td>${fmt(r.rise, 2)}</td></tr>`,
+    )
+    .join('');
+  const nominal = t.rows[0];
+  const verdict = v.pass
+    ? `<span class="ok-badge">公差內都達標</span>`
+    : `<span class="no-badge">${[v.coverage < g.coverage ? `覆蓋最低 ${fmt(v.coverage, 1)}%` : '', v.overflow > g.overflow ? `溢膠最多 ${fmt(v.overflow, 1)} mm` : ''].filter(Boolean).join('・')}</span>`;
+  return `<div class="tol-box">${head}<table class="tol"><thead><tr><th></th><th>覆蓋<small>%</small></th><th>溢出<small>mm</small></th><th>夾氣<small>處</small></th><th>膠層<small>mm</small></th><th>溫升<small>°C</small></th></tr></thead><tbody>${rows}</tbody></table><p class="tol-verdict">${verdict}<span>溫升最高 ${fmt(v.rise, 2)} °C（標稱 ${fmt(nominal.rise, 2)} °C，+${fmt((v.rise / nominal.rise - 1) * 100, 0)}%）</span></p></div>`;
+}
+async function runTolerance() {
+  if (S.busy) return;
+  if (typeof Worker === 'undefined') return toast('此瀏覽器不支援背景計算，無法執行公差檢查', 'error');
+  const heat = { ...S.heat };
+  const run = S.run;
+  const settings = { dose: S.tol.dose, gap: tolGap() };
+  const cases = toleranceCases(heat.gap, settings);
+  const pool = createPool(Math.min(3, POOL_SIZE));
+  let done = 0;
+  beginBusy('公差檢查：三種膠量與間隙各壓一次…', { cancel: () => pool.close() });
+  try {
+    const results = await Promise.all(
+      cases.map((c) =>
+        pool.run('compress', { run: scaledRun(run, c.dose), heat: { ...heat, gap: c.gap }, frames: 0 }).then((r) => {
+          busyProgress(++done / cases.length, `公差檢查 ${done} / ${cases.length}`);
+          return r;
+        }),
+      ),
+    );
+    if (run !== S.run || JSON.stringify(heat) !== JSON.stringify(S.heat)) return toast('計算期間設定已變更，請重新檢查');
+    const rows = cases.map((c, i) => toleranceRow(c, results[i], S.goals));
+    S.tolCheck = { rows, verdict: toleranceVerdict(rows), settings, goals: { ...S.goals }, stale: false };
+    renderResults();
+    const v = S.tolCheck.verdict;
+    toast(v.pass ? `公差內都達標：覆蓋最低 ${fmt(v.coverage, 1)}%、溢膠最多 ${fmt(v.overflow, 1)} mm` : `公差內有未達標的情況：覆蓋最低 ${fmt(v.coverage, 1)}%、溢膠最多 ${fmt(v.overflow, 1)} mm`, v.pass ? 'ok' : 'error');
+  } catch (e) {
+    if (e.message !== CANCELLED) toast(`公差檢查失敗：${e.message}`, 'error');
+    else toast('已取消公差檢查');
+  } finally {
+    pool.close();
+    endBusy();
+  }
+}
 
 // ───────────────────────── live state ─────────────────────────
 function renderState() {
@@ -1124,12 +1427,52 @@ $('#scrubber').oninput = (e) => {
   S.time = Math.min(S.run.duration, +e.target.value / 1000);
   renderState();
 };
+// Keyboard: playback, time steps, tabs and the main actions. Never while typing in a field or inside a dialog.
+const SHORTCUTS = [
+  ['空白鍵', '播放／暫停'],
+  ['← / →', '後退／前進 0.05 s（加 Shift：0.5 s）'],
+  ['Home / End', '回到起點／跳到結束（3D 畫面取得焦點時 Home 為重設視角）'],
+  ['1 – 5', '切換分頁：熱源工件、膠材設備、路徑、收尾、壓合'],
+  ['P', '模擬壓合'],
+  ['T', '公差檢查（已壓合時）'],
+  ['O', '開啟自動最佳化'],
+  ['S', '開啟情境比較'],
+  ['Ctrl + Z', '復原上一個設定變更'],
+  ['Ctrl + Y 或 Ctrl + Shift + Z', '重做'],
+  ['?', '使用說明'],
+  ['Esc', '關閉視窗'],
+];
+$('#keys-body').innerHTML = `<table class="keys"><tbody>${SHORTCUTS.map(([k, t]) => `<tr><th><kbd>${k}</kbd></th><td>${t}</td></tr>`).join('')}</tbody></table><p class="muted">在輸入欄位或視窗內打字時快速鍵不作用。</p>`;
+$('#show-keys').onclick = () => $('#keys-dialog').showModal();
+function seekBy(dt) {
+  exitPress();
+  S.playing = false;
+  S.time = Math.max(0, Math.min(S.run.duration, S.time + dt));
+  renderState();
+}
 document.addEventListener('keydown', (e) => {
-  if (e.target.closest('input, select, textarea, dialog')) return;
-  if (e.code === 'Space') {
-    e.preventDefault();
-    $('#play').click();
+  if (e.target.closest('input, select, textarea, dialog') || e.altKey) return;
+  const key = e.key.toLowerCase();
+  if (e.ctrlKey || e.metaKey) {
+    if (key === 'z' && !e.shiftKey) stepHistory(-1);
+    else if (key === 'y' || (key === 'z' && e.shiftKey)) stepHistory(1);
+    else return;
+    return e.preventDefault();
   }
+  const onCanvas = e.target.tagName === 'CANVAS';
+  if (e.code === 'Space') $('#play').click();
+  else if (e.key === 'ArrowLeft') seekBy(e.shiftKey ? -0.5 : -0.05);
+  else if (e.key === 'ArrowRight') seekBy(e.shiftKey ? 0.5 : 0.05);
+  else if (e.key === 'Home' && !onCanvas) seekBy(-Infinity);
+  else if (e.key === 'End') seekBy(Infinity);
+  else if (/^[1-5]$/.test(e.key)) $$('[data-tab]')[Number(e.key) - 1]?.click();
+  else if (key === 'p') runPress();
+  else if (key === 't' && S.press && !S.press.stale) runTolerance();
+  else if (key === 'o') openOptimize();
+  else if (key === 's') $('#show-scenarios').click();
+  else if (e.key === '?') $('#help').click();
+  else return;
+  e.preventDefault();
 });
 document.addEventListener('visibilitychange', () => {
   if (document.hidden && S.playing) {
@@ -1196,10 +1539,12 @@ $('#theme').innerHTML = theme === 'dark' ? ICONS.sun : ICONS.moon;
 
 // ───────────────────────── squeeze ─────────────────────────
 function markPressStale() {
+  const check = S.tolCheck && !S.tolCheck.stale;
+  if (check) S.tolCheck.stale = true;
   if (S.press && !S.press.stale) {
     S.press.stale = true;
     renderResults();
-  }
+  } else if (check) renderResults();
 }
 function exitPress(render = true) {
   cancelAnimationFrame(S.pressAnim);
@@ -1217,13 +1562,12 @@ function exitPress(render = true) {
 
 async function runPress() {
   if (S.busy) return;
-  S.busy = true;
-  document.body.classList.add('busy');
+  beginBusy('模擬壓合…', { cancel: () => resetWorker(new Error(CANCELLED)) });
   $$('#press-cta').forEach((b) => (b.querySelector('span').textContent = '計算中…'));
   const heat = { ...S.heat };
   const run = S.run;
   try {
-    const result = await compute('compress', { run: slimRun(run), heat, frames: 24 });
+    const result = await compute('compress', { run: slimRun(run), heat, frames: 24 }, (p, label) => busyProgress(p, `模擬壓合…${label ? `　${label}` : ''}`));
     // Discard a result computed for a run or heat settings that changed while it was running.
     if (run !== S.run || JSON.stringify(heat) !== JSON.stringify(S.heat)) {
       toast('計算期間設定已變更，請重新模擬壓合');
@@ -1245,10 +1589,10 @@ async function runPress() {
     cameraLabels();
     animatePress(true);
   } catch (e) {
-    toast(`壓合估算失敗：${e.message}`, 'error');
+    if (e.message === CANCELLED) toast('已取消壓合計算');
+    else toast(`壓合估算失敗：${e.message}`, 'error');
   } finally {
-    S.busy = false;
-    document.body.classList.remove('busy');
+    endBusy();
     $$('#press-cta').forEach((b) => b.querySelector('span') && (b.querySelector('span').textContent = '模擬壓合'));
   }
 }
@@ -1366,26 +1710,20 @@ async function saveScenario() {
   if (S.press && !S.press.stale) metrics = metricsOf(run, S.press.result);
   else {
     if (S.busy) return;
-    S.busy = true;
-    document.body.classList.add('busy');
-    toast('計算壓合後存成情境…');
+    beginBusy('計算壓合後存成情境…', { cancel: () => resetWorker(new Error(CANCELLED)) });
     try {
-      metrics = metricsOf(run, await compute('compress', { run: slimRun(run), heat, frames: 0 }));
+      metrics = metricsOf(run, await compute('compress', { run: slimRun(run), heat, frames: 0 }, (p) => busyProgress(p)));
     } catch (e) {
-      return toast(`壓合估算失敗：${e.message}`, 'error');
+      return e.message === CANCELLED ? toast('已取消') : toast(`壓合估算失敗：${e.message}`, 'error');
     } finally {
-      S.busy = false;
-      document.body.classList.remove('busy');
+      endBusy();
     }
     if (run !== S.run || JSON.stringify(heat) !== JSON.stringify(S.heat)) return toast('計算期間設定已變更，請再存一次');
   }
   addScenario({ config: structuredClone(S.config), heat, pattern: { ...S.pattern }, metrics, source: '手動設定' });
 }
 function loadScenario(x) {
-  S.heat = { ...DEFAULT_HEAT(), ...x.heat };
-  S.pattern = { ...DEFAULT_PATTERN(), ...x.pattern };
-  // Settings added after the scenario was saved take their defaults.
-  if (tryRecompute({ ...fromRegistry(registry, x.config.material, x.config.architecture), ...structuredClone(x.config) })) {
+  if (applySettings(x)) {
     $('#scenarios-dialog').close();
     toast(`已載入「${x.name}」`, 'ok');
   }
@@ -2138,8 +2476,10 @@ function exportRecord() {
     additionalDefaults: [ENDING_DEFAULT, ...MOTION_DEFAULTS, ...CORNER_DEFAULTS],
     sources: registry.sources,
     warnings: S.run.warnings,
+    issues: S.run.issues,
     summary: S.run.summary,
     motion: S.run.motion,
+    toleranceCheck: S.tolCheck && !S.tolCheck.stale ? { settings: S.tolCheck.settings, goals: S.tolCheck.goals, rows: S.tolCheck.rows, verdict: S.tolCheck.verdict } : null,
     compression: S.press && !S.press.stale ? { settings: S.press.settings, summary: S.press.result.summary, voids: S.press.result.voids.slice(0, 50), warnings: S.press.result.warnings, baseline: S.pressBaseline } : null,
     baseline: S.baseline ? { config: S.baseline.config, summary: S.baseline.summary } : null,
     view: { mode: scene.mode, projection: scene.projection, isoCorner: scene.isoCorner, freeOrbit: scene.freeOrbit, time: S.frame.t, cameraPosition: scene.camera.position.toArray(), cameraTarget: scene.controls.target.toArray() },
@@ -2180,6 +2520,33 @@ function exportCsv() {
     ...S.run.frames.map((f, i) => [LABEL, VERSION, S.config.profile, ...cols.map(([k]) => f[k]), i === 0 ? meta : ''].map(quote).join(',')),
   ];
   download('﻿' + lines.join('\r\n'), 'TIM_未校準_試驗結果.csv', 'text/csv;charset=utf-8');
+}
+// One self-contained HTML page (print it to PDF): settings, results, press, tolerance check and the 3D view.
+function exportReport() {
+  const pressed = S.press && !S.press.stale ? S.press : null;
+  const html = buildReport({
+    version: VERSION,
+    label: LABEL,
+    config: S.config,
+    heat: S.heat,
+    pattern: S.pattern,
+    run: S.run,
+    material: MATERIALS[S.config.material],
+    required: requiredMl(),
+    bead: beadMatch(S.run),
+    stack: stackedBead(S.run),
+    press: pressed ? pressed.result : null,
+    tolerance: S.tolCheck && !S.tolCheck.stale ? S.tolCheck : null,
+    goals: S.goals,
+    rheology: squeezeRheology(S.config, S.heat),
+    image: scene.screenshot(),
+    viewLabel: $('#view-label').textContent,
+    describe: describe(S.config, S.heat),
+    patternName: S.config.mode === 'pattern' ? PATTERN_NAMES[S.pattern.pattern] : S.config.mode === 'line' ? '直線' : '單點',
+    airModeName: AIR_MODE_NAMES[S.heat.airMode],
+  });
+  download(html, `TIM_未校準_試驗報告_${new Date().toISOString().slice(0, 10)}.html`, 'text/html;charset=utf-8');
+  toast('已匯出報告（HTML）：用瀏覽器開啟後可列印成 PDF', 'ok');
 }
 async function exportImage() {
   const im = new Image();
@@ -2225,11 +2592,17 @@ $('#help-body').innerHTML = `
   <li><b>① 熱源工件</b>：輸入元件接觸面的形狀、尺寸、位置、組裝間隙（墊片高度）與功耗；它們決定膠量需求（熱源面積 × 間隙）與「依熱源」路徑。點膠平板的尺寸與 STL／GLB 匯入收在同頁的「工件」群組。</li>
   <li><b>② 膠材設備</b>：選膠材（Tputty 910／Tgrease 2500）與架構（R75 氣壓／P300 PCP），設定壓力或轉速、針嘴內徑與響應參數。針頭以 G 數（規格號數，整數，數字越大越細）稱呼：可在「針頭規格」直接選，會自動填入內徑；也可自行輸入內徑，旁邊的 ? 有 G 數對照表。「用實測出膠量校正」：原地連續出膠一段時間後秤重，輸入重量與時間，模型的出膠量就會對齊實測；再填一組不同壓力的量測，會一併擬合膏體的剪切變稀程度。</li>
   <li><b>剪切變稀（v2.0）</b>：導熱膏、putty 這類高填充膏體越快剪切越稀。針嘴內剪切率高，實際黏度遠低於資料表的 Brookfield 黏度，所以出膠量隨壓力約以 2.5 次方、隨針頭內徑約以 5.5 次方增加（不是牛頓流體的 1 次方與 4 次方）。壓合用同一條流變：一開始壓得快，越接近墊片膠流越慢、黏度越高，最後一段最花時間。</li>
-  <li><b>③ 路徑</b>：依熱源選中心線／N／蛇形／螺旋／米字形／外框，或直線、單點（米字形：從中心往四角與四邊各畫一條再回中心，空氣較易往外排）；設定速度、加速度、起點出膠等待（機台的 Feed On Delay）與針嘴離面高度。針嘴低於膠的自然高度時，膠被壓成針距高度並變寬（膠量不變）；過低會埋針。</li>
+  <li><b>③ 路徑</b>：依熱源選中心線／N／蛇形／螺旋／米字形／外框，或直線、單點（米字形：從中心往四角與四邊各畫一條再回中心，空氣較易往外排）；設定速度、加速度、起點出膠等待（機台的 Feed On Delay）與針嘴離面高度。圓弧路徑（圓螺旋、圓外框）的速度受向心加速度限制（v² ÷ 半徑 ≤ 加速度，v3.0）。針嘴低於膠的自然高度時，膠被壓成針距高度並變寬（膠量不變）；過低會埋針。</li>
   <li><b>④ 收尾</b>：提前關膠、停留、抬針與回退、PCP 反轉。</li>
   <li><b>⑤ 壓合</b>：透明板的壓合力、下降速度、夾氣處理（可壓縮／剛性牆／全排出）、稠度 K 與剪切變稀指數 n（預設與出膠相同）、降伏應力、靜置時間與估算網格。</li>
   <li><b>膠量列（左上，固定顯示）</b>：顯示需求、目前沉積與比值。輸入目標（× 需求、mL 或 g）後按「套用」：線與圖樣預設「調壓力（P300 調轉速），到極限才改速度」，也可選只調速度；單點預設調開膠時間，也可選調壓力。</li>
-  <li><b>播放</b>：空白鍵播放／暫停；拖曳時間軸或點曲線跳到該時刻；時間軸上的標記可跳到關膠、到位、抬針、退離。</li>
+  <li><b>播放</b>：空白鍵播放／暫停，← → 前後移動 0.05 s；拖曳時間軸或點曲線跳到該時刻，游標在曲線上移動會顯示當時的數值；時間軸上的標記可跳到關膠、到位、抬針、退離。完整快速鍵見右上的鍵盤圖示。</li>
+  <li><b>復原與自動保存（v3.0）</b>：每次變更設定都會記一步，右上的箭頭或 Ctrl+Z／Ctrl+Y 可復原、重做。設定會自動存在這台電腦的瀏覽器，下次開啟接著用；結果卡最下方可匯出「配置 JSON」，也能用「匯入配置」讀回。</li>
+  <li><b>膠溫（v3.0）</b>：膠材設備頁的「膠溫」。膏體越熱越稀；氣壓式的出膠量對溫度很敏感（Tgrease 約每 °C 10%、Tputty 約 6%，活化能為 AI 初估），P300 容積式不受影響。壓合也用同一個溫度。</li>
+  <li><b>公差檢查（v3.0）</b>：壓合後在結果卡輸入膠量公差（±%）與間隙公差（±mm），會再壓兩次：「膠少・間隙大」看覆蓋與熱阻最差的情況，「膠多・間隙小」看溢膠最多的情況，並和目標比較。</li>
+  <li><b>用透明板校正壓合（v3.0）</b>：壓合頁的「用透明板實測校正壓合」。點一顆膠、秤重、用已知的力壓一段時間、量攤開的直徑，就能反推壓合用的稠度 K 或降伏應力，壓合時間與「壓不壓得到墊片」才有依據。</li>
+  <li><b>需要注意／模型界線（v3.0）</b>：結果卡把需要調整設定的項目（埋針、膠條被拉細、壓不到墊片、熱源內夾氣…）列在「需要注意」，模型沒算到的部分收在「模型界線與說明」。</li>
+  <li><b>報告（v3.0）</b>：結果卡最下方「報告」匯出一頁 HTML（設定、結果、壓合、公差檢查與 3D 畫面），用瀏覽器開啟後可列印成 PDF。</li>
   <li><b>模擬壓合</b>：結果卡的「模擬壓合」顯示透明板以定力壓到墊片、膠膜擴散、氣泡壓縮／遷移／排出與靜置後回脹；可切換「前緣時序」著色。</li>
   <li><b>上方工具列</b>：「自動最佳化」搜尋膠量 ±容差（預設 ±10%）內都達標、膠量最少的設定；膠量相差 3% 以內時，最差溢膠離上限不到一個網格的標「邊緣達標」、排在後面，其餘選膠條較好、週期較短、壓力有調整餘裕的。「情境比較」一次比較所有存下的情境。</li>
   <li><b>搜尋變數</b>：自動最佳化的「搜尋變數」表裡，每個變數都可選「固定（用目前設定）」或「搜尋」——圖樣種類（蛇形、螺旋、米字形、單點、中心線，可勾選）、路徑間距、邊界內縮、螺旋起點（外向內／中心向外）、移動速度；範圍留空為自動，也可自己輸入。膠量一定搜尋。表下方顯示總組合數；每種圖樣的最佳組都會找膠量窗口並複核，方便比較。</li>
@@ -2254,7 +2627,28 @@ $$('dialog').forEach((d) => d.addEventListener('click', (e) => e.target === d &&
 
 // ───────────────────────── start ─────────────────────────
 S.config = initialConfig();
-applyRun(simulate(S.config));
+// Continue from the settings of the last visit when they still simulate; else the research defaults.
+const saved = readJson('tim-session');
+let restored = false;
+if (saved?.config) {
+  try {
+    restored = applySettings(saved, { silent: true });
+    if (restored && RENDERERS[saved.tab]) {
+      S.tab = saved.tab;
+      renderTab();
+    }
+  } catch {
+    restored = false;
+  }
+}
+if (!restored) {
+  S.heat = DEFAULT_HEAT();
+  S.pattern = DEFAULT_PATTERN();
+  S.config = initialConfig();
+  applyRun(simulate(S.config));
+  remember();
+}
+if (restored) toast('已接續上次的設定（左下「恢復此情境預設」可重來）');
 requestAnimationFrame(loop);
 
 // Development-only inspection surface for numerical/rendering acceptance checks.

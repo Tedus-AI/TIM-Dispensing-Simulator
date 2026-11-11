@@ -169,7 +169,8 @@ function solvePressure(m, size, nb, w, diag, rhs, x, absTol2) {
  * Squeeze a rasterised deposit. `raster` = { cols, rows, cellSize, volume (mm³ per cell) }.
  * `settings` = { gap, airMode, force (N), pressSpeed (mm/s cap), viscosity (Pa·s), yieldStress (Pa),
  *   settleTime (s), holdTime (s, optional press-time limit: the plate stops where it is then), frames,
- *   sourceFraction (per cell, for frame coverage), trace (debug callback after every air classification) }.
+ *   sourceFraction (per cell, for frame coverage), trace (debug callback after every air classification),
+ *   progress (callback(fraction 0–1, plate height) after every accepted press step) }.
  */
 export function squeezeRaster(raster, settings) {
   const { cols, rows, cellSize } = raster;
@@ -382,75 +383,133 @@ export function squeezeRaster(raster, settings) {
   }
 
   // Shortest film path (mm) from each pocket to an open front, for the yield-stress hold.
+  // A pocket enclosed by another pocket (film ring inside an air ring, e.g. an outside-in spiral) has no path
+  // through film alone: its wall holds against the outer pocket, which holds against the front. Film cells cost
+  // one step and cells of other pockets none (0–1 breadth-first search), so the hold adds up along the way.
+  // (v2.2 searched film only and gave such a pocket an infinite hold, which made the press time infinite.)
   const dist = new Float64Array(n);
+  const ring = new Int32Array(n);
   function holdPressures(h) {
     if (!(tauY > 0)) {
       for (const b of pockets.values()) b.hold = 0;
       return;
     }
     dist.fill(Infinity);
-    let head = 0;
-    let tail = 0;
+    let count = 0;
     for (let i = 0; i < n; i++)
       if (state[i] === OPEN) {
         dist[i] = 0;
-        stack[tail++] = i;
+        stack[count++] = i;
       }
-    while (head < tail) {
-      const i = stack[head++];
-      for (const j of neighbours(i, nbBuf))
-        if (j >= 0 && state[j] === FILLED && dist[j] === Infinity) {
-          dist[j] = dist[i] + 1;
-          stack[tail++] = j;
+    // `stack` holds the cells at the current distance, `ring` those one film step further.
+    let level = 0;
+    while (count) {
+      let next = 0;
+      for (let q = 0; q < count; q++) {
+        const i = stack[q];
+        if (dist[i] !== level) continue; // reached again at a shorter distance
+        for (const j of neighbours(i, nbBuf)) {
+          if (j < 0) continue;
+          const sj = state[j];
+          if (sj === POCKET && dist[j] > level) {
+            dist[j] = level;
+            stack[count++] = j; // same level: `count` grows while this loop runs
+          } else if (sj === FILLED && dist[j] > level + 1) {
+            dist[j] = level + 1;
+            ring[next++] = j;
+          }
         }
+      }
+      stack.set(ring.subarray(0, next));
+      count = next;
+      level++;
     }
     const best = new Map();
     for (let i = 0; i < n; i++) {
       if (state[i] !== POCKET) continue;
       for (const j of neighbours(i, nbBuf)) if (j >= 0 && state[j] === FILLED) best.set(pocketOf[i], Math.min(best.get(pocketOf[i]) ?? Infinity, dist[j]));
     }
-    // Bingham slit: flow needs |∇p| > 2τy/h, so a pocket holds Δp = 2τy·L/h against the open front.
-    for (const b of pockets.values()) b.hold = ((2 * tauY) / h) * ((best.get(b.id) ?? Infinity) + 0.5) * cellSize;
+    // Bingham slit: flow needs |∇p| > 2τy/h, so a pocket holds Δp = 2τy·L/h against the open front. A pocket
+    // with no film path at all (it touches no film, or the film around it is sealed) holds nothing.
+    for (const b of pockets.values()) {
+      const cells = best.get(b.id);
+      b.hold = Number.isFinite(cells) ? ((2 * tauY) / h) * (cells + 0.5) * cellSize : 0;
+    }
   }
 
   // Plastic-limit load of the film (N) at plate height h (v2.2): in a Bingham slit the paste only flows where
   // |∇p| > 2τy/h, so holding the plate at h takes p = 2τy/h × distance to the nearest open front everywhere in
-  // the film. Distances follow the film (and the pockets it encloses) with a 3–4 chamfer metric (within 6 % of
-  // Euclidean), so the load of a disc of radius R comes out close to (2π/3)·τy·R³/h.
-  const chamfer = new Int32Array(n);
-  const bucket = [];
+  // the film. The straight line from a film cell to its nearest front lies in the film, so that distance is the
+  // Euclidean one: an exact two-pass distance transform (Felzenszwalb & Huttenlocher) from every open cell.
+  // The front itself lies inside that open cell, as far in as the cell is filled (the same ghost-front position
+  // the flow solver uses), so the distance is: centre to centre − ½ cell + the open cell's fill. The load of a
+  // disc of radius R then comes out at (2π/3)·τy·R³/h. (v2.2 used a 3–4 chamfer metric and put the front at the
+  // open cell's near edge, which let the plate stop about 4 % too thin.)
+  const BIG = 1e18;
+  const span = Math.max(cols, rows);
+  const edt = new Float64Array(n); // squared distance to the nearest open cell, in cells
+  const lineIn = new Float64Array(span);
+  const lineOut = new Float64Array(span);
+  const hullAt = new Int32Array(span);
+  const hullFrom = new Float64Array(span + 1);
+  const lineArg = new Int32Array(span); // which sample each result came from
+  const nearestX = new Int32Array(n); // column of the nearest open cell within the row (first pass)
+  // Lower envelope of the parabolas f[q] + (x − q)²: the 1-D squared-distance transform.
+  function transform(len) {
+    let k = 0;
+    hullAt[0] = 0;
+    hullFrom[0] = -Infinity;
+    hullFrom[1] = Infinity;
+    for (let q = 1; q < len; q++) {
+      let s;
+      for (;;) {
+        const p = hullAt[k];
+        s = (lineIn[q] + q * q - (lineIn[p] + p * p)) / (2 * q - 2 * p);
+        if (s <= hullFrom[k] && k > 0) k--;
+        else break;
+      }
+      k++;
+      hullAt[k] = q;
+      hullFrom[k] = s;
+      hullFrom[k + 1] = Infinity;
+    }
+    k = 0;
+    for (let q = 0; q < len; q++) {
+      while (hullFrom[k + 1] < q) k++;
+      const p = hullAt[k];
+      lineOut[q] = (q - p) * (q - p) + lineIn[p];
+      lineArg[q] = p;
+    }
+  }
   function yieldLoad(h) {
     if (!(tauY > 0)) return 0;
-    chamfer.fill(0x3fffffff);
-    bucket.length = 0;
-    const push = (i, d) => {
-      chamfer[i] = d;
-      (bucket[d] || (bucket[d] = [])).push(i);
-    };
-    for (let i = 0; i < n; i++) if (state[i] === OPEN) push(i, 0);
-    for (let d = 0; d < bucket.length; d++) {
-      const list = bucket[d];
-      if (!list) continue;
-      for (let q = 0; q < list.length; q++) {
-        const i = list[q];
-        if (chamfer[i] !== d) continue;
-        const x = i % cols;
-        for (let dy = -1; dy <= 1; dy++)
-          for (let dx = -1; dx <= 1; dx++) {
-            if (!dx && !dy) continue;
-            const xx = x + dx;
-            const j = i + dy * cols + dx;
-            if (xx < 0 || xx >= cols || j < 0 || j >= n) continue;
-            const sj = state[j];
-            if (sj !== FILLED && sj !== POCKET) continue;
-            const nd = d + (dx && dy ? 4 : 3);
-            if (nd < chamfer[j]) push(j, nd);
-          }
+    let open = false;
+    for (let y = 0; y < rows; y++) {
+      const row = y * cols;
+      for (let x = 0; x < cols; x++) {
+        const o = state[row + x] === OPEN;
+        lineIn[x] = o ? 0 : BIG;
+        open = open || o;
+      }
+      transform(cols);
+      for (let x = 0; x < cols; x++) {
+        edt[row + x] = lineOut[x];
+        nearestX[row + x] = lineArg[x];
       }
     }
+    if (!open) return 0;
+    const cap = h * area;
     let sum = 0;
-    for (let i = 0; i < n; i++) if (state[i] === FILLED && chamfer[i] < 0x3fffffff) sum += chamfer[i] - 1.5; // interface sits ½ cell out
-    return ((2 * tauY) / h) * Math.max(0, sum / 3) * cellSize * area * 1e-6;
+    for (let x = 0; x < cols; x++) {
+      for (let y = 0; y < rows; y++) lineIn[y] = edt[y * cols + x];
+      transform(rows);
+      for (let y = 0; y < rows; y++) {
+        if (state[y * cols + x] !== FILLED) continue;
+        const front = lineArg[y] * cols + nearestX[lineArg[y] * cols + x]; // the nearest open cell
+        sum += Math.max(0, Math.sqrt(lineOut[y]) - 0.5 + Math.min(1, Math.max(0, volume[front] / cap)));
+      }
+    }
+    return ((2 * tauY) / h) * sum * cellSize * area * 1e-6;
   }
 
   // ── linear system for one step ──
@@ -631,7 +690,7 @@ export function squeezeRaster(raster, settings) {
     // A pocket's gas carries the whole film pressure at its wall: the viscous part solved here plus, with a yield
     // stress, the plastic part 2τy/h × its distance to the open front (v2.2: also while pressing; after seating it
     // is the hold that keeps the pocket from re-expanding).
-    const hold = act.map((b) => (phase === 'relax' || tauY > 0 ? b.hold || 0 : 0));
+    const hold = act.map((b) => (Number.isFinite(b.hold) ? b.hold : 0));
     const fgas = (b, q) => V0[b] - act[b].gas / Math.max(ATM + q + hold[b], 0.02 * ATM);
     const qi = act.map((b, k) => {
       const now = gauge(b) - hold[k];
@@ -846,7 +905,7 @@ export function squeezeRaster(raster, settings) {
   let stalled = null; // 'yield': the force cannot push the paste further; 'time': the hold time ran out
   let peakForce = 0;
   while (hCur > gap * (1 + 1e-12)) {
-    if (time >= holdLimit * (1 - 1e-9)) {
+    if (Number.isFinite(holdLimit) && time >= holdLimit * (1 - 1e-9)) {
       stalled = 'time';
       break;
     }
@@ -918,7 +977,7 @@ export function squeezeRaster(raster, settings) {
         // duration is not: pressures scale as κ^-n, so the film carries exactly the force at κ·ratio^(1/n)
         // (v2.2; before, the step time could be off by (1.35)^(1/n), about 2× for n = 0.4).
         const speedHeld = kappa <= kappaSpeed * (1 + 1e-9) && ratio < 1;
-        kappaTime = ratio > 0 && !speedHeld ? Math.max(kappaSpeed, kappa * ratio ** (1 / nIndex)) : kappa;
+        kappaTime = ratio > 0 && Number.isFinite(ratio) && !speedHeld ? Math.max(kappaSpeed, kappa * ratio ** (1 / nIndex)) : kappa;
         if (speedHeld) applied = Math.min(applied, Fv);
         else applied = Fv;
       }
@@ -931,6 +990,8 @@ export function squeezeRaster(raster, settings) {
       continue;
     }
     const dt = dtOf(h, kappaTime || kappa);
+    // A step without a finite duration would end the press at once as if a hold time had run out.
+    if (!Number.isFinite(dt) || dt < 0) throw new Error('壓合計算的時間步長不是有限值；請回報這組設定');
     // Do not run past the hold time by more than 2 %: retry a shorter step that ends about there.
     if (!coarse && time + dt > holdLimit * 1.02 && dln > 2e-4) {
       restoreAir(saved);
@@ -958,6 +1019,11 @@ export function squeezeRaster(raster, settings) {
     while (target < targets.length && hCur <= targets[target] * (1 + 1e-9)) {
       snapshot(hCur, cap);
       target++;
+    }
+    // Progress by plate travel in ln h (the steps are about even in it), or by the hold time when that ends first.
+    if (settings.progress) {
+      const byGap = h0 > gap ? Math.log(h0 / hCur) / Math.log(h0 / gap) : 1;
+      settings.progress(Math.min(1, Math.max(byGap, Number.isFinite(holdLimit) ? time / holdLimit : 0)), hCur);
     }
   }
   // Final film thickness: the spacer gap, or where the yield stress or the hold time stopped the plate.
@@ -1214,7 +1280,7 @@ export function estimateCompression(run, options) {
   const force = o.pressKgf * KGF;
   const sq = squeezeRaster(
     { cols, rows, cellSize, volume: deposit },
-    { gap: o.gap, airMode: o.airMode, force, pressSpeed: o.pressSpeed, viscosity, flowIndex, yieldStress, settleTime: o.settleTime, holdTime: o.holdTime, frames: o.frames, sourceFraction, trace: o.trace },
+    { gap: o.gap, airMode: o.airMode, force, pressSpeed: o.pressSpeed, viscosity, flowIndex, yieldStress, settleTime: o.settleTime, holdTime: o.holdTime, frames: o.frames, sourceFraction, trace: o.trace, progress: o.progress },
   );
   const volume = sq.volume;
   const cap = sq.cap;
@@ -1370,10 +1436,16 @@ export function estimateCompression(run, options) {
     rigid: '被膠包圍的乾區凍結為不可變形的夾氣（v1.0 剛性牆）',
     vent: '被膠包圍的空氣假設全部排出（覆蓋率上限）',
   };
+  // `issues`: the warnings that call for a change of settings; the rest describe what the model leaves out.
+  const issues = [];
   const warnings = [
     `覆蓋與空洞來自平行板 Hele-Shaw 擠壓近似（冪律膏體 K ${Math.round(viscosity)} Pa·sⁿ、n ${+flowIndex.toFixed(2)}，與出膠用同一組流變；定力 ${o.pressKgf} kgf 壓到墊片）；${AIR_TEXT[o.airMode]}。未含壁滑、觸變、潤濕與指狀穿透，不能判定實際接觸或可靠度。`,
     '熱阻為一維估算：(間隙 ÷ 導熱率 + TDS 推算接觸熱阻) ÷ 濕潤面積；不含擴散熱阻與空洞周邊的橫向傳熱，只供方案相對比較。',
   ];
+  const flag = (text) => {
+    warnings.push(text);
+    issues.push(text);
+  };
   if (o.airMode === 'compressible' && sq.press.sealed > 0)
     warnings.push(
       `壓到墊片後膠壓消退，被壓縮的氣泡會回脹（降伏應力 ${yieldStress} Pa 只擋住一小部分）；靜置 ${o.settleTime} s ${sq.press.settled ? '內已大致穩定' : '時仍在回脹'}。透明板實測建議在壓好後 0 s、30 s、2 min、10 min 各拍一張比對。`,
@@ -1381,17 +1453,17 @@ export function estimateCompression(run, options) {
   if (sq.press.coarse)
     warnings.push('壓合步數超過上限，後段改以粗步長完成；覆蓋與夾氣仍有效，但壓合時間與壓合中的氣壓精度下降。');
   if (sq.press.stalled === 'yield')
-    warnings.push(
+    flag(
       `以 ${o.pressKgf} kgf 壓不到墊片：膠層停在約 ${bondLine.toFixed(3)} mm（目標 ${o.gap} mm）。降伏應力 ${yieldStress} Pa 時，膠層越薄、攤得越大，要推動它所需的力越大（平板塑性極限 F ≈ 2τy/h × ∫ 到膠緣距離 dA），到這裡已等於壓合力。熱阻以這個膠層厚度計算；要壓到墊片需要更大的力。降伏應力為 AI 初估，請以透明板實測停住的厚度回推。`,
     );
   else if (sq.press.stalled === 'time')
-    warnings.push(
+    flag(
       `保壓 ${o.holdTime} s 時膠層還在 ${bondLine.toFixed(3)} mm（目標 ${o.gap} mm），壓合停在這裡：覆蓋、夾氣與熱阻都以這個厚度計算。實際持續施力時膠層會繼續變薄。`,
     );
   if (!sq.press.stalled && sq.press.time > 120) {
     const t = sq.press.time;
     const span = t < 600 ? `${t.toFixed(0)} s` : t < 7200 ? `${(t / 60).toFixed(0)} 分鐘` : `${(t / 3600).toFixed(1)} 小時`;
-    warnings.push(
+    flag(
       `以 ${o.pressKgf} kgf 壓到墊片約需 ${span}：越接近墊片膠層越薄、膠流越慢，剪切變稀的膏體在低剪切率下黏度很高，最後一段最花時間。實際組裝時間內膠層可能停在比墊片厚的地方（熱阻變高）；要更薄需要更大的力或更長的保壓。壓合中的氣泡壓縮與最後的覆蓋仍以壓到墊片計算。`,
     );
   }
@@ -1401,12 +1473,12 @@ export function estimateCompression(run, options) {
   if (cellSize > o.cellSize * 1.001)
     warnings.push(`為控制計算量，網格由 ${o.cellSize.toFixed(2)} mm 調整為 ${cellSize.toFixed(2)} mm；細節精度下降。`);
   if (Math.abs(sourceSampleArea - sourceArea) > sourceArea * 0.05)
-    warnings.push('熱源相對網格過小，熱源面積的網格取樣誤差超過 5%；請縮小工件範圍或使用更細網格，覆蓋數值不宜判讀。');
+    flag('熱源相對網格過小，熱源面積的網格取樣誤差超過 5%；請縮小工件範圍或使用更細網格，覆蓋數值不宜判讀。');
   if (Math.abs(o.offsetX) + o.width / 2 > c.width / 2 || Math.abs(o.offsetY) + targetDepth / 2 > c.depth / 2)
-    warnings.push('熱源範圍超出工件矩形參考邊界；請核對尺寸和中心偏移，匯入工件僅以包圍框近似。');
-  if (offWorkpiece > 1e-6) warnings.push('估算有材料超出工件矩形範圍；未模擬實際邊緣流失。');
+    flag('熱源範圍超出工件矩形參考邊界；請核對尺寸和中心偏移，匯入工件僅以包圍框近似。');
+  if (offWorkpiece > 1e-6) flag('估算有材料超出工件矩形範圍；未模擬實際邊緣流失。');
   if (voidInSource > 0)
-    warnings.push(
+    flag(
       `熱源內有 ${sourceVoids.length} 處被膠包圍的夾氣區（共 ${voidInSource.toFixed(1)} mm²）；外框、螺旋與蛇形較易發生，需透明板實測確認。`,
     );
   if (c.workpieceKind !== 'plate') warnings.push('匯入工件仍以其矩形邊界和水平上表面近似，不包含孔洞與曲面。');
@@ -1417,11 +1489,11 @@ export function estimateCompression(run, options) {
       `壓板受下降速度上限 ${o.pressSpeed} mm/s 限制，壓合過程最大只用到 ${(sq.press.peakForceN / KGF).toFixed(1)} kgf（設定 ${o.pressKgf} kgf）。螺絲鎖附這類位移控制的組裝，可把壓合力設成治具或螺絲能提供的上限、下降速度設成實際鎖附速度，看這個力與元件可承受的壓力。`,
     );
   if (o.gap < material.minBondLine)
-    warnings.push(
+    flag(
       `${material.name} 資料表最小黏結層厚度為 ${material.minBondLine} mm；目前目標間隙較小，須向廠商確認適用性，不代表此模型已考慮顆粒或硬接觸。`,
     );
   else if (o.gap < 1.5 * material.minBondLine)
-    warnings.push(
+    flag(
       `目標間隙 ${o.gap} mm 接近 ${material.name} 的最小黏結層厚度 ${material.minBondLine} mm（TDS）：膠層這麼薄時填料顆粒會互相卡住，實際需要的壓合力可能比模型高很多，膠層也可能停在比墊片更厚處。模型把膏體當連續流體，沒有算這一段；請用透明板或實際組裝量膠層厚度。`,
     );
 
@@ -1456,6 +1528,7 @@ export function estimateCompression(run, options) {
     },
     voids,
     warnings,
+    issues,
     assumptions: 'engineering_assumption',
     model: `hele_shaw_squeeze_v1.1_${o.airMode}`,
   };

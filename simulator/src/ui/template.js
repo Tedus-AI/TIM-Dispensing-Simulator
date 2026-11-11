@@ -33,6 +33,13 @@ export const ICONS = {
   list: icon('<path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/>'),
   drop: icon('<path d="M12 3s6 6.4 6 11a6 6 0 0 1-12 0c0-4.6 6-11 6-11z"/>'),
   stop: icon('<rect x="6" y="6" width="12" height="12" rx="1.5" fill="currentColor" stroke="none"/>'),
+  undo: icon('<path d="M9 7 4 12l5 5"/><path d="M4 12h10a6 6 0 0 1 0 12h-2" transform="translate(0 -5)"/>'),
+  redo: icon('<path d="m15 7 5 5-5 5"/><path d="M20 12H10a6 6 0 0 0 0 12h2" transform="translate(0 -5)"/>'),
+  upload: icon('<path d="M12 15V4M7 9l5-5 5 5M5 20h14"/>'),
+  report: icon('<path d="M6 3h9l4 4v14H6z"/><path d="M15 3v4h4M9 12h7M9 16h7M9 8h3"/>'),
+  ruler: icon('<path d="M3 17 17 3l4 4L7 21z"/><path d="m7 13 2 2M10 10l2 2M13 7l2 2"/>'),
+  alert: icon('<path d="M12 4 2.5 20h19z"/><path d="M12 10v5M12 17.5h.01"/>'),
+  keyboard: icon('<rect x="3" y="6" width="18" height="12" rx="2"/><path d="M7 10h.01M11 10h.01M15 10h.01M7 14h10"/>'),
 };
 
 export function pageTemplate(version) {
@@ -45,12 +52,17 @@ export function pageTemplate(version) {
   <div class="scenario" id="scenario" aria-label="目前情境"></div>
   <div class="top-actions">
     <span class="badge-warn" tabindex="0" data-tip="所有結果皆為工程假設、未經實機校準（23 °C 參考條件），供方案相對比較，不能作為量產配方或驗收依據；請以透明板或首件驗證。">工程假設 · 未校準</span>
+    <div class="tool-group history" role="group" aria-label="復原與重做">
+      <button class="ghost icon-only" id="undo" title="復原上一個設定變更（Ctrl+Z）" disabled>${ICONS.undo}</button>
+      <button class="ghost icon-only" id="redo" title="重做（Ctrl+Y）" disabled>${ICONS.redo}</button>
+    </div>
     <div class="tool-group" role="group" aria-label="分析工具">
       <button class="ghost" id="open-optimize" title="搜尋膠量容差內仍達標、膠量最少的設定">${ICONS.spark}<span>自動最佳化</span></button>
       <button class="ghost" id="show-scenarios" title="已存情境的比較">${ICONS.list}<span>情境比較</span><em class="count" id="scenario-count" hidden></em></button>
     </div>
     <button class="ghost minor" id="show-sources" title="參數來源與假設">${ICONS.book}<span>來源</span></button>
-    <button class="ghost minor" id="help" title="使用說明">${ICONS.help}<span>說明</span></button>
+    <button class="ghost minor" id="help" title="使用說明（?）">${ICONS.help}<span>說明</span></button>
+    <button class="ghost icon-only minor" id="show-keys" title="鍵盤快速鍵">${ICONS.keyboard}</button>
     <button class="ghost icon-only" id="theme" title="切換深色／淺色">${ICONS.moon}</button>
   </div>
 </header>
@@ -76,7 +88,7 @@ export function pageTemplate(version) {
       <button role="tab" data-tab="press"><b>5</b>壓合</button>
     </nav>
     <div class="tab-body" id="tab-body"></div>
-    <footer class="config-foot"><button id="defaults" class="text-button">恢復此情境預設</button><span>v${version}</span></footer>
+    <footer class="config-foot"><button id="defaults" class="text-button" title="把這個膠材與架構的所有設定改回研究預設值">恢復此情境預設</button><span class="saved" id="saved-note" title="設定會自動存在這台電腦的瀏覽器，下次開啟時接著用">已自動保存</span><span>v${version}</span></footer>
   </aside>
   <main class="center">
     <section class="stage card" aria-label="點膠觀察">
@@ -115,6 +127,11 @@ export function pageTemplate(version) {
         <div class="void-colors" role="group" aria-label="夾氣顏色"><span>夾氣</span><button data-void-color="#ff2d55" style="--c:#ff2d55" aria-label="夾氣顏色：洋紅" data-tip="洋紅"></button><button data-void-color="#2563eb" style="--c:#2563eb" aria-label="夾氣顏色：藍" data-tip="藍"></button><button data-void-color="#facc15" style="--c:#facc15" aria-label="夾氣顏色：黃" data-tip="黃"></button><button data-void-color="#111827" style="--c:#111827" aria-label="夾氣顏色：黑" data-tip="黑"></button></div>
         <button class="tool" id="press-exit" title="回到點膠">${ICONS.close}<span>回到點膠</span></button>
       </div>
+      <div class="busy-chip" id="busy" hidden role="status" aria-live="polite">
+        <span class="spinner" aria-hidden="true"></span><span id="busy-text">計算中…</span>
+        <div class="progress"><i id="busy-bar"></i></div>
+        <button class="stop-btn" id="busy-cancel">${ICONS.stop}<span>取消</span></button>
+      </div>
       <div class="stage-foot">
         <span class="tip stage-tip" id="stage-tip" tabindex="0" role="img" aria-label="操作說明" data-tip="拖曳平移 · 滾輪縮放 · Home 重設">?</span>
         <span class="scale"><i id="scale-line"></i><span id="scale-label">X 軸 10 mm</span></span>
@@ -132,6 +149,7 @@ export function pageTemplate(version) {
       <div class="chart-head">
         <div class="seg small" role="tablist"><button data-chart="q" class="active">流量</button><button data-chart="output">累積膠量</button><button data-chart="speed">移動速度</button><button data-chart="z">針嘴高度</button></div>
         <div class="legend"><span><i class="lg series"></i>計算</span><span id="legend-command"><i class="lg command"></i>指令穩態</span><span id="legend-base" hidden><i class="lg baseline"></i>基準</span><span><i class="lg off"></i>關膠</span><span><i class="lg arrive"></i>到位</span><span><i class="lg lift"></i>抬針</span></div>
+        <span id="chart-readout" class="readout mono" hidden></span>
         <span id="chart-unit" class="unit">mL/s</span>
       </div>
       <svg id="chart" class="chart" preserveAspectRatio="none" role="img" aria-label="時間曲線；點擊可跳到該時間"></svg>
@@ -145,6 +163,7 @@ export function pageTemplate(version) {
 <dialog id="scenarios-dialog" class="dialog wide"><div class="dialog-head"><h2>情境比較</h2><button data-close class="ghost">${ICONS.close}</button></div><div id="scenarios-body"></div></dialog>
 <dialog id="optimize-dialog" class="dialog wide resizable"><div class="dialog-head"><h2>自動最佳化（數值搜尋）<span class="tip" tabindex="0" role="img" aria-label="說明" data-tip="在目前條件下搜尋「膠量在 ±容差內變動仍達標、標稱膠量最少」的設定。這是模擬器上的數值搜尋，結果與模型同樣未經實機校準。視窗可拖曳右下角調整大小。">?</span></h2><button data-close class="ghost">${ICONS.close}</button></div><div id="optimize-body"></div></dialog>
 <dialog id="help-dialog" class="dialog"><div class="dialog-head"><h2>使用說明</h2><button data-close class="ghost">${ICONS.close}</button></div><div id="help-body"></div></dialog>
+<dialog id="keys-dialog" class="dialog"><div class="dialog-head"><h2>鍵盤快速鍵</h2><button data-close class="ghost">${ICONS.close}</button></div><div id="keys-body"></div></dialog>
 <div id="toast" role="status"></div>
 <div id="tipbox" popover="manual" role="tooltip"></div>`;
 }

@@ -27,7 +27,10 @@ export function createC300Enclosure() {
     screenLine: new THREE.MeshStandardMaterial({color:0x7bb3bd, roughness:.6, metalness:0}),
     blue: new THREE.MeshStandardMaterial({color:0x1f5fd1, roughness:.45, metalness:.15}),
     red: new THREE.MeshStandardMaterial({color:0xc13524, roughness:.42, metalness:.08}),
-    yellow: new THREE.MeshStandardMaterial({color:0xdfc544, roughness:.55, metalness:0})
+    yellow: new THREE.MeshStandardMaterial({color:0xdfc544, roughness:.55, metalness:0}),
+    foot: new THREE.MeshStandardMaterial({color:0x2a2f33, roughness:.7, metalness:.3}),
+    // Guard glazing: clear polycarbonate, drawn faintly so the robot stays readable through it.
+    glazing: new THREE.MeshPhysicalMaterial({color:0xd9ecf2, roughness:.06, metalness:0, transparent:true, opacity:.13, depthWrite:false, side:THREE.DoubleSide, clearcoat:.6})
   };
   group.userData.ownedMaterials = Object.values(material);
 
@@ -45,9 +48,22 @@ export function createC300Enclosure() {
 
   // Machine base: exterior datum runs from Z -900 to -50. Front/rear skins
   // complete the published 1041 mm depth; door panels are inset visual details.
-  box('cabinet structure',939,1037,850,0,0,-900,'body');
-  box('front skin',939,2,850,0,-519.5,-900,'body');
-  box('rear skin',939,2,850,0,519.5,-900,'body');
+  // The work deck (cabinet top) is at Z -70: the robot's feet stand on it, as on the bench of the R75 scene.
+  // The cabinet stands on four levelling feet (v3.0); the outer envelope is unchanged.
+  box('cabinet structure',939,1037,802,0,0,-872,'body');
+  box('front skin',939,2,822,0,-519.5,-872,'body');
+  box('rear skin',939,2,822,0,519.5,-872,'body');
+  for (const x of [-410,410]) for (const y of [-460,460]) {
+    const pad = new THREE.Mesh(new THREE.CylinderGeometry(32,36,10,28),material.foot);
+    pad.name='levelling foot pad';pad.rotation.x=Math.PI/2;pad.position.set(x,y,-895);pad.castShadow=pad.receiveShadow=true;group.add(pad);
+    const stem = new THREE.Mesh(new THREE.CylinderGeometry(10,10,18,16),material.steel);
+    stem.name='levelling foot stem';stem.rotation.x=Math.PI/2;stem.position.set(x,y,-881);stem.castShadow=true;group.add(stem);
+  }
+  box('kick plate',939,.6,60,0,-520.2,-872,'gasket');
+  // Cooling grille and mains isolator on the right flank (illustrative).
+  for (let i=0;i<8;i++) box('vent slot',.6,180,6,469.2,300,-760+i*14,'gasket');
+  box('isolator plate',.8,70,90,469.1,-380,-420,'frame');
+  box('isolator handle',6,16,44,466.5,-380,-397,'red');
   box('front access door gasket',710,.5,620,0,-520.15,-830,'gasket');
   box('front access door',704,.35,614,0,-520.0,-827,'door');
   box('door label plate',180,.2,74,0,-520.29,-560,'frame');
@@ -65,7 +81,7 @@ export function createC300Enclosure() {
     for (const z of [-814,-230]) roundFront('access door fastener',2.6,.45,x,-520.2,z,'steel',12);
   }
 
-  // Four posts and roof. Opening is intentionally represented without glazing,
+  // Four posts and roof. Until v2.2 the openings were drawn without glazing,
   // so the motion/dispensing head is visible from any of the four iso corners.
   for (const x of [-448.5,448.5]) {
     for (const y of [-499.5,499.5]) {
@@ -74,6 +90,14 @@ export function createC300Enclosure() {
     }
   }
   box('roof structure',939,1041,55,0,0,950,'body');
+  // Guard glazing in the three fixed sides and the front door (v3.0), inside the published envelope.
+  const pane=(name,w,d,h,x,y,z)=>{const m=box(name,w,d,h,x,y,z,'glazing');m.castShadow=false;m.receiveShadow=false;m.renderOrder=3;return m;};
+  pane('rear guard pane',855,3,954,0,508,-28);
+  pane('front door pane',855,3,954,0,-508,-28);
+  for (const x of [-458,458]) pane('side guard pane',3,957,954,x,0,-28);
+  // Door frame around the front pane.
+  for (const x of [-424,424]) box('front door stile',14,6,954,x,-512,-28,'frame');
+  for (const z of [-28,912]) box('front door rail',834,6,14,0,-512,z,'frame');
   for (const y of [-510,510]) {
     box('window upper rail',855,20,24,0,y,926,'frame');
     box('window sill',855,20,22,0,y,-50,'frame');

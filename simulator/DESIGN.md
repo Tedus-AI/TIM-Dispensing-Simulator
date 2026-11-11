@@ -1,5 +1,38 @@
 # 點膠研究室 · 機構與實作契約
 
+## v3.0.0（2026-11-10）
+
+- `compression.js`：
+  - `holdPressures`：0–1 廣度優先搜尋（膠格一步、其他氣泡的格子不計），巢狀氣泡的保持壓力沿路累加；沒有膠路時為 0（v2.2 為無限大，使 `load`、`kappaTime`、`dt` 成為無限大）。
+  - 壓合迴圈：`dt` 不是有限值時丟出錯誤；`stalled = 'time'` 只在 `holdLimit` 有限時成立。
+  - `yieldLoad`：兩趟的精確歐氏距離轉換（`transform`：拋物線下包絡），第一趟記下每列最近開放格的欄（`nearestX`），第二趟得到最近的開放格；到前緣的距離＝中心距 − ½ 格 + 該開放格的填充比例。
+  - `settings.progress(fraction, plateHeight)`：每接受一步呼叫一次（依 ln h 的行程，或保壓時間）。
+  - `estimateCompression` 回傳 `issues`（需要調整設定的提醒，為 `warnings` 的子集）。
+- `motion.js`：`curveRadius(a, b)`＝相鄰兩段三點的外接圓半徑；`planPolylineMotion` 的頂點速度＝min(junction deviation, √(a·r))；`corners` 只算由轉角規則限速的頂點；新增 `curveSlowest`。
+- `engine.js`：
+  - `thermalShift(c)`＝exp(Ea/R·(1/T − 1/T_ref))，`REFERENCE_TEMPERATURE` 23 °C；`steadyFlow`（putty：`referenceRate × a_T^(−m)`；grease：`K × a_T`）、`pasteRheology`（K × a_T）；沒有 `temperature` 的舊設定係數為 1。
+  - `fromRegistry` 帶入 `temperature`、`activationEnergy`（`material.*.flow_activation_energy`）；`RANGES` 加兩者。
+  - `simulate` 回傳 `issues`；`motion.curveSlowest`；圓弧限速的提醒。
+- 新 `calibration.js`：`discPress`（定體積圓盤定力壓合，ln h 積分，含塑性極限下限）、`plasticLimitMm`、`fitSqueeze`（`mode: 'viscosity'` 對 ln K 二分；`'yield'` 由塑性極限反推，附 `yieldLimited`）。
+- 新 `tolerance.js`：`toleranceCases`、`scaledRun`（沉積同比例縮放的精簡 run）、`toleranceRow`、`toleranceVerdict`、`defaultGapTolerance`。
+- `compute-worker.js`：壓合每 120 ms 回報進度；`air` 緩衝一併轉移。
+- `main.js`：
+  - 背景執行緒：`resetWorker(error)` 終止、讓等待中的工作失敗並重啟；`worker.onerror` 與「取消」都走這裡。
+  - `beginBusy`／`busyProgress`／`endBusy`：畫面上方的計算指示（文字、進度條、取消）。
+  - 歷史：`remember()` 在每次成功的 `tryRecompute` 與壓合條件變更後記錄 `{config, heat, pattern}` 的 JSON（80 步）；`stepHistory(±1)`；`applySettings(x)` 為歷史、工作階段、情境與匯入共用（新增欄位取預設值；沒有載入網格的匯入工件改成平板）。
+  - 工作階段：`persistSession()` 寫入 `tim-session`；啟動時先試著套用，失敗則用研究預設。
+  - 公差檢查：`runTolerance()` 以最多 3 個背景執行緒各壓一次；設定存在 `tim-tol`；設定或 run 改變即標為過期。
+  - 壓合校正：`applySqueezeCalibration()` 寫入 `S.heat.viscosity` 或 `S.heat.yieldStress`。
+  - 快速鍵表 `SHORTCUTS`；曲線讀值（`#chart-readout`、`#chart-hover`）。
+- 新 `ui/report.js`：`buildReport(data)` 產生不含外部檔案的 HTML。
+- 3D：
+  - `scene-parts.js`：`frame(parent, x, y, z, axis, normal)`（局部 X＝行程方向、局部 Z＝安裝面法線）；`PartKit` 新增 `extrusion`（T 型槽截面擠出）、`prism`、`slab`、`pin`、`linearRail`、`bearingBlock`、`stepper`、`ballScrew`、`cable`；`createFinishes`（螺紋、表面顆粒、錶面）；`createLabel`（畫布貼紙）；新材質 `paint`、`paintAccent`、`anodized`、`anodizedDark`、`motor`、`seal`、`cable`、`thread`、`screen`、`keys`、`wood`。
+  - 新 `machine.js`：`buildRobot`（底座、後罩、操作面板、Y 模組與拖鏈、橋架、X 軸、滑座、Z 軸）、`buildZSlide`、`buildAccessories`（針尖校正器、吐膠杯）、`buildBench`、`buildController`（含腳踏開關、過濾調壓閥）、`buildPendant`、`createNeedle`（標準 G 數 → 魯爾鎖針頭；`length` 為轉接頭上緣，膠筒或泵出口由此接上）。
+  - `scene.js`：機台改由 `machine.js` 建立；`chainY` 隨橋架更新；壓力錶指針繞面板法線轉 270°；`ownedTextures` 一併釋放。
+  - `c300-enclosure.js`：工作平台改在 Z −70（與 R75 的桌面一致）；調整腳、防護窗、前門框、散熱槽、電源開關；外形尺寸不變。
+- 測試：`tests/physics-v30.test.mjs`、`tests/machine.test.mjs`；`spiral-integration` 的方向對稱斷言改為「內向螺旋的關膠較早、出膠略少」。
+
+
 ## v2.1.1（2026-11-07）
 
 - `compression-scene.js`：

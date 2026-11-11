@@ -12,8 +12,9 @@ import { buildHoseGeometry } from './visual-hose.js';
 import { R75_NOZZLE } from './hardware-reference.js';
 import { MATERIALS } from './materials.js';
 import { createDepositor, runField } from './deposit.js';
-import { createPalette, PartKit, createDragChain, createLcd } from './scene-parts.js';
+import { createPalette, PartKit, createFinishes } from './scene-parts.js';
 import { createCompressionScene } from './compression-scene.js';
+import { buildRobot, buildZSlide, buildAccessories, buildBench, buildController, buildPendant, createNeedle } from './machine.js';
 
 // ───────────────────────── Geometry helpers (mm, Z up) ─────────────────────────
 
@@ -412,6 +413,18 @@ export class DispenseScene {
     this.camera = this.ortho;
     this.makeControls();
     this.palette = createPalette();
+    // Shared textures: the screw thread on ball screws, a fine grain on cast and coated surfaces, the gauge dial.
+    this.finishes = createFinishes();
+    if (this.finishes.thread) {
+      this.finishes.thread.repeat.set(1, 40);
+      this.palette.thread.map = this.finishes.thread;
+    }
+    if (this.finishes.grain) {
+      for (const [name, scale] of [['castAl', 0.35], ['paint', 0.12], ['mat', 0.5], ['bench', 0.15]]) {
+        this.palette[name].bumpMap = this.finishes.grain;
+        this.palette[name].bumpScale = scale;
+      }
+    }
     this.kit = new PartKit(this.palette, this.counter);
     this.glue = new THREE.MeshPhysicalMaterial({ color: MATERIALS.putty.color, roughness: 0.48, metalness: 0, clearcoat: 0.35, clearcoatRoughness: 0.4, sheen: 0.4 });
     this.resizeObserver = new ResizeObserver(() => this.resize());
@@ -464,6 +477,7 @@ export class DispenseScene {
     group.traverse((o) => {
       o.geometry?.dispose();
       for (const m of o.userData?.ownedMaterials || []) m.dispose();
+      for (const t of o.userData?.ownedTextures || []) t.dispose();
     });
     group.removeFromParent();
   }
@@ -473,17 +487,21 @@ export class DispenseScene {
     this.imported?.removeFromParent();
     for (const g of [this.machine, this.environment, this.depositGroup, this.patternSource, this.overlays]) this.disposeGroup(g);
     this.chain?.dispose();
+    this.chainY?.dispose();
     this.hose?.material.dispose();
     this.supplyHose?.material.dispose();
     this.stationAirHose?.material.dispose();
-    Object.assign(this, { cartridge: null, pumpStation: null, head: null, hose: null, supplyHose: null, stationAirHose: null, chain: null, lcd: null, lastHose: null, enclosure: null, stationAirAnchor: null });
+    this.staticHoseMaterial?.dispose();
+    Object.assign(this, { cartridge: null, pumpStation: null, head: null, hose: null, supplyHose: null, stationAirHose: null, chain: null, chainY: null, lcd: null, lastHose: null, enclosure: null, stationAirAnchor: null, gaugeNeedle: null, staticHoseMaterial: null, accessories: null, pendant: null, needle: null });
     this.counter.parts = 0;
     this.config = c;
     this.run = run;
     const pcp = c.architecture === 'P300';
     const k = this.kit;
     this.glue.color.setHex((MATERIALS[c.material] || MATERIALS.putty).color);
-    const nozzleLength = c.architecture === 'R75' ? R75_NOZZLE.nominalLengthMm - R75_NOZZLE.assumedInsertionMm : c.nozzleLength;
+    // The tip as fitted: a gauge bore is a luer-lock needle on an adapter; any other bore keeps the tapered nozzle.
+    this.needle = createNeedle(k, c);
+    const nozzleLength = this.needle ? this.needle.length : c.architecture === 'R75' ? R75_NOZZLE.nominalLengthMm - R75_NOZZLE.assumedInsertionMm : c.nozzleLength;
     this.visualNozzleLength = nozzleLength;
     this.machine = new THREE.Group();
     this.machine.name = 'machine';
@@ -497,16 +515,18 @@ export class DispenseScene {
     }
 
     if (pcp) this.buildCell(k);
-    else this.buildBench(k);
-    this.buildGantry(k, pcp);
+    else buildBench(this, k);
+    buildRobot(this, k, pcp);
     this.buildFixture(k, c);
+    buildAccessories(this, k, c);
+    if (!pcp) buildPendant(this, k);
 
     // Tool: TCP is the open nozzle bottom at local Z = 0; never scale extrusion or bore for the camera.
     this.tool = new THREE.Group();
     this.tool.name = 'tool';
     this.machine.add(this.tool);
     const stackY = pcp ? 4 : 0;
-    this.buildZSlide(k, pcp, stackY);
+    buildZSlide(this, k, pcp, stackY);
     if (pcp) {
       this.head = createPcpHead();
       this.head.group.position.z = nozzleLength;
@@ -520,9 +540,12 @@ export class DispenseScene {
       this.hoseStart = this.airFitting;
       this.hoseEnd = this.cartridge.airPort;
     }
-    const nozzle = k.mesh(nozzleGeometry(c.diameter, nozzleLength), pcp ? 'steel' : 'polymer', this.tool, { edges: false });
-    nozzle.castShadow = false;
-    if (!pcp) k.mesh(nozzleStemGeometry(c.diameter, nozzleLength), 'polymer', this.tool, { edges: false }).castShadow = false;
+    if (this.needle) this.tool.add(this.needle.group);
+    else {
+      const nozzle = k.mesh(nozzleGeometry(c.diameter, nozzleLength), pcp ? 'steel' : 'polymer', this.tool, { edges: false });
+      nozzle.castShadow = false;
+      if (!pcp) k.mesh(nozzleStemGeometry(c.diameter, nozzleLength), 'polymer', this.tool, { edges: false }).castShadow = false;
+    }
     this.hose = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshStandardMaterial({ color: pcp ? 0x1c2a33 : 0x3f8de0, roughness: pcp ? 0.6 : 0.25, metalness: 0, transparent: !pcp, opacity: pcp ? 1 : 0.85 }));
     this.hose.castShadow = true;
     this.hose.name = pcp ? '示意供膠管' : '示意供氣管';
@@ -589,14 +612,6 @@ export class DispenseScene {
     this.sun.shadow.camera.updateProjectionMatrix();
   }
 
-  buildBench(k) {
-    const env = this.environment;
-    k.box(1180, 820, 40, -60, 40, -112, 'bench', env, 4);
-    k.box(1040, 680, 2, -60, 40, -72, 'mat', env, 1);
-    // Mat ground snap and earthing lead are routine ESD bench details.
-    k.cyl(6, 3, 440, -280, -70, 'steel', env);
-  }
-
   buildCell(k) {
     this.enclosure = createC300Enclosure();
     this.machine.add(this.enclosure);
@@ -624,137 +639,6 @@ export class DispenseScene {
     this.pumpStation.group.updateMatrixWorld(true);
     anchor.updateMatrixWorld(true);
     this.stationAirHose.geometry = buildHoseGeometry(this.pumpStation.airPort.getWorldPosition(new THREE.Vector3()), this.stationAirSource.getWorldPosition(new THREE.Vector3()), 'stationAir', 3);
-  }
-
-  // Benchtop 3-axis gantry: fixed table, Y-moving bridge, X carriage, Z slide. Generic, not an OEM model.
-  buildGantry(k, pcp) {
-    const m = this.machine;
-    const stackY = pcp ? 4 : 0;
-    const beamY = 110 + stackY;
-    this.beamY = beamY;
-    // Base casting, feet and front operator strip.
-    const base = new THREE.Group();
-    base.name = 'base';
-    m.add(base);
-    k.box(420, 500, 40, 0, 60, -56, 'graphite', base, 3);
-    k.box(408, 488, 3, 0, 60, -19, 'coverGrey', base, 1);
-    for (const x of [-185, 185])
-      for (const y of [-160, 280]) {
-        k.cyl(16, 4, x, y, -70, 'rubber', base);
-        k.cyl(9, 10, x, y, -66, 'steel', base);
-      }
-    // Operator controls on the front face (y = -190).
-    const front = -190;
-    k.box(150, 4, 30, 110, front - 2, -50, 'black', base, 1);
-    k.cyl(10, 4, 165, front - 4, -40, 'yellow', base).rotation.x = Math.PI / 2;
-    const estop = k.cyl(8, 8, 165, front - 10, -40, 'red', base);
-    estop.rotation.x = Math.PI / 2;
-    for (const [x, mat] of [
-      [70, 'green'],
-      [95, 'red'],
-      [120, 'black'],
-    ]) {
-      const b = k.cyl(5, 4, x, front - 4, -36, mat, base, 20);
-      b.rotation.x = Math.PI / 2;
-    }
-    k.box(90, 1, 16, -110, front - 0.5, -46, 'aluminum', base, 0.6);
-    for (const z of [-42, -38, -34]) k.box(70, 0.6, 0.8, -110, front - 1.1, z, 'hole', base, 0);
-    // Tooling plate with M6 grid and a millimetre scale on its front edge.
-    k.box(320, 320, 16, 0, 0, -16, 'aluminum', base, 1.5);
-    const holes = [];
-    for (let x = -137.5; x <= 137.5; x += 25) for (let y = -137.5; y <= 137.5; y += 25) holes.push([x, y]);
-    const holeGeo = new THREE.CylinderGeometry(2.6, 2.6, 0.2, 16);
-    holeGeo.rotateX(Math.PI / 2);
-    const holeMesh = new THREE.InstancedMesh(holeGeo, this.palette.hole, holes.length);
-    holes.forEach(([x, y], i) => holeMesh.setMatrixAt(i, new THREE.Matrix4().makeTranslation(x, y, 0.02)));
-    holeMesh.receiveShadow = true;
-    base.add(holeMesh);
-    const ticks = [];
-    for (let x = -150; x <= 150; x += 5) ticks.push(x);
-    const tickGeo = new THREE.BoxGeometry(0.5, 1, 0.12);
-    const tickMesh = new THREE.InstancedMesh(tickGeo, this.palette.black, ticks.length);
-    ticks.forEach((x, i) => tickMesh.setMatrixAt(i, new THREE.Matrix4().compose(new THREE.Vector3(x, -157 + (x % 25 === 0 ? 2.5 : 1.25), 0.06), new THREE.Quaternion(), new THREE.Vector3(1, x % 25 === 0 ? 5 : 2.5, 1))));
-    base.add(tickMesh);
-    // Y axes: extrusion, rail, end stops, motors with belt covers.
-    for (const x of [-190, 190]) {
-      k.box(34, 470, 18, x, 60, -16, 'graphite', base, 1.5);
-      k.box(15, 460, 10, x, 60, 2, 'steel', base, 0.4);
-      for (let y = -160; y <= 280; y += 40) k.screw(x, y, 12.4, base, 1.4);
-      for (const y of [-172, 292]) k.box(30, 8, 22, x, y, 2, 'orange', base, 1);
-      k.box(46, 52, 46, x, 318, -16, 'black', base, 2);
-      k.cyl(16, 4, x, 318, 30, 'steel', base);
-      k.box(10, 40, 30, x + Math.sign(x) * 25, 318, -10, 'coverGrey', base, 1);
-    }
-
-    // Bridge (moves in Y): carriage blocks, columns, beam with X rails, ball screw, motor, cable chain.
-    this.bridge = new THREE.Group();
-    this.bridge.name = 'bridge';
-    m.add(this.bridge);
-    const b = this.bridge;
-    for (const x of [-190, 190]) {
-      for (const dy of [-22, 22]) k.box(30, 34, 14, x, beamY + dy, 12, 'steelDark', b, 1);
-      k.box(56, 92, 10, x, beamY, 26, 'cobaltDark', b, 2);
-      k.box(40, 52, 174, x, beamY, 36, 'cobalt', b, 3);
-      k.box(44, 56, 6, x, beamY, 206, 'coverGrey', b, 2);
-      for (const dy of [-18, 18]) for (const dx of [-18, 18]) k.screw(x + dx, beamY + dy, 36.6, b, 1.6);
-    }
-    k.box(440, 40, 50, 0, beamY, 205, 'cobalt', b, 3);
-    k.box(400, 2, 36, 0, beamY + 20.5, 212, 'coverGrey', b, 0.6);
-    for (const z of [212, 240]) {
-      k.box(400, 6, 10, 0, beamY - 23, z - 5, 'steel', b, 0.4);
-      for (let x = -180; x <= 180; x += 40) k.screw(x, beamY - 26.2, z, b, 1.2, 'y');
-    }
-    k.rod(4.5, 390, 'x', 0, beamY - 29, 226, 'steel', b);
-    for (const x of [-212, 212]) k.box(10, 46, 56, x + Math.sign(x) * 5, beamY, 202, 'coverGrey', b, 2);
-    // X motor beyond the right end cap, with flange and connector.
-    k.box(50, 44, 44, 247, beamY, 208, 'black', b, 2);
-    k.rod(16, 6, 'x', 275, beamY, 230, 'steel', b);
-    k.box(10, 10, 10, 250, beamY - 26, 240, 'orange', b, 1);
-    // Air bulkhead fitting at the beam's left end (R75 supply line passes through it).
-    k.box(18, 18, 12, -200, beamY, 255, 'black', b, 1);
-    k.cyl(4, 10, -200, beamY, 267, 'brass', b);
-    this.airFitting = new THREE.Object3D();
-    this.airFitting.position.set(-200, beamY, 277);
-    b.add(this.airFitting);
-    this.supplyFitting = new THREE.Object3D();
-    this.supplyFitting.position.set(-209, beamY, 261);
-    b.add(this.supplyFitting);
-    // Drag chain along the beam top.
-    const chainMat = new THREE.MeshStandardMaterial({ color: 0x24282d, roughness: 0.55, metalness: 0.1 });
-    const chainSide = new THREE.MeshStandardMaterial({ color: 0xf07c1b, roughness: 0.5, metalness: 0.05 });
-    this.chain = createDragChain({ material: chainMat, sideMaterial: chainSide, free: 200 });
-    this.chain.group.position.set(0, beamY, 255 + 6);
-    this.chain.group.userData.ownedMaterials = [chainMat, chainSide];
-    b.add(this.chain.group);
-    k.box(28, 30, 4, 0, beamY, 255, 'steelDark', b, 0.8);
-
-    // X carriage (moves along the beam): bearing blocks, plate, Z column, Z rails, Z motor, chain bracket.
-    this.carriage = new THREE.Group();
-    this.carriage.name = 'x carriage';
-    b.add(this.carriage);
-    const cr = this.carriage;
-    const zTop = pcp ? 380 : 300;
-    for (const x of [-22, 22]) for (const z of [212, 240]) k.box(30, 8, 16, x, beamY - 30, z - 8, 'steelDark', cr, 1);
-    k.box(90, 6, 80, 0, beamY - 37, 186, 'cover', cr, 2);
-    k.box(70, 8, zTop - 60, 0, 66 + stackY, 60, 'cover', cr, 2);
-    k.box(70, 2, zTop - 70, 0, 61 + stackY, 65, 'cobalt', cr, 0.5);
-    for (const x of [-20, 20]) k.box(9, 6, zTop - 80, x, 57 + stackY, 70, 'steel', cr, 0.3);
-    k.rod(3.5, zTop - 90, 'z', 0, 57 + stackY, 65 + (zTop - 90) / 2, 'steel', cr);
-    k.box(44, 44, 54, 0, 66 + stackY, zTop, 'black', cr, 2);
-    k.cyl(15, 4, 0, 66 + stackY, zTop + 54, 'steel', cr);
-    k.box(12, 10, 10, 18, 66 + stackY, zTop + 40, 'orange', cr, 1);
-    for (const x of [-28, 28]) for (const z of [80, zTop - 20]) k.screw(x, 61.8 + stackY - 1.2, z, cr, 1.6, 'y');
-    k.box(30, beamY - 64, 6, 0, (beamY + 64) / 2, 255 + 30, 'steelDark', cr, 1);
-  }
-
-  // Z slide moves with the tool; it carries the cartridge clamp or the PCP mounting rail.
-  buildZSlide(k, pcp, stackY) {
-    const t = this.tool;
-    const z0 = pcp ? 130 : 70;
-    const h = pcp ? 140 : 125;
-    k.box(64, 8, h, 0, 42 + stackY, z0, 'cobalt', t, 1.5);
-    for (const x of [-20, 20]) for (const z of [z0 + 10, z0 + h - 30]) k.box(18, 8, 20, x, 50 + stackY, z, 'steelDark', t, 1);
-    for (const x of [-24, 24]) for (const z of [z0 + 8, z0 + h - 8]) k.screw(x, 37.6 + stackY, z, t, 1.5, 'y');
   }
 
   buildFixture(k, c) {
@@ -806,49 +690,7 @@ export class DispenseScene {
         }
     }
     // Dispenser controller on the bench for the air-time architecture.
-    if (c.architecture === 'R75') this.buildController(k);
-  }
-
-  buildController(k) {
-    const g = new THREE.Group();
-    g.name = 'air dispenser controller (generic)';
-    g.position.set(-360, -40, -70);
-    this.machine.add(g);
-    k.box(150, 190, 86, 0, 0, 0, 'cover', g, 4);
-    k.box(150, 4, 86, 0, -96, 0, 'cobalt', g, 1.5);
-    for (const x of [-60, 60]) for (const y of [-80, 80]) k.cyl(6, 3, x, y, -3, 'rubber', g);
-    this.lcd = createLcd();
-    if (this.lcd) {
-      const screen = new THREE.Mesh(new THREE.PlaneGeometry(62, 27), new THREE.MeshBasicMaterial({ map: this.lcd.texture, toneMapped: false }));
-      screen.rotation.x = Math.PI / 2;
-      screen.position.set(-28, -98.8, 56);
-      screen.userData.ownedMaterials = [screen.material];
-      g.add(screen);
-      k.box(68, 1.5, 33, -28, -97.9, 39.5, 'black', g, 0.6);
-    }
-    for (const [x, mat] of [
-      [-50, 'green'],
-      [-36, 'cover'],
-      [-22, 'cover'],
-      [-8, 'red'],
-    ]) {
-      const b = k.cyl(4, 3, x, -99, 22, mat, g, 18);
-      b.rotation.x = Math.PI / 2;
-    }
-    // Regulator knob and gauge.
-    const knob = k.cyl(11, 12, 42, -102, 52, 'black', g, 24);
-    knob.rotation.x = Math.PI / 2;
-    const gauge = k.cyl(14, 4, 42, -99, 24, 'steel', g, 32);
-    gauge.rotation.x = Math.PI / 2;
-    const face = k.cyl(12, 1, 42, -101.2, 24, 'cover', g, 32);
-    face.rotation.x = Math.PI / 2;
-    this.gaugeNeedle = k.box(1.2, 0.6, 10, 42, -101.9, 19, 'red', g, 0);
-    this.gaugeNeedle.geometry.translate(0, 0, 0);
-    // Air outlet on the top rear.
-    k.cyl(5, 10, 50, 70, 86, 'brass', g);
-    this.supplyOutlet = new THREE.Object3D();
-    this.supplyOutlet.position.set(50, 70, 96);
-    g.add(this.supplyOutlet);
+    if (c.architecture === 'R75') buildController(this, k);
   }
 
   // ── Per-frame state ──
@@ -860,11 +702,14 @@ export class DispenseScene {
     this.carriage.position.x = s.x;
     this.bridge.position.y = s.y;
     this.chain?.update(Math.max(-170, Math.min(170, s.x)));
+    // The Y chain's moving end rides on the bridge: distance from its fixed end at the rear.
+    this.chainY?.update(Math.max(10, Math.min(390, this.chainYAnchor - (s.y + this.chainYAttach))));
     if (this.cartridge) this.cartridge.updateFill(s.remaining / 75);
     if (this.lcd) {
       const psi = c.pressure;
       this.lcd.draw([`${psi.toFixed(1)} psi`, s.command ? 'DISPENSE ●' : 'READY  ' + s.t.toFixed(2) + 's'], !!s.command);
-      if (this.gaugeNeedle) this.gaugeNeedle.rotation.y = -1.2 + (psi / 100) * 2.4;
+      // 0 psi at the lower left of the dial, 100 psi at the lower right (270° sweep).
+      if (this.gaugeNeedle) this.gaugeNeedle.rotation.z = 2.356 - (Math.min(100, Math.max(0, psi)) / 100) * 4.712;
     }
     this.machine.updateMatrixWorld(true);
     const a = this.machine.worldToLocal(this.hoseStart.getWorldPosition(new THREE.Vector3()));
@@ -977,8 +822,8 @@ export class DispenseScene {
       target = b.getCenter(new THREE.Vector3());
       if (mode === 'head') this.headTargetOffset = target.clone().sub(this.tool.position);
     } else if (mode === 'work') {
-      for (const x of [-250, 250]) for (const y of [-200, 330]) for (const z of [-60, c.architecture === 'P300' ? 430 : 330]) pts.push(new THREE.Vector3(x, y, z));
-      target = new THREE.Vector3(0, 60, c.architecture === 'P300' ? 180 : 130);
+      for (const x of [-280, 320]) for (const y of [-215, 400]) for (const z of [-70, c.architecture === 'P300' ? 470 : 390]) pts.push(new THREE.Vector3(x, y, z));
+      target = new THREE.Vector3(10, 90, c.architecture === 'P300' ? 190 : 150);
     } else if (mode === 'heat' && c.heatSource) {
       // Heat-source close-up: the footprint plus any squeezed material, with room for squeeze-out.
       const hs = c.heatSource;
