@@ -1,5 +1,19 @@
 # 點膠研究室 · 機構與實作契約
 
+## v3.1.0（2026-11-11）
+
+- `engine.js`：`ENDING_DEFAULT.value` 10 → 0（`fromRegistry` 的 `shutoffDistance`）；`SHUTOFF_COMPARISON` = 10 供收尾頁的比較值按鈕。
+- `ui/template.js`：`#playback-speed` 預設選 1×。
+- `optimize.js`：
+  - `clearNozzle(run, { step = 1, max = 20 })`：`beadMatch(run).drags`（`buried` 或 `stack.contact`）為真時，以 `standoff + step` 重新 `simulate`，直到不碰或到上限；回傳 `{ run, bead, standoff, raised, clear }`。出膠量不隨針距改變，不必重新反推膠量。
+  - `evaluateTask({ ..., standoff })`：`'raise'` 時先 `clearNozzle` 再壓合；回傳 `settings.standoff`、`standoffRaised`、`needleClear`。未給選項時維持原針距（舊呼叫端）。
+  - `optimizeSettings`：選項 `standoff`（`'raise'` 預設／`'fixed'`）；`evaluate(g, f, h, stage, floor)` 的 `floor` 是這次試算的最低針距，快取鍵含 `floor`；`feasible` 與 `resultOrder` 的達標條件加上 `needleClear !== false`；每列的 `standoffRaised` 以搜尋開始時的針距為基準。
+  - `verifyOne`：先算容差內膠量最多的那一點得到針距，其餘各點以它為 `floor`；若有點需要更高就以更高的重算（最多 4 輪）。`bandPoints` 多 `standoff`、`needleClear`。
+  - `ropeHeight(bead)`＝2 × max(膠條自然高度, 單點時的孔半徑)，與引擎「針嘴離面太高」的提醒同一門檻；`nozzleLift(row)`＝只對搜尋調高的針距計 ln(針距 ÷ max(ropeHeight, 原針距))，併入 `processCost`。
+  - `beadMatch` 多 `freeHeight`、`bore`、`point`。
+- `main.js`：搜尋變數表「針嘴離面高度」（`data-opt="standoff"`）；膠條欄的 `standoffNote`（針距、調高量、偏高）；判定「碰針」；建議設定與套用訊息寫出調高後的針距；`candidateEntry` 經 `settings.standoff` 套用；收尾頁按鈕改為「不提前 0 mm（預設）／比較值 10 mm」；v3.0.0 存下的工作階段若仍是舊預設 10 mm，啟動時改為 0 一次。
+- 測試：`tests/nozzle-height.test.mjs`（6 項）。
+
 ## v3.0.0（2026-11-10）
 
 - `compression.js`：

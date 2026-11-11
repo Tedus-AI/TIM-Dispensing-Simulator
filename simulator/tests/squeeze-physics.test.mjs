@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { fromRegistry } from '../src/engine.js';
+import { fromRegistry, SHUTOFF_COMPARISON } from '../src/engine.js';
 import { estimateCompression, squeezeRaster, ATM } from '../src/compression.js';
 import { tuneForVolume } from '../src/tuning.js';
 
@@ -101,7 +101,8 @@ test('a trapped bubble obeys pV = const, re-expands after the plate seats, and t
 
 test('compressible air removes the rigid-wall artifacts: even spread, no stranded material, bounded by the vent case', () => {
   const heat = { shape: 'rectangle', width: 30, depth: 30, offsetX: 0, offsetY: 0, gap: 0.5, cellSize: 0.75, power: 25 };
-  const c = { ...fromRegistry(registry, 'grease'), mode: 'pattern', diameter: 3, pathSettings: { ...heat, pattern: 'spiral', spacing: 3, edgeInset: 2, spiralShape: 'auto', spiralDirection: 'outside-in' } };
+  // Set up with the 10 mm early shut-off that was the default until v3.0 (v3.1: 0).
+  const c = { ...fromRegistry(registry, 'grease'), mode: 'pattern', diameter: 3, shutoffDistance: SHUTOFF_COMPARISON, pathSettings: { ...heat, pattern: 'spiral', spacing: 3, edgeInset: 2, spiralShape: 'auto', spiralDirection: 'outside-in' } };
   const run = tuneForVolume(c, 0.45 * 2.5).run;
   const res = Object.fromEntries(['rigid', 'compressible', 'vent'].map((airMode) => [airMode, estimateCompression(run, { ...heat, airMode })]));
   const spread = (r) => {

@@ -1,5 +1,5 @@
 import { estimateCompression } from './compression.js';
-import { runTiming, steadyFlow } from './engine.js';
+import { runTiming, steadyFlow, simulate, PARAMETER_RANGES } from './engine.js';
 import { tuneDose, driveOf, BOUNDS } from './tuning.js';
 import { planDispensePath } from './path-planning.js';
 import { stackedBead } from './stacking.js';
@@ -27,6 +27,10 @@ import { stackedBead } from './stacking.js';
  *    combination that lays the whole dose band with the drive alone, with the bead closest to the nozzle
  *    size and the cycle near the reference (chooseProcess) — and every evaluation runs that process;
  *  - a geometry whose run exceeds the simulation limit (180 s) at every speed is left out up front;
+ *  - nozzle height (v3.1): a needle that touches glue — a pass taller than the nozzle, or glue of an earlier pass
+ *    where the path comes back over itself — makes a result unusable. By default every evaluation lifts the
+ *    nozzle in 1 mm steps until it clears the glue and squeezes that bead; the final check holds one height
+ *    across its dose band (the one the largest dose needs). With the height fixed, such a result fails;
  *  - among passing results of near-equal material the more practical process ranks first: bead close to
  *    the nozzle size, cycle within the cycle limit (30 s when none is set), drive with room to correct a
  *    drifting dose.
@@ -39,7 +43,13 @@ import { stackedBead } from './stacking.js';
  */
 
 export const GOAL_DEFAULTS = Object.freeze({ coverage: 95, overflow: 3 });
-export const OPTIMIZE_DEFAULTS = Object.freeze({ tolerance: 0.1, knob: 'drive', nozzle: 'auto', cycleLimit: null, dose: [0.8, 2.5], level: 2 });
+export const OPTIMIZE_DEFAULTS = Object.freeze({ tolerance: 0.1, knob: 'drive', nozzle: 'auto', standoff: 'raise', cycleLimit: null, dose: [0.8, 2.5], level: 2 });
+// Nozzle height (v3.1): a result whose needle touches glue cannot be used. 'raise' lifts the nozzle in 1 mm
+// steps until it clears the glue; 'fixed' keeps the current height and such a result fails.
+export const STANDOFF_MODES = Object.freeze(['raise', 'fixed']);
+export const standoffMode = (v) => (v === 'fixed' ? 'fixed' : 'raise');
+export const STANDOFF_STEP = 1; // mm
+export const STANDOFF_MAX = PARAMETER_RANGES.standoff[1]; // mm, the highest nozzle the simulator accepts
 // Nozzle choice: keep the current one, or size one per geometry ('match' is the v1.7 name of 'auto').
 export const NOZZLE_MODES = Object.freeze(['fixed', 'auto']);
 export const nozzleMode = (v) => (v === 'auto' || v === 'match' ? 'auto' : 'fixed');
@@ -110,12 +120,35 @@ export function beadMatch(run) {
     averageSpeed: speedRatio === null ? null : speedRatio * exitSpeed,
     state,
     beadHeight: run.summary.maxHeight,
+    freeHeight: run.summary.freeHeight,
+    bore: c.diameter,
+    point: c.mode === 'point',
     standoff: c.standoff,
     buried: run.summary.maxHeight > c.standoff + 1e-9, // one pass already taller than the standoff
     drags: run.summary.maxHeight > c.standoff + 1e-9 || stack.contact, // nozzle in the material
     stack: { maxHeight: stack.maxHeight, where: stack.where, contactWhere: stack.contactWhere, x: stack.x, y: stack.y, overlap: stack.overlap, contact: stack.contact },
     flattened: Boolean(run.summary.flattened),
   };
+}
+
+/**
+ * Lift the nozzle until it clears the glue (v3.1). The needle touches glue when one pass stands taller than the
+ * nozzle height (buried) or when it meets glue of an earlier pass where the path comes back over itself
+ * (`beadMatch(run).drags`). The run is repeated `step` mm higher, at most to `max`, until neither happens: a
+ * higher nozzle presses the new bead less and reaches less of the pile, so the pile stands free and the needed
+ * height is about the free height of the stack. The dispensed volume does not depend on the nozzle height, so
+ * the dose settings stay as they are. Returns the run to use, its bead, how far the nozzle was raised and
+ * whether it is clear.
+ */
+export function clearNozzle(run, { step = STANDOFF_STEP, max = STANDOFF_MAX } = {}) {
+  let r = run;
+  let bead = beadMatch(r);
+  const from = r.config.standoff;
+  while (bead.drags && r.config.standoff + step <= max + 1e-9) {
+    r = simulate({ ...r.config, standoff: Number((r.config.standoff + step).toFixed(6)) });
+    bead = beadMatch(r);
+  }
+  return { run: r, bead, standoff: r.config.standoff, raised: r.config.standoff - from, clear: !bead.drags };
 }
 
 /** How far a bead is from the good band, in log units (0 inside it); a buried nozzle adds 1. */
@@ -133,7 +166,28 @@ export function beadDeviation(b) {
  */
 export function processCost(c, cycleRef = CYCLE_REFERENCE) {
   const cycle = c.cycle > 0 ? Math.max(0, Math.log(c.cycle / cycleRef)) : 0;
-  return beadDeviation(c.bead) + cycle + (c.headroom === false ? 0.5 : 0);
+  return beadDeviation(c.bead) + cycle + (c.headroom === false ? 0.5 : 0) + nozzleLift(c);
+}
+
+/**
+ * The height above which paste leaves the nozzle as a free-hanging rope before it lands (the engine's own
+ * warning): twice the bead's free height, or for a dot twice the larger of its height and the bore radius.
+ */
+export const ropeHeight = (b) => (b && b.freeHeight > 0 ? 2 * Math.max(b.freeHeight, b.point ? b.bore / 2 : 0) : Infinity);
+
+/**
+ * What lifting the nozzle clear of the glue costs (v3.1), in log units: 0 while the raised nozzle stays within
+ * the rope height (or was not raised), else how far it stands above it — or above the height it started from,
+ * if that was already higher. A pattern that only works with the nozzle far above its bead (a star's centre
+ * pile) lays its paste as a hanging rope: it lands behind the nozzle and cuts corners, which the model does not
+ * compute. Only a nozzle the search raised is weighed, so a search at a fixed height ranks as before.
+ */
+export function nozzleLift(c) {
+  const raised = c?.standoffRaised;
+  const standoff = c?.settings?.standoff;
+  if (!(raised > 0) || !(standoff > 0)) return 0;
+  const limit = Math.max(ropeHeight(c.bead), standoff - raised);
+  return Number.isFinite(limit) ? Math.max(0, Math.log(standoff / limit)) : 0;
 }
 
 /**
@@ -207,6 +261,7 @@ function resolve(heat, options) {
   const o = { ...OPTIMIZE_DEFAULTS, goals: GOAL_DEFAULTS, ...base, ...options };
   o.searchCell = Math.max(o.searchCell, o.verifyCell);
   o.nozzle = nozzleMode(o.nozzle);
+  o.standoff = standoffMode(o.standoff);
   return o;
 }
 
@@ -384,17 +439,21 @@ export function doseKnob(config, knob = 'drive') {
 }
 
 /** One search evaluation: reach the target dose, squeeze, report. Runs in a worker or in place. */
-export function evaluateTask({ config, heat, target, knob }) {
+export function evaluateTask({ config, heat, target, knob, standoff = 'fixed' }) {
   const tuned = tuneDose(config, target, knob);
-  const squeeze = estimateCompression(tuned.run, { ...heat, frames: 0 });
+  // The nozzle height that clears the glue at this dose (or the set height); the squeeze starts from that bead.
+  const fit = standoffMode(standoff) === 'raise' ? clearNozzle(tuned.run) : { run: tuned.run, bead: beadMatch(tuned.run), raised: 0 };
+  const squeeze = estimateCompression(fit.run, { ...heat, frames: 0 });
   const c = tuned.config;
   return {
-    settings: { speed: c.speed, gateDuration: c.gateDuration, pressure: c.pressure, rpm: c.rpm, diameter: c.diameter },
+    settings: { speed: c.speed, gateDuration: c.gateDuration, pressure: c.pressure, rpm: c.rpm, diameter: c.diameter, standoff: fit.run.config.standoff },
     reached: tuned.reached,
     fallback: Boolean(tuned.fallback),
     motionAtLimit: Boolean(tuned.motionAtLimit),
-    bead: beadMatch(tuned.run),
-    ...metricsOf(tuned.run, squeeze),
+    bead: fit.bead,
+    standoffRaised: fit.raised,
+    needleClear: !fit.bead.drags,
+    ...metricsOf(fit.run, squeeze),
   };
 }
 
@@ -531,7 +590,7 @@ const costStep = (cost) => Math.round((cost ?? 0) / 0.15);
  * drifting dose) in 0.15 steps, then the shorter cycle, then the wider window. The rest by how far they miss.
  */
 export function resultOrder(list, { goals = GOAL_DEFAULTS, cycleRef = CYCLE_REFERENCE, settled = false } = {}) {
-  const ok = (c) => Boolean(c.robust && c.reached && c.cycleOk);
+  const ok = (c) => Boolean(c.robust && c.reached && c.cycleOk && c.needleClear !== false);
   const passing = list.filter(ok).map((c) => c.depositedMl);
   const least = passing.length ? Math.min(...passing) : 0;
   return (a, b) => {
@@ -656,17 +715,21 @@ export async function optimizeSettings(config, heat, options = {}) {
   const cache = new Map();
   // One geometry with its process: the evaluation cache and every lookup use this id.
   const gid = (g) => `${g.key}|${g.speed ?? ''}|${g.diameter}`;
-  const evaluate = (g, f, h, stage) => {
-    const key = `${gid(g)}|${f.toFixed(5)}|${h.cellSize}`;
+  // `floor`: the lowest nozzle height this evaluation may use (the final check holds one height across its band).
+  const keyOf = (g, f, h, floor = 0) => `${gid(g)}|${f.toFixed(5)}|${h.cellSize}${floor > config.standoff ? `|z${floor}` : ''}`;
+  const evaluate = (g, f, h, stage, floor = 0) => {
+    const key = keyOf(g, f, h, floor);
     if (!cache.has(key)) {
       const k = knobOf(g.mode);
+      const c = configFor(g);
+      if (floor > c.standoff) c.standoff = floor;
       cache.set(
         key,
-        run({ config: configFor(g), heat: h, target: required * f, knob: k.id }).then((r) => {
+        run({ config: c, heat: h, target: required * f, knob: k.id, standoff: o.standoff }).then((r) => {
           evaluations++;
           done += h === fine ? costRatio : 1;
           o.onProgress?.(Math.min(0.99, done / budget), `${stage}：${describeGeometry(g)}`);
-          return r ? { ...g, factor: f, knobValue: r.settings[k.key], knobInfo: k, motionInfo: motionOf(g.mode), cycleOk: !(o.cycleLimit > 0) || r.cycle <= o.cycleLimit, ...r } : null;
+          return r ? { ...g, factor: f, knobValue: r.settings[k.key], knobInfo: k, motionInfo: motionOf(g.mode), cycleOk: !(o.cycleLimit > 0) || r.cycle <= o.cycleLimit, ...r, standoffRaised: Math.max(0, (r.settings.standoff ?? config.standoff) - config.standoff) } : null; // raised from the height the search started at, also under a floor
         }),
       );
     }
@@ -674,7 +737,8 @@ export async function optimizeSettings(config, heat, options = {}) {
   };
   const geoOf = (c) => geometries.find((g) => gid(g) === gid(c));
 
-  const feasible = (r) => r.reached && r.cycleOk;
+  // A result whose needle touches glue cannot be used, whatever its coverage (v3.1).
+  const feasible = (r) => r.reached && r.cycleOk && r.needleClear !== false;
   // Which results get checked does not look at marginal passes, so a check never triggers further checks.
   const orderFor = (list, settled = false) => resultOrder(list, { goals, cycleRef, settled });
   // Only a result re-run on the final grid across the tolerance band can pass.
@@ -685,7 +749,7 @@ export async function optimizeSettings(config, heat, options = {}) {
       const j = judge(c.worst || c, goals);
       return { ...c, ...j, pass: isPass(c), coarsePass: !c.verified && Boolean(c.robust) && feasible(c) };
     });
-    return { goals, tolerance: tol, knob, motion, types: space.types, nozzle: o.nozzle, sizing, cycleLimit: o.cycleLimit, cycleRef, required, dose, space, plan, level: o.level, searchCell: o.searchCell, verifyCell: o.verifyCell, band: bandFactors.length, evaluations, candidates: list, best: list[0], complete };
+    return { goals, tolerance: tol, knob, motion, types: space.types, nozzle: o.nozzle, standoff: o.standoff, standoffBase: config.standoff, sizing, cycleLimit: o.cycleLimit, cycleRef, required, dose, space, plan, level: o.level, searchCell: o.searchCell, verifyCell: o.verifyCell, band: bandFactors.length, evaluations, candidates: list, best: list[0], complete };
   };
   const screenedRow = (s) => ({ ...rank(s.pts, goals)[0], fCov: null, fOvf: null, margin: null, robust: false, screenedOnly: true });
 
@@ -813,7 +877,21 @@ export async function optimizeSettings(config, heat, options = {}) {
   };
   const verifyOne = async (c) => {
     const g = geoOf(c);
-    const band = (await Promise.all(bandFactors.map((s) => evaluate(g, c.factor * (1 + s * tol), fine, '複核')))).filter(Boolean);
+    // One nozzle height for the whole band: the one that clears the glue at the largest dose (the tallest pile),
+    // raised again if a smaller dose should need more. The other doses are then run at that height.
+    let floor = 0;
+    let band = [];
+    for (let round = 0; round < 4; round++) {
+      const topFactor = c.factor * (1 + Math.max(...bandFactors) * tol);
+      const top = await evaluate(g, topFactor, fine, '複核', floor);
+      const height = Math.max(floor, top?.settings.standoff ?? 0);
+      // The top dose was just run at that height: reuse it instead of running it again under the new floor.
+      if (top && !cache.has(keyOf(g, topFactor, fine, height))) cache.set(keyOf(g, topFactor, fine, height), Promise.resolve(top));
+      band = (await Promise.all(bandFactors.map((s) => evaluate(g, c.factor * (1 + s * tol), fine, '複核', height)))).filter(Boolean);
+      const needed = Math.max(height, ...band.map((r) => r.settings.standoff));
+      if (!(needed > height + 1e-9)) break;
+      floor = needed;
+    }
     if (!band.length) return { ...c, verified: true, robust: false };
     const nominal = band.find((r) => Math.abs(r.factor - c.factor) < 1e-9) || c;
     const worst = {
@@ -821,14 +899,15 @@ export async function optimizeSettings(config, heat, options = {}) {
       squeezeOutMm: Math.max(...band.map((r) => r.squeezeOutMm)),
       voidAreaMm2: Math.max(...band.map((r) => r.voidAreaMm2)),
     };
-    const ok = band.length === bandFactors.length && band.every((r) => r.reached) && worst.coveredPercent >= goals.coverage && worst.squeezeOutMm <= goals.overflow;
+    const clear = band.every((r) => r.needleClear !== false);
+    const ok = band.length === bandFactors.length && band.every((r) => r.reached) && clear && worst.coveredPercent >= goals.coverage && worst.squeezeOutMm <= goals.overflow;
     // Every dose of the check, for the page to show where a goal was missed and which doses the equipment
     // could not lay (capped) or only by leaving the drive (fallback to the travel speed or gate time).
-    const bandPoints = band.map((r) => ({ shift: r.factor / c.factor - 1, factor: r.factor, laid: r.depositedMl / required, depositedMl: r.depositedMl, coveredPercent: r.coveredPercent, squeezeOutMm: r.squeezeOutMm, voidAreaMm2: r.voidAreaMm2, reached: r.reached, capped: !r.reached && r.depositedMl < required * r.factor, fallback: Boolean(r.fallback) }));
+    const bandPoints = band.map((r) => ({ shift: r.factor / c.factor - 1, factor: r.factor, laid: r.depositedMl / required, depositedMl: r.depositedMl, coveredPercent: r.coveredPercent, squeezeOutMm: r.squeezeOutMm, voidAreaMm2: r.voidAreaMm2, reached: r.reached, capped: !r.reached && r.depositedMl < required * r.factor, fallback: Boolean(r.fallback), standoff: r.settings.standoff, needleClear: r.needleClear !== false }));
     const capped = bandPoints.filter((p) => p.capped);
     const capFactor = capped.length ? Math.max(...capped.map((p) => p.laid)) : c.capFactor;
     const passMarginOf = passMargin(worst, goals, o.verifyCell);
-    return { ...c, ...nominal, fCov: c.fCov, fOvf: c.fOvf, margin: c.margin, supportedTol: c.supportedTol, fCovAtMin: c.fCovAtMin, worst, bandPoints, capFactor, headroom: band.every((r) => !r.fallback), verified: true, robust: ok, passMargin: passMarginOf, marginal: ok && passMarginOf.marginal };
+    return { ...c, ...nominal, fCov: c.fCov, fOvf: c.fOvf, margin: c.margin, supportedTol: c.supportedTol, fCovAtMin: c.fCovAtMin, worst, bandPoints, capFactor, headroom: band.every((r) => !r.fallback), needleClear: clear, verified: true, robust: ok, passMargin: passMarginOf, marginal: ok && passMarginOf.marginal };
   };
   for (;;) {
     candidates.sort(orderFor(candidates));
