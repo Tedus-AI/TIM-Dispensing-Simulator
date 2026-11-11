@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { fromRegistry, simulate, runTiming, calibrateFlow, steadyFlow } from '../src/engine.js';
+import { fromRegistry, simulate, runTiming, calibrateFlow, steadyFlow, SHUTOFF_COMPARISON } from '../src/engine.js';
 import { planDispensePath } from '../src/path-planning.js';
 import { PRESS_DEFAULTS } from '../src/compression.js';
 import { optimizeSettings, chooseProcess, autoRanges, processCost, NEEDLES, CYCLE_REFERENCE, searchSpace } from '../src/optimize.js';
@@ -10,7 +10,9 @@ const registry = JSON.parse(readFileSync(new URL('../../data/engineering_default
 const square = (pattern, extra = {}) => ({ shape: 'rectangle', width: 30, depth: 30, offsetX: 0, offsetY: 0, pattern, spacing: 5, edgeInset: 2.5, spiralShape: 'auto', spiralDirection: 'inside-out', ...extra });
 // The thin-gap case from v1.7 user feedback: Tgrease 2500, 30 × 30 mm, 0.05 mm gap, 18G needle at 1 mm/s.
 const thinHeat = { shape: 'rectangle', width: 30, depth: 30, offsetX: 0, offsetY: 0, gap: 0.05, cellSize: 0.5, power: 25, ...PRESS_DEFAULTS };
-const thin = (path = {}) => ({ ...fromRegistry(registry, 'grease'), mode: 'pattern', speed: 1, diameter: 0.84, pathSettings: square('spiral', path) });
+// The thin-gap cases were set up with the 10 mm early shut-off that was the default until v3.0 (v3.1: 0); at
+// 1 mm/s their 179 mm path only fits the 180 s run limit when the gate closes before the end.
+const thin = (path = {}) => ({ ...fromRegistry(registry, 'grease'), mode: 'pattern', speed: 1, diameter: 0.84, shutoffDistance: SHUTOFF_COMPARISON, pathSettings: square('spiral', path) });
 const required = (30 * 30 * 0.05) / 1000;
 
 test('runTiming gives the deposit, cycle and duration of a run without stepping it', () => {
