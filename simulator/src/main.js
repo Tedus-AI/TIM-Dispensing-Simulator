@@ -1,12 +1,12 @@
 import './style.css';
 import registry from '../../data/engineering_defaults_v0.3.json';
-import { fromRegistry, simulate, frameAt, calibrateFlow, airScale, R75_AIR, LABEL, VERSION, ENDING_DEFAULT, MOTION_DEFAULTS, CORNER_DEFAULTS, needlePressure, pcpPressureRpm, PCP_MAX_PRESSURE, thermalShift, flowExponent, REFERENCE_TEMPERATURE } from './engine.js';
+import { fromRegistry, simulate, frameAt, calibrateFlow, airScale, R75_AIR, LABEL, VERSION, ENDING_DEFAULT, SHUTOFF_COMPARISON, MOTION_DEFAULTS, CORNER_DEFAULTS, needlePressure, pcpPressureRpm, PCP_MAX_PRESSURE, thermalShift, flowExponent, REFERENCE_TEMPERATURE } from './engine.js';
 import { PARAMETER_UPDATES, parameterValue } from './parameters.js';
 import { MATERIALS } from './materials.js';
 import { DispenseScene, VIEW_LABELS } from './scene.js';
 import { HARDWARE_REFERENCES } from './hardware-reference.js';
 import { estimateCompression, squeezeRheology, PRESS_DEFAULTS } from './compression.js';
-import { GOAL_DEFAULTS, OPTIMIZE_DEFAULTS, SEARCH_LEVELS, SEARCH_PATTERNS, VARS_DEFAULT, TYPE_LABEL, DIRECTION_LABEL, CYCLE_REFERENCE, NOZZLE_PRESETS, levelOf, planSearch, searchSpace, autoRanges, currentPathLength, nozzleMode, nearestNeedle, gaugeTable, estimateSeconds, screeningDoses, optimizeSettings, judge, rank, metricsOf, beadMatch, needleLabel } from './optimize.js';
+import { GOAL_DEFAULTS, OPTIMIZE_DEFAULTS, SEARCH_LEVELS, SEARCH_PATTERNS, VARS_DEFAULT, TYPE_LABEL, DIRECTION_LABEL, CYCLE_REFERENCE, NOZZLE_PRESETS, STANDOFF_STEP, STANDOFF_MAX, standoffMode, ropeHeight, levelOf, planSearch, searchSpace, autoRanges, currentPathLength, nozzleMode, nearestNeedle, gaugeTable, estimateSeconds, screeningDoses, optimizeSettings, judge, rank, metricsOf, beadMatch, needleLabel } from './optimize.js';
 import { tuneDose, driveOf } from './tuning.js';
 import { pageTemplate, ICONS, PATTERN_ICONS, PATTERN_NAMES } from './ui/template.js';
 import { stackedBead } from './stacking.js';
@@ -629,8 +629,8 @@ function renderEnding() {
     body += group(
       '提前關膠',
       num({ bind: 'c.shutoffDistance', label: '終點前關膠距離', value: c.shutoffDistance, unit: 'mm', min: 0, max: 250, tag: 'ai' }) +
-        `<div class="seg full presets"><button data-shutoff="0">未補償 0 mm</button><button data-shutoff="${ENDING_DEFAULT.value}">初估 ${ENDING_DEFAULT.value} mm</button></div>`,
-      { note: '先關膠、針嘴繼續走到終點；距離依當前加減速曲線換算成時間。提前過多會欠膠。' },
+        `<div class="seg full presets"><button data-shutoff="0" class="${c.shutoffDistance === 0 ? 'active' : ''}">不提前 0 mm（預設）</button><button data-shutoff="${SHUTOFF_COMPARISON}" class="${c.shutoffDistance === SHUTOFF_COMPARISON ? 'active' : ''}">比較值 ${SHUTOFF_COMPARISON} mm</button></div>`,
+      { note: '預設 0：到終點才關膠。設定後先關膠、針嘴繼續走到終點，用來抵銷關膠後的殘壓出膠；距離依當前加減速曲線換算成時間。提前過多會欠膠。' },
     );
   body += group(
     '退離動作',
@@ -2049,6 +2049,12 @@ function varsTable(running, level) {
       '—',
     ],
     [
+      '針嘴離面高度',
+      `針嘴碰到膠的結果不能用。碰到有兩種：一趟的膠就高於針嘴（埋針）；或路徑重複經過時，碰到前一趟疊起來的膠（疊膠碰針）。\n自動上調：每次試算若會碰到，就把針嘴提高 ${STANDOFF_STEP} mm 重算，直到不碰為止（最高 ${STANDOFF_MAX} mm），壓合也從那個針距鋪出的膠形開始。複核時整個容差範圍用同一個針距：膠量最多那一點需要的高度。\n固定：維持目前的 ${fmt(S.config.standoff, 1)} mm，會碰到的結果判為「碰針」、不算達標。\n注意：模型沒有算膠堆自重攤平，疊高偏高（米字形中心最明顯），上調的量因此偏保守。針距超過膠條自然高度 2 倍時，膠會先懸空再落下、落點偏後，模型沒有算這一段；表格會標出，同樣膠量時這種組合排在後面。`,
+      `<td colspan="2"><select data-opt="standoff" ${off}><option value="raise" ${standoffMode(S.optOptions.standoff) === 'raise' ? 'selected' : ''}>自動上調（碰到膠就 +${STANDOFF_STEP} mm）</option><option value="fixed" ${standoffMode(S.optOptions.standoff) === 'fixed' ? 'selected' : ''}>固定目前 ${fmt(S.config.standoff, 1)} mm（碰到就不達標）</option></select></td>`,
+      '—',
+    ],
+    [
       '膠量',
       '一定搜尋：每組幾何在這個範圍（需求倍數）內找出「容差內都達標」的膠量窗口。',
       `<td><small>一定搜尋</small></td><td><span class="var-range"><input type="number" data-opt="dose0" value="${S.optOptions.dose[0]}" min="0.05" max="5" step="any" ${off}> – <input type="number" data-opt="dose1" value="${S.optOptions.dose[1]}" min="0.1" max="6" step="any" ${off}> × 需求</span></td>`,
@@ -2057,7 +2063,7 @@ function varsTable(running, level) {
   ];
   const total = space.geometries.length;
   const heavy = total > 400;
-  const fixedText = `其他固定條件：熱源 ${S.heat.shape === 'circle' ? `Ø${S.heat.width}` : `${S.heat.width} × ${S.heat.depth}`} mm、間隙 ${S.heat.gap} mm、${MATERIALS[S.config.material].name}、加速度 ${S.config.acceleration} mm/s²、針距 ${S.config.standoff} mm、收尾設定、壓合 ${S.heat.pressKgf} kgf／${AIR_MODE_SHORT[S.heat.airMode]}。`;
+  const fixedText = `其他固定條件：熱源 ${S.heat.shape === 'circle' ? `Ø${S.heat.width}` : `${S.heat.width} × ${S.heat.depth}`} mm、間隙 ${S.heat.gap} mm、${MATERIALS[S.config.material].name}、加速度 ${S.config.acceleration} mm/s²、${standoffMode(S.optOptions.standoff) === 'raise' ? `針距由 ${S.config.standoff} mm 起（碰到膠自動上調）` : `針距 ${S.config.standoff} mm`}、收尾設定、壓合 ${S.heat.pressKgf} kgf／${AIR_MODE_SHORT[S.heat.airMode]}。`;
   return {
     total,
     space,
@@ -2156,6 +2162,21 @@ function renderOptimize() {
     const room = x.passMargin ? `最差溢膠 ${fmt(x.worst.squeezeOutMm, 2)} mm，離上限${x.marginal ? '只差' : '還有'} ${fmt(x.passMargin.overflow, 2)} mm` : '';
     if (x.pass && x.marginal) return badge('mid-badge', '邊緣達標', `${passed}，但${room}，小於一個網格（${fmt(r.verifyCell, 2)} mm）的計算誤差，實際可能超過。同一段膠量內排在穩健的結果後面。`);
     if (x.pass) return badge('ok-badge', '達標', `${passed}。${room ? `${room}（大於一個網格的計算誤差）。` : ''}`);
+    // v3.1: a needle that touches glue rules the result out, whatever its coverage.
+    if (x.needleClear === false) {
+      const z = x.settings?.standoff;
+      const what = x.bead?.buried
+        ? `一趟的${x.mode === 'point' ? '膠點' : '膠條'}高 ${fmt(x.bead.beadHeight, 2)} mm，高於針嘴離面 ${fmt(z, 1)} mm（埋針）`
+        : `路徑重複經過的地方，膠疊到針嘴的高度（最高約 ${fmt(x.bead?.stack?.maxHeight, 2)} mm，針嘴離面 ${fmt(z, 1)} mm）`;
+      const where = x.bandPoints?.some((p) => !p.needleClear) && x.bandPoints.find((p) => !p.needleClear);
+      return badge(
+        'no-badge',
+        '碰針',
+        `${what}${where ? `；容差內「${shift(where)}」那一點會碰到` : ''}。針嘴碰到膠的結果不能用。${
+          r.standoff === 'raise' ? `已每次 ${STANDOFF_STEP} mm 調到上限 ${STANDOFF_MAX} mm 仍會碰到：請減少膠量、換不重複經過的圖樣或較粗的膠條。` : '「針嘴離面高度」改成「自動上調」會自動把針嘴調高，或先在路徑頁提高針嘴離面高度。'
+        }`,
+      );
+    }
     if (!x.reached || x.bandPoints?.some((p) => p.capped))
       return badge('no-badge', '設備限制', `${capWhy(x)}都已到極限，${x.capFactor ? `最多只鋪得出約 ${fmt(x.capFactor, 2)}× 需求，` : ''}達不到需要的膠量。針嘴改「自動」或換粗一點、放寬速度範圍，或先用實測出膠量校正（設備頁）。`);
     if (!x.cycleOk) return badge('no-badge', '超過週期', `週期 ${fmt(x.cycle, 1)} s 超過週期上限。`);
@@ -2199,7 +2220,26 @@ function renderOptimize() {
     return `<span class="${warn ? 'warn' : ''}" tabindex="0" data-tip="${esc(note)}">${text}</span>`;
   };
   // The table's bead cell: the bead verdict over the needle bore it is measured against.
-  const beadRowCell = (x) => `${beadCellX(x)}${x.diameter > 0 ? `<small>內徑 ${fmt(x.diameter, 2)} mm</small>` : ''}`;
+  // Nozzle height of a row: what the search raised it to, and whether the paste then hangs before it lands.
+  const standoffNote = (x) => {
+    const z = x.settings?.standoff;
+    if (!(z > 0)) return '';
+    const up = x.standoffRaised > 0;
+    const rope = ropeHeight(x.bead);
+    const high = up && z > rope + 1e-9;
+    const text = `針距 ${fmt(z, z % 1 ? 1 : 0)} mm${up ? `（+${fmt(x.standoffRaised, 0)}）` : ''}`;
+    if (!up && x.needleClear !== false) return `<small>${text}</small>`;
+    const note =
+      x.needleClear === false
+        ? `針嘴離面 ${fmt(z, 1)} mm 仍會碰到膠${r?.standoff === 'raise' ? `（已調到上限 ${STANDOFF_MAX} mm）` : '（針距固定）'}。`
+        : `原本 ${fmt(z - x.standoffRaised, 1)} mm 會碰到膠，每次 ${STANDOFF_STEP} mm 往上調到 ${fmt(z, 1)} mm 才不碰（疊膠最高約 ${fmt(x.bead?.stack?.maxHeight, 1)} mm）。${
+            high
+              ? `這個高度是膠條自然高度（${fmt(x.bead.freeHeight, 2)} mm）的 ${fmt(z / x.bead.freeHeight, 1)} 倍：膠離開針孔後要先懸空才落到面上，落點在針嘴後方、轉角會切角，模型沒有算這一段。同樣膠量時排在不需要調這麼高的組合後面。`
+              : ''
+          }模型沒有算膠堆自重攤平，實際需要的高度可能較低。`;
+    return `<small class="${high || x.needleClear === false ? 'warn' : ''}" tabindex="0" data-tip="${esc(note)}">${text}${high ? '・偏高' : ''}</small>`;
+  };
+  const beadRowCell = (x) => `${beadCellX(x)}${x.diameter > 0 ? `<small>內徑 ${fmt(x.diameter, 2)} mm</small>` : ''}${standoffNote(x)}`;
   const geoCell = (x) => `<b>${typeText(x)}</b>${geoParts(x).length ? `<small>${geoParts(x).join(' · ')}</small>` : ''}`;
   const head = (label, note, sub = '') => `<th>${label}${tip(note)}${sub ? `<br><small>${sub}</small>` : ''}</th>`;
   const kinds = vt.space.types;
@@ -2240,7 +2280,7 @@ function renderOptimize() {
           best
             ? `<div class="opt-best ${best.pass ? 'pass' : 'fail'}"><b>${best.pass ? '建議設定' : best.coarsePass ? '粗網格達標、尚未複核' : best.screenedOnly ? '目前領先（只完成篩選）' : '最接近的取捨'}</b><span>${geoText(best)}${doseText(best)} → 標稱 ${fmt(best.depositedMl, 3)} mL（${fmt(best.depositedMl * o.config.density, 3)} g，${fmt(best.volumeRatio, 2)}×）</span><span>${
                 best.worst ? `膠量 ±${tolPct}% 內：覆蓋 ≥ ${fmt(best.worst.coveredPercent, 1)}%、溢膠 ≤ ${fmt(best.worst.squeezeOutMm, 1)} mm` : `標稱：覆蓋 ${fmt(best.coveredPercent, 1)}%、溢膠 ${fmt(best.squeezeOutMm, 1)} mm`
-              }；週期 ${fmt(best.cycle, 1)} s${best.bead.speedRatio !== null || best.bead.drags ? `；${best.mode === 'point' ? '膠點' : '膠條'} ${beadCellX(best)}` : ''}</span>${
+              }；週期 ${fmt(best.cycle, 1)} s${best.standoffRaised > 0 ? `；針嘴離面由 ${fmt(best.settings.standoff - best.standoffRaised, 1)} 調高到 ${fmt(best.settings.standoff, 1)} mm（不碰膠）` : ''}${best.bead.speedRatio !== null || best.bead.drags ? `；${best.mode === 'point' ? '膠點' : '膠條'} ${beadCellX(best)}` : ''}</span>${
                 best.fCovAtMin ? `<span class="warn">覆蓋在膠量範圍下限 ${fmt(r.dose[0], 2)}× 就已達標，真正的最少膠量可能更低：可把膠量範圍下限調低再搜尋。</span>` : ''
               }${best.pass && best.marginal ? `<span class="warn">${marginalNote(best)}</span>` : ''}${
                 !(best.depositedMl > 1e-9)
@@ -2312,7 +2352,7 @@ $('#optimize-body').addEventListener('change', (e) => {
     return;
   }
   const o = { ...S.optOptions };
-  if (k === 'nozzle') o[k] = el.value;
+  if (k === 'nozzle' || k === 'standoff') o[k] = el.value;
   else if (k === 'cycleLimit') o.cycleLimit = el.value.trim() ? Number(el.value) : null;
   else {
     if (!el.value.trim() || !el.checkValidity()) return toast('請輸入欄位範圍內的數值', 'error');
@@ -2395,6 +2435,7 @@ const rowSummary = (x) =>
     x.mode === 'pattern' ? `內縮 ${x.edgeInset} mm` : '',
     `針嘴 ${needleLabel(x.diameter)}`,
     x.mode !== 'point' && x.settings?.speed ? `${fmt(x.settings.speed, x.settings.speed < 10 ? 1 : 0)} mm/s` : '',
+    x.standoffRaised > 0 ? `針嘴離面調高到 ${fmt(x.settings.standoff, 1)} mm（+${fmt(x.standoffRaised, 0)}）` : '',
   ]
     .filter(Boolean)
     .join('、');
@@ -2607,6 +2648,7 @@ $('#help-body').innerHTML = `
   <li><b>上方工具列</b>：「自動最佳化」搜尋膠量 ±容差（預設 ±10%）內都達標、膠量最少的設定；膠量相差 3% 以內時，最差溢膠離上限不到一個網格的標「邊緣達標」、排在後面，其餘選膠條較好、週期較短、壓力有調整餘裕的。「情境比較」一次比較所有存下的情境。</li>
   <li><b>搜尋變數</b>：自動最佳化的「搜尋變數」表裡，每個變數都可選「固定（用目前設定）」或「搜尋」——圖樣種類（蛇形、螺旋、米字形、單點、中心線，可勾選）、路徑間距、邊界內縮、螺旋起點（外向內／中心向外）、移動速度；範圍留空為自動，也可自己輸入。膠量一定搜尋。表下方顯示總組合數；每種圖樣的最佳組都會找膠量窗口並複核，方便比較。</li>
   <li><b>針嘴與速度自動選</b>：針嘴選「自動」、速度選「搜尋」時，每組幾何先算好要用哪支針嘴、多快：在壓力（轉速）範圍內鋪得出整個膠量範圍、膠條最接近針嘴大小、週期不超過週期上限（未設定時以 30 s 為參考）。壓合結果主要由圖樣決定、幾乎不受速度與針嘴影響，所以速度不增加組數。出不了需要的膠量時，表格會標「設備上限 x×」，說明是針嘴、壓力或速度卡住。</li>
+  <li><b>針嘴離面高度（v3.1）</b>：自動最佳化把「針嘴碰到膠」當成不能用的結果——一趟的膠高於針嘴（埋針），或路徑重複經過時碰到前一趟疊起來的膠。搜尋變數表的「針嘴離面高度」預設「自動上調」：會碰到就把針嘴每次提高 1 mm 重算，直到不碰為止，膠條欄會寫出調到幾 mm；選「固定」則會碰到的結果判為「碰針」。調得比膠條自然高度的 2 倍還高時，膠會先懸空再落下（模型沒有算），表格標「偏高」，同樣膠量時排在後面。模型有算針嘴把膠壓扁、往兩側推開；沒有算膠沾在針上被帶走、牽絲，也沒有算膠堆自重攤平（所以疊高偏高、上調的量偏保守）。</li>
   <li><b>說明在「?」裡</b>：介面上的小圓圈問號，游標移過去（手機點一下）就會顯示該項的說明；表格裡的判定、膠條、覆蓋等格子也可以移過去看細節。</li>
   <li><b>夾氣顏色</b>：壓合畫面下方工具列可切換夾氣顏色（洋紅、藍、黃、黑），遇到和膠材相近的顏色時換一個；選擇會記在這台電腦。</li>
   <li><b>最佳化精細度</b>：快速／標準／精細／極精細四級，越精細候選越多、找窗口與複核的組數越多、網格越細；選級時會依這台電腦試算一次估出時間。搜尋分散在多個執行緒並行；搜尋中可按「停止搜尋」，會保留已完成的部分結果（標示「未複核」者不能當最終建議）。只有在細網格、容差內多個膠量都達標的結果才算「達標」（最差溢膠離上限不到一個網格的標「邊緣達標」）；前幾名與每種圖樣最好的一組會複核；套用時網格會設成該結果使用的網格。</li>
@@ -2630,6 +2672,9 @@ S.config = initialConfig();
 // Continue from the settings of the last visit when they still simulate; else the research defaults.
 const saved = readJson('tim-session');
 let restored = false;
+// v3.1 changed the default early shut-off from 10 mm to 0. A session saved by v3.0.0 that still holds the old
+// default takes the new one (once: the session is saved again under this version); a value the user set stays.
+if (saved?.version === '3.0.0' && saved.config?.shutoffDistance === SHUTOFF_COMPARISON) saved.config.shutoffDistance = ENDING_DEFAULT.value;
 if (saved?.config) {
   try {
     restored = applySettings(saved, { silent: true });

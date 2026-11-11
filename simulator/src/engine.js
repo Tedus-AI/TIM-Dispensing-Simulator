@@ -3,17 +3,19 @@ import { motionProfile, timeAtDistance, planPolylineMotion } from './motion.js';
 import { withUpdates } from './parameters.js';
 
 export { motionProfile, timeAtDistance };
-export const VERSION = '3.0.0';
+export const VERSION = '3.1.0';
 export const LABEL = '工程假設／未經實機校準';
 export const BEAD_SIDES = 32;
 
+// Early shut-off before the end of the path. The default is 0 (the dispenser closes at the end, v3.1); the
+// comparison value is what v0.2–v3.0 used as the default and the ending tab still offers as a preset.
+export const SHUTOFF_COMPARISON = 10; // mm
 export const ENDING_DEFAULT = {
   id: 'ending.shutoff_distance',
-  value: 10,
+  value: 0,
   unit: 'mm',
   evidence: 'engineering_assumption',
-  basis:
-    'AI 初始比較值：預設 100 mm 路徑、100 mm/s、500 mm/s² 對應提前 200 ms 關膠。不是原廠配方；速度或路徑改變後提前時間也會改變。',
+  basis: `預設 0：到終點才關膠，不提前（v3.1 起；v0.2–v3.0 的預設為 ${SHUTOFF_COMPARISON} mm）。收尾頁保留「比較值 ${SHUTOFF_COMPARISON} mm」：以 100 mm 路徑、100 mm/s、500 mm/s² 計約提前 200 ms 關膠，是 AI 初始比較值，不是原廠配方；速度或路徑改變後提前時間也會改變。`,
   source_refs: ['16_收尾積膠原因與影片比對.md'],
 };
 
