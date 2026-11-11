@@ -12,7 +12,7 @@ Windows：雙擊本資料夾的 **啟動模擬器.cmd**，瀏覽器開啟 `http:
 
 ```powershell
 npm ci
-npm test        # 143 項數值、幾何與壓合測試（含 Stefan、冪律圓盤、Taylor–Saffman、pV、Bingham 塑性極限、氣壓起停積分、向心加速度、膠溫、膠點壓合封閉解、機台行程干涉）
+npm test        # 149 項數值、幾何與壓合測試（含 Stefan、冪律圓盤、Taylor–Saffman、pV、Bingham 塑性極限、氣壓起停積分、向心加速度、膠溫、膠點壓合封閉解、機台行程干涉、最佳化的針嘴高度條件）
 npm run dev     # 開發伺服器，與啟動器共用 5173，請勿同時開
 npm run build   # 更新 dist/
 ```
