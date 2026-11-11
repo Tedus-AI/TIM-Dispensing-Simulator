@@ -1,5 +1,19 @@
 # 點膠研究室 · 機構與實作契約
 
+## v3.1.1（2026-11-11）
+
+- 新檔 `ui/verdicts.js`：
+  - `VERDICTS`：最佳化結果表「判定」欄的 12 種結果（`pass`、`marginal`、`needle`、`equipment`、`cycle`、`narrow`、`short`、`over`、`both`、`partial`、`pending`、`unfinished`），各有 `label`、`cls`（`ok-badge`／`mid-badge`／`no-badge`）、`plain`（白話說明）、`todo`（處置）。順序即名詞解釋的順序。
+  - `shortLabel(x)`、`overLabel(x)`、`missLabel(short, over)`：帶數字的判定文字；名詞解釋以 `x` 代入，表格以實際數字代入。
+  - `VERDICT_TERMS`：四個詞（膠量窗口、膠量容差、複核、粗細網格）的解釋。容差預設值讀 `OPTIMIZE_DEFAULTS.tolerance`，碰針處置的上限讀 `STANDOFF_MAX`。
+  - `verdictGlossaryHtml(open)`：`<details id="verdict-glossary">`，每一項 `data-verdict="<id>"`。
+- `main.js`：
+  - `rowVerdict` 的標籤文字與樣式改由 `VERDICTS` 取得（區域函式 `verdict(id, note, text)`、`missed(j)`）；判定的先後與條件不變。
+  - `renderOptimize()` 在 `#optimize-body` 的最後接上名詞解釋；`S.optGlossaryOpen` 記住收合狀態（只在這次開啟期間，不存入工作階段）。
+  - 判定欄標題說明與操作說明各加一句。
+- `style.css`：`.verdict-glossary`、`.vg-terms`、`.vg-list`、`.vg-item`、`.vg-todo`、`.vg-foot`；寬視窗兩欄（`auto-fit`，每欄至少 440 px），760 px 以下單欄、標籤在說明上方。
+- 契約：新增一種判定時，先在 `VERDICTS` 加一項（含說明與處置），`rowVerdict` 再以 `verdict(id, …)` 使用；`tests/verdicts.test.mjs` 會擋下表格自己寫判定文字、或清單沒有的 id。
+
 ## v3.1.0（2026-11-11）
 
 - `engine.js`：`ENDING_DEFAULT.value` 10 → 0（`fromRegistry` 的 `shutoffDistance`）；`SHUTOFF_COMPARISON` = 10 供收尾頁的比較值按鈕。
