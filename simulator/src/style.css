@@ -209,7 +209,10 @@ select { width: 100%; padding: 7px 9px; border-radius: var(--radius-s); border: 
 .hud-right span { font-size: 11px; color: var(--muted); }
 .hud-right b { font: 600 13px var(--mono); color: var(--strong); text-align: right; font-variant-numeric: tabular-nums; }
 .hud-right small { font: 10.5px var(--mono); color: var(--muted); }
-.press-bar { position: absolute; z-index: 3; left: 50%; bottom: 46px; transform: translateX(-50%); display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 13px; background: color-mix(in srgb, var(--panel) 90%, transparent); backdrop-filter: blur(10px); box-shadow: var(--lift); max-width: calc(100% - 24px); }
+/* Press bar and (in focus mode) the playback bar share one bottom strip: stacked normally, one row when maximised. */
+.stage-bars { position: absolute; z-index: 4; left: 12px; right: 12px; bottom: 46px; display: flex; flex-direction: column; align-items: center; gap: 8px; pointer-events: none; }
+.stage-bars > * { pointer-events: auto; max-width: 100%; }
+.press-bar { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 13px; background: color-mix(in srgb, var(--panel) 90%, transparent); backdrop-filter: blur(10px); box-shadow: var(--lift); }
 .press-bar input[type='range'] { width: 180px; }
 .press-bar #press-gap { font: 12px var(--mono); color: var(--strong); white-space: nowrap; }
 .press-bar .tool { box-shadow: none; background: var(--panel-2); }
@@ -372,6 +375,25 @@ tr.v1 td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
 #toast.ok { background: var(--good); color: #fff; }
 
 /* ── responsive ── */
+/* ── focus (maximised stage): auto-entered on play; side panels and dock collapse, a floating bar keeps play + press ── */
+.focus-bar { display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-radius: 13px; background: color-mix(in srgb, var(--panel) 92%, transparent); backdrop-filter: blur(10px); box-shadow: var(--lift); }
+.focus-bar[hidden] { display: none; }
+.focus-bar .primary { min-width: 108px; }
+.focus-bar .tool { box-shadow: none; background: var(--panel-2); backdrop-filter: none; padding: 7px 8px; white-space: nowrap; }
+.focus-bar input[type='range'] { width: 220px; }
+.focus-bar #focus-time { font-size: 12px; color: var(--strong); white-space: nowrap; min-width: 118px; text-align: right; }
+.focus-bar .secondary { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+#app.focus .config, #app.focus .results, #app.focus .dock { display: none; }
+#app.focus .workspace { grid-template-columns: minmax(0, 1fr); }
+#app.focus .center { grid-template-rows: minmax(0, 1fr); }
+#app.focus .stage-bars { bottom: 12px; flex-direction: row; flex-wrap: wrap; justify-content: center; align-items: stretch; }
+#app.focus .stage-foot { bottom: 70px; }
+/* While the press view is open the dispense timeline is not in use: drop it so both bars fit on one row. */
+.stage-bars:has(#press-bar:not([hidden])) :is(#focus-restart, #focus-scrub, #focus-time) { display: none; }
+@media (min-width: 1200px) {
+  #app.focus .press-bar { flex-wrap: nowrap; }
+  #app.focus .press-bar input[type='range'] { flex: 0 0 160px; width: 160px; }
+}
 @media (max-width: 1360px) {
   .workspace { grid-template-columns: 312px minmax(0, 1fr) 300px; }
   .views button { padding: 5px 7px; }
@@ -403,8 +425,18 @@ tr.v1 td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
   .transport { flex-wrap: wrap; }
   .scrub-wrap { order: 5; flex-basis: 100%; }
   .legend { display: none; }
-  .press-bar { left: 8px; right: 8px; transform: none; flex-wrap: wrap; bottom: 40px; }
+  .stage-bars { left: 8px; right: 8px; bottom: 40px; align-items: stretch; }
+  #app.focus .stage-bars { bottom: 8px; flex-direction: column; }
+  .press-bar { flex-wrap: wrap; }
   .press-bar input[type='range'] { flex: 1; width: auto; }
+  .focus-bar { flex-wrap: wrap; justify-content: center; }
+  .focus-bar input[type='range'] { order: 5; flex-basis: 100%; width: auto; }
+  .focus-bar .tool span { display: none; }
+  #app.focus .stage-foot { display: none; }
+}
+@media (max-width: 1180px) {
+  #app.focus { height: 100%; }
+  #app.focus .center { order: 0; }
 }
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }

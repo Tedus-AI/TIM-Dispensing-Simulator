@@ -1397,9 +1397,14 @@ function renderState() {
   $('.phase').dataset.state = S.press ? 'press' : f.command ? 'dispense' : S.time >= run.duration ? 'done' : 'idle';
   const label = S.playing ? '暫停' : S.time >= run.duration ? '再次播放' : S.time > 0 ? '繼續' : '開始試驗';
   $('#play').innerHTML = `${S.playing ? ICONS.pause : ICONS.play}<span>${label}</span>`;
+  $('#focus-play').innerHTML = $('#play').innerHTML;
   $('#time-readout').textContent = `${fmt(f.t, 3)} / ${fmt(run.duration, 3)} s`;
-  $('#scrubber').value = String(Math.round(S.time * 1000));
-  $('#scrubber').style.setProperty('--p', `${(S.time / run.duration) * 100}%`);
+  $('#focus-time').textContent = $('#time-readout').textContent;
+  for (const id of ['#scrubber', '#focus-scrub']) {
+    $(id).max = $('#scrubber').max;
+    $(id).value = String(Math.round(S.time * 1000));
+    $(id).style.setProperty('--p', `${(S.time / run.duration) * 100}%`);
+  }
   moveCursor($('#chart'), S.chart, S.time);
 }
 
@@ -1408,8 +1413,30 @@ $('#play').onclick = () => {
   if (S.time >= S.run.duration) S.time = 0;
   S.playing = !S.playing;
   S.clock = null;
+  if (S.playing) setFocus(true);
   renderState();
 };
+// Focus mode: starting playback collapses the config, results and timeline panels so the stage fills the
+// window; a floating bar on the stage keeps play/pause, the timeline and「模擬壓合」reachable.
+function setFocus(on) {
+  $('#app').classList.toggle('focus', on);
+  $('#focus-bar').hidden = !on;
+  $('#focus-toggle').setAttribute('aria-pressed', String(on));
+  $('#focus-toggle').innerHTML = on ? ICONS.collapse : ICONS.expand;
+  $('#focus-toggle').title = on ? '展開左右與下方欄位（F 或 Esc）' : '畫面最大化：收合左右與下方欄位（F）';
+  // The chart is sized from its container; redraw once it is visible again.
+  if (!on) requestAnimationFrame(() => renderChart());
+}
+const inFocus = () => $('#app').classList.contains('focus');
+$('#focus-toggle').onclick = () => setFocus(!inFocus());
+$('#focus-exit').onclick = () => setFocus(false);
+$('#focus-play').onclick = () => $('#play').click();
+$('#focus-restart').onclick = () => $('#restart').click();
+$('#focus-scrub').oninput = (e) => {
+  $('#scrubber').value = e.target.value;
+  $('#scrubber').dispatchEvent(new Event('input'));
+};
+$('#focus-press').onclick = () => runPress();
 $('#restart').onclick = () => {
   exitPress();
   S.playing = false;
@@ -1435,6 +1462,7 @@ const SHORTCUTS = [
   ['Home / End', '回到起點／跳到結束（3D 畫面取得焦點時 Home 為重設視角）'],
   ['1 – 5', '切換分頁：熱源工件、膠材設備、路徑、收尾、壓合'],
   ['P', '模擬壓合'],
+  ['F', '畫面最大化／展開面板（按播放時自動最大化；Esc 也可展開）'],
   ['T', '公差檢查（已壓合時）'],
   ['O', '開啟自動最佳化'],
   ['S', '開啟情境比較'],
@@ -1470,6 +1498,8 @@ document.addEventListener('keydown', (e) => {
   else if (key === 'p') runPress();
   else if (key === 't' && S.press && !S.press.stale) runTolerance();
   else if (key === 'o') openOptimize();
+  else if (key === 'f') setFocus(!inFocus());
+  else if (e.key === 'Escape' && inFocus()) setFocus(false);
   else if (key === 's') $('#show-scenarios').click();
   else if (e.key === '?') $('#help').click();
   else return;
@@ -1564,7 +1594,7 @@ function exitPress(render = true) {
 async function runPress() {
   if (S.busy) return;
   beginBusy('模擬壓合…', { cancel: () => resetWorker(new Error(CANCELLED)) });
-  $$('#press-cta').forEach((b) => (b.querySelector('span').textContent = '計算中…'));
+  $$('#press-cta, #focus-press').forEach((b) => (b.querySelector('span').textContent = '計算中…'));
   const heat = { ...S.heat };
   const run = S.run;
   try {
@@ -1594,7 +1624,7 @@ async function runPress() {
     else toast(`壓合估算失敗：${e.message}`, 'error');
   } finally {
     endBusy();
-    $$('#press-cta').forEach((b) => b.querySelector('span') && (b.querySelector('span').textContent = '模擬壓合'));
+    $$('#press-cta, #focus-press').forEach((b) => b.querySelector('span') && (b.querySelector('span').textContent = '模擬壓合'));
   }
 }
 
