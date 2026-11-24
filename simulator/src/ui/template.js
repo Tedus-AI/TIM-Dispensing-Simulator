@@ -39,6 +39,8 @@ export const ICONS = {
   report: icon('<path d="M6 3h9l4 4v14H6z"/><path d="M15 3v4h4M9 12h7M9 16h7M9 8h3"/>'),
   ruler: icon('<path d="M3 17 17 3l4 4L7 21z"/><path d="m7 13 2 2M10 10l2 2M13 7l2 2"/>'),
   alert: icon('<path d="M12 4 2.5 20h19z"/><path d="M12 10v5M12 17.5h.01"/>'),
+  expand: icon('<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>'),
+  collapse: icon('<path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/>'),
   keyboard: icon('<rect x="3" y="6" width="18" height="12" rx="2"/><path d="M7 10h.01M11 10h.01M15 10h.01M7 14h10"/>'),
 };
 
@@ -104,6 +106,7 @@ export function pageTemplate(version) {
           <button class="tool" id="free-orbit" aria-pressed="false" title="360° 自由旋轉">${ICONS.orbit}</button>
           <button class="tool" id="projection" aria-pressed="false" title="切換正交／透視">${ICONS.cube}<span id="projection-label">正交</span></button>
           <button class="tool" id="reset-camera" title="重設視角 (Home)">${ICONS.reset}</button>
+          <button class="tool" id="focus-toggle" aria-pressed="false" title="畫面最大化：收合左右與下方欄位（F）">${ICONS.expand}</button>
         </div>
       </div>
       <div id="viewport" class="viewport"></div>
@@ -119,6 +122,7 @@ export function pageTemplate(version) {
         <div><span>流量</span><b id="hud-q">0.000</b><small>mL/s</small></div>
         <div><span>TCP</span><b id="hud-xyz">0, 0, 0</b><small>mm</small></div>
       </div>
+      <div class="stage-bars">
       <div class="press-bar" id="press-bar" hidden>
         <button class="tool" id="press-play">${ICONS.play}</button>
         <input type="range" id="press-scrub" min="0" max="23" step="1" value="23" aria-label="壓合進程">
@@ -126,6 +130,15 @@ export function pageTemplate(version) {
         <div class="seg small" role="group" aria-label="壓合著色"><button data-press-color="material" class="active">膠色</button><button data-press-color="front">前緣時序</button></div>
         <div class="void-colors" role="group" aria-label="夾氣顏色"><span>夾氣</span><button data-void-color="#ff2d55" style="--c:#ff2d55" aria-label="夾氣顏色：洋紅" data-tip="洋紅"></button><button data-void-color="#2563eb" style="--c:#2563eb" aria-label="夾氣顏色：藍" data-tip="藍"></button><button data-void-color="#facc15" style="--c:#facc15" aria-label="夾氣顏色：黃" data-tip="黃"></button><button data-void-color="#111827" style="--c:#111827" aria-label="夾氣顏色：黑" data-tip="黑"></button></div>
         <button class="tool" id="press-exit" title="回到點膠">${ICONS.close}<span>回到點膠</span></button>
+      </div>
+      <div class="focus-bar" id="focus-bar" role="group" aria-label="最大化時的播放控制" hidden>
+        <button id="focus-play" class="primary">${ICONS.play}<span>開始試驗</span></button>
+        <button id="focus-restart" class="tool" title="回到起點">${ICONS.restart}</button>
+        <input type="range" id="focus-scrub" aria-label="時間軸" min="0" max="1000" step="1" value="0">
+        <span id="focus-time" class="mono">0.000 / 0.000 s</span>
+        <button id="focus-press" class="secondary" title="模擬壓合（P）">${ICONS.press}<span>模擬壓合</span></button>
+        <button id="focus-exit" class="tool" title="展開左右與下方欄位（F 或 Esc）">${ICONS.collapse}<span>展開面板</span></button>
+      </div>
       </div>
       <div class="busy-chip" id="busy" hidden role="status" aria-live="polite">
         <span class="spinner" aria-hidden="true"></span><span id="busy-text">計算中…</span>
